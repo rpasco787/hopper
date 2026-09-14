@@ -41,15 +41,15 @@ const (
 // table in docs/semantics.md §5. Callers compare with errors.Is.
 var (
 	// ErrNotFound: no job with that id exists.
-	ErrNotFound error = errors.New("Not found")
+	ErrNotFound error = errors.New("store: job not found")
 	// ErrLeaseLost: the presented lease_id no longer holds the job. The lease
 	// expired and the reaper took the job back, possibly re-leasing it to
 	// another worker. The caller must stop working on it.
-	ErrLeaseLost error = errors.New("Lease lost")
+	ErrLeaseLost error = errors.New("store: lease lost")
 	// ErrCancelled: the job was cancelled while leased. The SDK cancels the
 	// handler's context on this error; side effects already performed are not
 	// undone.
-	ErrCancelled error = errors.New("Cancelled")
+	ErrCancelled error = errors.New("store: job cancelled")
 )
 
 // Terminal reports whether s is a state that no automatic process ever leaves.
