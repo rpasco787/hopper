@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcpg "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/rpasco787/hopper/internal/store"
 )
 
 // One Postgres container serves every test in this package: startup costs
@@ -98,6 +102,19 @@ func ctxT(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// readJob fetches a row directly by id. Tests are the one place raw SQL
+// against jobs is acceptable outside the store itself, because until Session 2
+// there is no reaper to observe rows through and no way to force state.
+func readJob(t *testing.T, id uuid.UUID) store.Job {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`select `+jobColumns+` from jobs where id = $1`, id)
+	require.NoError(t, err)
+	j, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
+	require.NoError(t, err)
+	return j
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {

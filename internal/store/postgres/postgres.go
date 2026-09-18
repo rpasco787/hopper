@@ -8,10 +8,8 @@
 package postgres
 
 import (
-	"context"
-	"time"
+	"strings"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rpasco787/hopper/internal/store"
@@ -29,6 +27,27 @@ type Store struct {
 // runtime surprise at the call site.
 var _ store.Store = (*Store)(nil)
 
+// jobColumns is the one place the jobs column list is spelled out. Every
+// RETURNING and SELECT that produces a store.Job uses it, so a column added to
+// the table is added here once and store.Job's db tags are the only other
+// thing that has to agree. pgx.RowToStructByName matches by name, not
+// position, so order here does not matter; it mirrors the schema for
+// readability.
+const jobColumns = `id, queue, payload, state, priority, run_at, attempts, max_attempts,
+	lease_id, leased_by, leased_at, lease_expires, idempotency_key, last_error,
+	created_at, updated_at, finished_at`
+
+// qualify prefixes every column in list with alias, turning "id, queue" into
+// "j.id, j.queue". UPDATE ... FROM needs it because the RETURNING clause sees
+// both the target table and the CTE, and bare names would be ambiguous.
+func qualify(alias, list string) string {
+	cols := strings.Split(list, ",")
+	for i, c := range cols {
+		cols[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(cols, ", ")
+}
+
 // New returns a Store over an existing pool, using the default retry policy.
 // The caller owns the pool and is responsible for closing it.
 func New(pool *pgxpool.Pool) *Store {
@@ -43,25 +62,4 @@ func (s *Store) WithRetryPolicy(p store.RetryPolicy) *Store {
 	clone := *s
 	clone.retry = p
 	return &clone
-}
-
-// --- temporary stubs: each is replaced by its own file in Tasks 7 to 11 ---
-// They exist only so the interface assertion above compiles while the store is
-// being built out. Panicking is deliberate: a stub that returned a zero value
-// could be mistaken for working code.
-
-func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, error) {
-	panic("store/postgres: Enqueue not implemented (Task 7)")
-}
-
-func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time.Duration, workerID string) ([]store.Job, error) {
-	panic("store/postgres: Lease not implemented (Task 8)")
-}
-
-func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
-	panic("store/postgres: Ack not implemented (Task 10)")
-}
-
-func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) error {
-	panic("store/postgres: Nack not implemented (Task 11)")
 }

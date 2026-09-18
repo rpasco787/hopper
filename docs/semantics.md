@@ -271,8 +271,8 @@ that proves it; a row without a test is a claim, not a guarantee.
 
 | Claim | Test | Runs | Result |
 |---|---|---|---|
-| Concurrent `Lease` calls never return the same job | `store: TestLeaseDisjoint` (50 goroutines) | | pending |
-| Stale-lease `Ack`/`Nack`/`Heartbeat` rejected | `store: TestStaleLeaseRejected` | | pending |
+| Concurrent `Lease` calls never return the same job | `store: TestLeaseDisjoint` (50 goroutines × 4 over 200 jobs, `-race`) | 2 (`-count=2`, 2026-09-18) | pass |
+| Stale-lease `Ack`/`Nack`/`Heartbeat` rejected | `store: TestStaleLeaseRejected` (Ack and Nack; Heartbeat waits for Session 2) | 2 (`-count=2`, 2026-09-18) | pass |
 | Lease expiry → redelivered exactly once more, `attempts` incremented | `store: TestLeaseExpiryRedelivers` | | pending |
 | `max_attempts` failures → `dead`; `Redrive` → `available`, `attempts = 0` | `store: TestDeadLetter` | | pending |
 | 1000 concurrent `Enqueue` with 10 keys → 10 rows | `store: TestIdempotencyStorm` | | pending |
