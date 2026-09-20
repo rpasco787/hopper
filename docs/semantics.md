@@ -203,7 +203,10 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   workers if you need isolation.
 - `Lease` over several queues (`queue = any($1)`) orders across all of them
   by `priority desc, run_at`, so a busy queue can dominate a stream that
-  also subscribes to quiet ones.
+  also subscribes to quiet ones. PostgreSQL uses `jobs_lease_idx` to find the
+  candidates but still sorts the combined stream; `ListDead` similarly uses
+  `jobs_dead_idx` and incrementally sorts its `id` tiebreaker. The other hot
+  sweeps use their indexes without an explicit sort.
 
 ## 10. Cancellation and retention
 
