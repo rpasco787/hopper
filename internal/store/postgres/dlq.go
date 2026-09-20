@@ -55,3 +55,42 @@ func (s *Store) ListDead(ctx context.Context, queue string, limit int, after *st
 	}
 	return jobs, nil
 }
+
+// Redrive is the operator's "try again" (docs/semantics.md §7). It resets the
+// retry budget but keeps id, idempotency_key and lease_id: the first two so
+// the job is still the same job to the outside world, the last because
+// lease_id is never cleared anywhere. The state guard means a caller who lists
+// dead jobs, waits, and redrives cannot accidentally reset a job that was
+// already redriven and is now running.
+func (s *Store) Redrive(ctx context.Context, ids []uuid.UUID) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		update jobs
+		set state = 'available', attempts = 0, last_error = null, finished_at = null,
+		    run_at = now(), updated_at = now()
+		where id = any($1) and state = 'dead'`,
+		ids)
+	if err != nil {
+		return 0, fmt.Errorf("store: redrive: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// Purge deletes dead rows and with them their idempotency keys. The state
+// guard is the safety rail: an operator tool that passes the wrong id cannot
+// delete a live job. Completed and cancelled rows are the janitor's
+// (Session 3 retention), not Purge's.
+func (s *Store) Purge(ctx context.Context, ids []uuid.UUID) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		delete from jobs where id = any($1) and state = 'dead'`,
+		ids)
+	if err != nil {
+		return 0, fmt.Errorf("store: purge: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

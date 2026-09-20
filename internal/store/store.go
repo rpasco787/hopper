@@ -186,4 +186,15 @@ type Store interface {
 	// non-nil. Build the next cursor from the last job returned; an empty
 	// result means the end. queue is required; limit <= 0 returns nothing.
 	ListDead(ctx context.Context, queue string, limit int, after *DeadCursor) ([]Job, error)
+
+	// Redrive moves dead jobs back to StateAvailable with Attempts reset to
+	// 0, LastError and FinishedAt cleared and RunAt = now, giving each a
+	// fresh MaxAttempts. IDs that are not dead are ignored. Returns how many
+	// rows moved.
+	Redrive(ctx context.Context, ids []uuid.UUID) (int, error)
+
+	// Purge deletes dead jobs, releasing their idempotency keys. IDs that are
+	// not dead are ignored so an operator cannot delete a live job by mistake.
+	// Returns how many rows were deleted.
+	Purge(ctx context.Context, ids []uuid.UUID) (int, error)
 }

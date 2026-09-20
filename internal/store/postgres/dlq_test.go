@@ -138,3 +138,140 @@ func TestListDeadValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got, "no dead jobs on that queue")
 }
+
+// rowExists reports whether a jobs row with id is present.
+func rowExists(t *testing.T, id uuid.UUID) bool {
+	t.Helper()
+	var n int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`select count(*) from jobs where id = $1`, id).Scan(&n))
+	return n == 1
+}
+
+// TestDeadLetter is the docs/semantics.md §13 row "max_attempts failures →
+// dead; Redrive → available, attempts = 0". A job with max_attempts = 2 is
+// leased and nacked twice, dies, is redriven, and can be leased again as if new.
+func TestDeadLetter(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t).WithRetryPolicy(store.RetryPolicy{Base: time.Millisecond, Cap: time.Millisecond})
+
+	enq, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 2})
+	require.NoError(t, err)
+
+	// Attempt 1 fails: scheduled with backoff.
+	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NoError(t, s.Nack(ctx, got[0].ID, *got[0].LeaseID, "first"))
+	require.Equal(t, store.StateScheduled, readJob(t, enq.ID).State)
+
+	// Attempt 2 fails: dead.
+	time.Sleep(10 * time.Millisecond)
+	promoteDue(t)
+	got, err = s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, int32(2), got[0].Attempts)
+	require.NoError(t, s.Nack(ctx, got[0].ID, *got[0].LeaseID, "second"))
+	dead := readJob(t, enq.ID)
+	require.Equal(t, store.StateDead, dead.State)
+	require.Equal(t, "second", *dead.LastError)
+
+	// Dead is terminal for the queue: not leasable.
+	none, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
+	require.NoError(t, err)
+	require.Empty(t, none)
+
+	// Operator redrives.
+	before := time.Now()
+	n, err := s.Redrive(ctx, []uuid.UUID{enq.ID})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	r := readJob(t, enq.ID)
+	require.Equal(t, store.StateAvailable, r.State)
+	require.Equal(t, int32(0), r.Attempts)
+	require.Equal(t, int32(2), r.MaxAttempts, "max_attempts is unchanged; the job gets a fresh budget")
+	require.Nil(t, r.LastError)
+	require.Nil(t, r.FinishedAt)
+	require.WithinDuration(t, before, r.RunAt, 2*time.Second)
+	require.Equal(t, *dead.LeaseID, *r.LeaseID, "lease_id is never cleared, even by redrive")
+	require.False(t, r.UpdatedAt.Before(dead.UpdatedAt))
+
+	// And it is leasable again as a first attempt.
+	got, err = s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, int32(1), got[0].Attempts)
+}
+
+func TestRedriveIgnoresNonDead(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	avail, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	require.NoError(t, err)
+	done := leaseOne(t, ctx, s, "q2", "w")
+	require.NoError(t, s.Ack(ctx, done.ID, *done.LeaseID))
+	dead := deadJob(t, ctx, s, "q3")
+
+	n, err := s.Redrive(ctx, []uuid.UUID{avail.ID, done.ID, dead.ID, uuid.New()})
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "only the dead one moves")
+
+	require.Equal(t, store.StateAvailable, readJob(t, avail.ID).State)
+	require.Equal(t, store.StateCompleted, readJob(t, done.ID).State)
+	require.Equal(t, store.StateAvailable, readJob(t, dead.ID).State)
+
+	n, err = s.Redrive(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestPurgeDeletesOnlyDead(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	done := leaseOne(t, ctx, s, "q", "w")
+	require.NoError(t, s.Ack(ctx, done.ID, *done.LeaseID))
+	dead := deadJob(t, ctx, s, "q")
+	dead2 := deadJob(t, ctx, s, "q")
+
+	n, err := s.Purge(ctx, []uuid.UUID{done.ID, dead.ID, uuid.New()})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	require.False(t, rowExists(t, dead.ID))
+	require.True(t, rowExists(t, done.ID), "a completed row is never purged here; retention owns it")
+	require.True(t, rowExists(t, dead2.ID), "ids not listed are untouched")
+
+	n, err = s.Purge(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestPurgeReleasesIdempotencyKey(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	key := "order-1"
+	first, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1, IdempotencyKey: &key})
+	require.NoError(t, err)
+	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
+	require.NoError(t, err)
+	require.NoError(t, s.Nack(ctx, got[0].ID, *got[0].LeaseID, "fatal"))
+
+	// Key is still held by the dead row (Session 3 turns this into a
+	// silent dedup; today it is a unique-violation error).
+	_, err = s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
+	require.Error(t, err)
+
+	n, err := s.Purge(ctx, []uuid.UUID{first.ID})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// Key is free again.
+	again, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
+	require.NoError(t, err)
+	require.NotEqual(t, first.ID, again.ID)
+}
