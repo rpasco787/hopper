@@ -144,8 +144,12 @@ type DeadCursor struct {
 // never silently overwritten. Session 3 adds the promoter, Cancel and retention.
 type Store interface {
 	// Enqueue inserts one job and returns the stored row, including the
-	// generated ID and the state the store chose from RunAt.
-	Enqueue(ctx context.Context, p EnqueueParams) (Job, error)
+	// generated ID and the state the store chose from RunAt. inserted reports
+	// whether a row was actually written: false means an existing job with the
+	// same (Queue, IdempotencyKey) was returned instead, and this call's
+	// Payload, Priority and RunAt were ignored (docs/semantics.md §8). A call
+	// with no IdempotencyKey always inserts.
+	Enqueue(ctx context.Context, p EnqueueParams) (job Job, inserted bool, err error)
 
 	// Lease atomically takes up to n available jobs from the given queues,
 	// ordered by priority desc then run_at, marks them leased by workerID

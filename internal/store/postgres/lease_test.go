@@ -18,7 +18,7 @@ func enqueueN(t *testing.T, ctx context.Context, s *Store, queue string, n int, 
 	t.Helper()
 	out := make([]store.Job, 0, n)
 	for range n {
-		j, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue, Priority: priority})
+		j, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue, Priority: priority})
 		require.NoError(t, err)
 		out = append(out, j)
 	}
@@ -29,7 +29,7 @@ func TestLeaseOne(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	enq, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	enq, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
 	require.NoError(t, err)
 
 	before := time.Now()
@@ -80,7 +80,7 @@ func TestLeaseSkipsScheduled(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", RunAt: time.Now().Add(time.Hour)})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", RunAt: time.Now().Add(time.Hour)})
 	require.NoError(t, err)
 
 	got, err := s.Lease(ctx, []string{"q"}, 10, 30*time.Second, "w")
@@ -92,13 +92,13 @@ func TestLeaseOrdersByPriorityThenRunAt(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	low, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 0})
+	low, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 0})
 	require.NoError(t, err)
 	// Enqueued later but higher priority: must come out first.
-	high, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 10})
+	high, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 10})
 	require.NoError(t, err)
 	// Same priority as low, enqueued later: must come after low.
-	low2, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 0})
+	low2, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 0})
 	require.NoError(t, err)
 
 	got, err := s.Lease(ctx, []string{"q"}, 10, 30*time.Second, "w")

@@ -15,7 +15,7 @@ import (
 // the leased row (so callers have a live lease_id).
 func leaseOne(t *testing.T, ctx context.Context, s *Store, queue, worker string) store.Job {
 	t.Helper()
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{queue}, 1, 30*time.Second, worker)
 	require.NoError(t, err)

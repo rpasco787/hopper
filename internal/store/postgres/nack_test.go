@@ -44,7 +44,7 @@ func TestNackDeadLettersAtMaxAttempts(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestNackIsIdempotentOnDeadRow(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
 	require.NoError(t, err)

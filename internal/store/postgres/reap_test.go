@@ -55,7 +55,7 @@ func TestReapDeadLettersAtMaxAttempts(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestLeaseExpiryRedelivers(t *testing.T) {
 	// Backoff of ~1ms so the retry is due almost immediately.
 	s := newStore(t).WithRetryPolicy(store.RetryPolicy{Base: time.Millisecond, Cap: time.Millisecond})
 
-	enq, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	enq, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
 	require.NoError(t, err)
 
 	first, err := s.Lease(ctx, []string{"q"}, 1, 200*time.Millisecond, "w-dies")

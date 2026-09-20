@@ -14,7 +14,7 @@ import (
 // deadJob enqueues a one-shot job on queue and fails it, returning the dead row.
 func deadJob(t *testing.T, ctx context.Context, s *Store, queue string) store.Job {
 	t.Helper()
-	_, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue, MaxAttempts: 1})
+	_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: queue, MaxAttempts: 1})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{queue}, 1, time.Second, "w")
 	require.NoError(t, err)
@@ -155,7 +155,7 @@ func TestDeadLetter(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t).WithRetryPolicy(store.RetryPolicy{Base: time.Millisecond, Cap: time.Millisecond})
 
-	enq, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 2})
+	enq, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 2})
 	require.NoError(t, err)
 
 	// Attempt 1 fails: scheduled with backoff.
@@ -209,7 +209,7 @@ func TestRedriveIgnoresNonDead(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	avail, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	avail, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
 	require.NoError(t, err)
 	done := leaseOne(t, ctx, s, "q2", "w")
 	require.NoError(t, s.Ack(ctx, done.ID, *done.LeaseID))
@@ -255,23 +255,27 @@ func TestPurgeReleasesIdempotencyKey(t *testing.T) {
 	s := newStore(t)
 
 	key := "order-1"
-	first, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1, IdempotencyKey: &key})
+	first, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", MaxAttempts: 1, IdempotencyKey: &key})
 	require.NoError(t, err)
 	got, err := s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
 	require.NoError(t, err)
 	require.NoError(t, s.Nack(ctx, got[0].ID, *got[0].LeaseID, "fatal"))
 
-	// Key is still held by the dead row (Session 3 turns this into a
-	// silent dedup; today it is a unique-violation error).
-	_, err = s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
-	require.Error(t, err)
+	// The key is still held by the dead row, so the duplicate is handed that
+	// row rather than rejected (docs/semantics.md §8).
+	dup, inserted, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
+	require.NoError(t, err)
+	require.False(t, inserted)
+	require.Equal(t, first.ID, dup.ID)
+	require.Equal(t, store.StateDead, dup.State)
 
 	n, err := s.Purge(ctx, []uuid.UUID{first.ID})
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 
 	// Key is free again.
-	again, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
+	again, inserted, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", IdempotencyKey: &key})
 	require.NoError(t, err)
+	require.True(t, inserted, "purging the row released the key")
 	require.NotEqual(t, first.ID, again.ID)
 }
