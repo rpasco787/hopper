@@ -26,8 +26,8 @@ import (
 //
 // The delay could be computed in SQL with a CASE expression and a single
 // UPDATE, avoiding the transaction. It is computed in Go instead because
-// store.RetryPolicy is unit-tested there and shared verbatim with Session 2's
-// reaper; two implementations of the same formula would drift. The
+// store.RetryPolicy is unit-tested there and shared verbatim with
+// ReapExpiredLeases; two implementations of the same formula would drift. The
 // transaction is a handful of microseconds: nothing slow runs inside it.
 func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) error {
 	tx, err := s.pool.Begin(ctx)

@@ -109,7 +109,8 @@ returning j.*;
   therefore not instantaneous: worst-case latency is lease duration + reaper
   interval + backoff.
 - **Due-ness is a state, not a filter.** The lease query does not check
-  `run_at`. A promoter ticker moves `scheduled → available` when
+  `run_at`. The store method is `PromoteDue` and the ticker is
+  `sweep.Promoter`; together they move `scheduled → available` when
   `run_at <= now()`. Consequences: the `available` partial index contains only
   leasable rows; `queue_depth{state="available"}` (the KEDA signal) means
   "leasable right now"; and delayed or retried jobs fire up to one promoter
@@ -179,7 +180,10 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   `Enqueue` does `insert ... on conflict (queue, idempotency_key) where
   idempotency_key is not null do nothing returning id`, then falls back to a
   `select` when the insert returned nothing. Under 1000 concurrent enqueues
-  with 10 distinct keys, exactly 10 rows exist.
+  with 10 distinct keys, exactly 10 rows exist. The fallback has to be a
+  second statement: one statement sees one snapshot, taken before the
+  concurrent inserter committed, so a CTE that tried to do both would find
+  nothing to fall back to.
 - Keys are scoped per queue. The same key in two queues is two jobs.
 - The duplicate's `payload`, `priority`, and `run_at` are ignored; the first
   writer wins and the caller is not told the payload differed.
@@ -218,8 +222,13 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
 | `leased` | → `cancelled` immediately in the store. The worker learns at its next heartbeat/ack (`ErrCancelled`) and the SDK cancels the handler context. Side effects already performed are **not** undone. |
 | `completed`, `dead`, `cancelled` | No change; returns `ErrTerminal` with the current state. |
 
+Store method: `Cancel`, which returns the cancelled row. `ErrTerminal` is
+delivered as a `*store.TerminalStateError` carrying the state, so a caller can
+use `errors.Is` for the class and `errors.As` for the detail.
+
 **Retention.** A janitor deletes `completed` and `cancelled` rows older than
-a configurable window (default 24h). `dead` rows are kept until purged.
+a configurable window (default 24h; store method: `DeleteFinished`, ticker:
+`sweep.Janitor`). `dead` rows are kept until purged.
 Retention bounds table and index size and, per §8, is also the lifetime of
 idempotency protection.
 
@@ -278,8 +287,11 @@ that proves it; a row without a test is a claim, not a guarantee.
 | Stale-lease `Ack`/`Nack`/`Heartbeat` rejected | `store: TestStaleLeaseRejected` (all three paths) | 2 (`-count=2`, 2026-09-20) | pass |
 | Lease expiry → redelivered exactly once more, `attempts` incremented | `store: TestLeaseExpiryRedelivers` (real 200ms lease, reaper, promoter stand-in) | 2 (`-count=2`, 2026-09-20) | pass |
 | `max_attempts` failures → `dead`; `Redrive` → `available`, `attempts = 0` | `store: TestDeadLetter` | 2 (`-count=2`, 2026-09-20) | pass |
-| 1000 concurrent `Enqueue` with 10 keys → 10 rows | `store: TestIdempotencyStorm` | | pending |
-| Priority-10 job leased before 100 priority-0 jobs | `store: TestPriority` | | pending |
+| 1000 concurrent `Enqueue` with 10 keys → 10 rows | `store: TestIdempotencyStorm` (10 keys × 100 callers released together) | 3 (`-count=3`, 2026-09-20) | pass |
+| Priority-10 job leased before 100 priority-0 jobs | `store: TestPriority` (urgent job enqueued last, so FIFO would rank it 101st) | 2 (`-count=2`, 2026-09-20) | pass |
+| Delayed job is leasable only after the promoter runs | `store: TestPromoteDueMakesDelayedJobsLeasable` | 2 (`-count=2`, 2026-09-20) | pass |
+| `Cancel` of a leased job → holder gets `ErrCancelled` at its next call | `store: TestCancelLeasedJobIsLearnedByTheWorker` | 2 (`-count=2`, 2026-09-20) | pass |
+| Retention deletes finished rows and releases their idempotency keys | `store: TestRetentionEndsIdempotencyProtection` | 2 (`-count=2`, 2026-09-20) | pass |
 | `SIGTERM` mid-job → job acked, not redelivered | `worker: TestGracefulShutdown` | | pending |
 | Random worker kills during 10k jobs → every duplicate explained by `attempts` | `chaos: TestWorkerKills` | | pending |
 | Broker restart mid-run → no job lost, workers reconnect | `chaos: TestBrokerRestart` | | pending |

@@ -160,7 +160,8 @@ func (e *TerminalStateError) Unwrap() error { return ErrTerminal }
 // Store is the persistence contract. Every method takes a context for
 // cancellation and timeouts. Implementations must make each state transition
 // a single guarded UPDATE so a lost race updates zero rows and is reported,
-// never silently overwritten. Session 3 adds the promoter, Cancel and retention.
+// never silently overwritten. Session 4 puts a gRPC API in front of this
+// interface; nothing below it changes shape for that.
 type Store interface {
 	// Enqueue inserts one job and returns the stored row, including the
 	// generated ID and the state the store chose from RunAt. inserted reports
