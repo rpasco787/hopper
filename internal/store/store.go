@@ -130,6 +130,14 @@ type EnqueueParams struct {
 	IdempotencyKey *string
 }
 
+// DeadCursor is a keyset-pagination position for ListDead: the (FinishedAt,
+// ID) of the last job on the previous page. Keyset rather than OFFSET so a
+// page stays correct while rows are being redriven or purged underneath it.
+type DeadCursor struct {
+	FinishedAt time.Time
+	ID         uuid.UUID
+}
+
 // Store is the persistence contract. Every method takes a context for
 // cancellation and timeouts. Implementations must make each state transition
 // a single guarded UPDATE so a lost race updates zero rows and is reported,
@@ -172,4 +180,10 @@ type Store interface {
 	// to "lease expired". It returns how many rows it moved. Calling it with
 	// limit <= 0 is a no-op. Safe to run concurrently from several brokers.
 	ReapExpiredLeases(ctx context.Context, limit int) (int, error)
+
+	// ListDead returns up to limit dead jobs on queue, ordered by
+	// (FinishedAt, ID) ascending, starting after the cursor when it is
+	// non-nil. Build the next cursor from the last job returned; an empty
+	// result means the end. queue is required; limit <= 0 returns nothing.
+	ListDead(ctx context.Context, queue string, limit int, after *DeadCursor) ([]Job, error)
 }
