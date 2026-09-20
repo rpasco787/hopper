@@ -72,6 +72,56 @@ func TestListDeadPagesInFinishedOrder(t *testing.T) {
 	require.False(t, seen[completed.ID])
 }
 
+// pinFinishedAt forces the given rows' finished_at to an exact, identical
+// timestamp via raw SQL, following the forceState/expireLease pattern (see
+// ack_test.go and reap_test.go): deadJob's Enqueue/Lease/Nack round-trip each
+// call its own now(), so a tie can never occur through the public API alone.
+func pinFinishedAt(t *testing.T, ids []uuid.UUID, at time.Time) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`update jobs set finished_at = $2 where id = any($1)`, ids, at)
+	require.NoError(t, err)
+}
+
+// TestListDeadTiebreaksOnID proves the id half of the (finished_at, id)
+// cursor comparison actually breaks ties. It forces two dead jobs to share
+// one exact finished_at, then pages with limit=1 and asserts the lower id
+// comes first and the higher id comes second — never repeated, never skipped.
+func TestListDeadTiebreaksOnID(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	a := deadJob(t, ctx, s, "q")
+	b := deadJob(t, ctx, s, "q")
+
+	tie := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	pinFinishedAt(t, []uuid.UUID{a.ID, b.ID}, tie)
+
+	lo, hi := a, b
+	if hi.ID.String() < lo.ID.String() {
+		lo, hi = hi, lo
+	}
+	require.NotEqual(t, lo.ID, hi.ID)
+
+	// Sanity check: paging from nil with the same limit twice, without ever
+	// advancing the cursor, must deterministically return the same first row.
+	first1, err := s.ListDead(ctx, "q", 1, nil)
+	require.NoError(t, err)
+	require.Len(t, first1, 1)
+	first2, err := s.ListDead(ctx, "q", 1, nil)
+	require.NoError(t, err)
+	require.Len(t, first2, 1)
+	require.Equal(t, first1[0].ID, first2[0].ID)
+	require.Equal(t, lo.ID, first1[0].ID, "lower id must sort first on a finished_at tie")
+
+	cursor := &store.DeadCursor{FinishedAt: *first1[0].FinishedAt, ID: first1[0].ID}
+	second, err := s.ListDead(ctx, "q", 1, cursor)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+	require.Equal(t, hi.ID, second[0].ID, "higher id must be the next row, not repeated or skipped")
+	require.NotEqual(t, first1[0].ID, second[0].ID)
+}
+
 func TestListDeadValidation(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
