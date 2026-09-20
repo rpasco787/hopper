@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,6 +51,11 @@ var (
 	// handler's context on this error; side effects already performed are not
 	// undone.
 	ErrCancelled error = errors.New("store: job cancelled")
+	// ErrTerminal: the job is already in a terminal state, so the requested
+	// transition is impossible. Cancel returns it wrapped in a
+	// *TerminalStateError carrying that state; errors.Is is the cheap check and
+	// errors.As is how a caller reads which state blocked it.
+	ErrTerminal error = errors.New("store: job already terminal")
 )
 
 // Terminal reports whether s is a state that no automatic process ever leaves.
@@ -138,6 +144,19 @@ type DeadCursor struct {
 	ID         uuid.UUID
 }
 
+// TerminalStateError reports which terminal state blocked a transition. It
+// unwraps to ErrTerminal, so errors.Is(err, ErrTerminal) works and the gRPC
+// layer can still pull the state out with errors.As to choose a status code.
+type TerminalStateError struct {
+	State State
+}
+
+func (e *TerminalStateError) Error() string {
+	return fmt.Sprintf("store: job already %s", e.State)
+}
+
+func (e *TerminalStateError) Unwrap() error { return ErrTerminal }
+
 // Store is the persistence contract. Every method takes a context for
 // cancellation and timeouts. Implementations must make each state transition
 // a single guarded UPDATE so a lost race updates zero rows and is reported,
@@ -178,6 +197,15 @@ type Store interface {
 	// Attempts >= MaxAttempts (docs/semantics.md §6). Attempts is not
 	// changed; it was counted at lease time.
 	Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) error
+
+	// Cancel moves a scheduled, available or leased job to StateCancelled and
+	// returns the cancelled row. A leased job is cancelled in the store
+	// immediately; the worker holding it finds out at its next heartbeat or
+	// ack, which gets ErrCancelled, and side effects already performed are not
+	// undone. A job that is already completed, cancelled or dead is left
+	// untouched and the error is a *TerminalStateError wrapping ErrTerminal.
+	// An unknown id gets ErrNotFound. (docs/semantics.md §10.)
+	Cancel(ctx context.Context, id uuid.UUID) (Job, error)
 
 	// ExtendLease pushes a live lease's expiry to now + dur (a heartbeat).
 	// The same leaseID guard as Ack applies: a stale token gets ErrLeaseLost,

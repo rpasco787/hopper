@@ -58,7 +58,8 @@ func TestExtendLeaseMissClassification(t *testing.T) {
 
 	// Cancelled while leased.
 	j = leaseOne(t, ctx, s, "q3", "w")
-	forceState(t, j.ID, store.StateCancelled)
+	_, err := s.Cancel(ctx, j.ID)
+	require.NoError(t, err)
 	require.ErrorIs(t, s.ExtendLease(ctx, j.ID, *j.LeaseID, time.Minute), store.ErrCancelled)
 
 	// No such job.

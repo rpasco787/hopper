@@ -23,10 +23,11 @@ func leaseOne(t *testing.T, ctx context.Context, s *Store, queue, worker string)
 	return got[0]
 }
 
-// forceState rewrites a row's state with raw SQL. It stands in for Cancel and
-// the promoter, which do not exist until Session 3, and lets a test put a row
-// in a state without going through the lifecycle. Production code must never
-// bypass the lease guard this way.
+// forceState rewrites a row's state with raw SQL. It is how a test puts a row
+// in a state without waiting for the ticker that would normally produce it:
+// the reaper's take-back, or the promoter's promotion. Cancel is a real method
+// now, so a test that wants a cancelled row calls it. Production code must
+// never bypass the lease guard this way.
 func forceState(t *testing.T, id uuid.UUID, state store.State) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
@@ -119,7 +120,8 @@ func TestAckOnCancelledIsErrCancelled(t *testing.T) {
 	s := newStore(t)
 	j := leaseOne(t, ctx, s, "q", "w")
 
-	forceState(t, j.ID, store.StateCancelled)
+	_, err := s.Cancel(ctx, j.ID)
+	require.NoError(t, err)
 	require.ErrorIs(t, s.Ack(ctx, j.ID, *j.LeaseID), store.ErrCancelled)
 }
 
