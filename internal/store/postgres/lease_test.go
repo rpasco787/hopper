@@ -200,3 +200,33 @@ func TestLeaseDisjoint(t *testing.T) {
 	require.Equal(t, 0, available)
 	t.Logf("%d workers leased %d distinct jobs", workers, len(seen))
 }
+
+// TestPriority is the docs/semantics.md §13 row: a priority-10 job is leased
+// before a hundred priority-0 jobs. The urgent job is enqueued last, so its
+// run_at is the latest of the 101 and FIFO order would put it at the very
+// back; priority is the only thing that can pull it to the front (§9).
+func TestPriority(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	ordinary := enqueueN(t, ctx, s, "q", 100, 0)
+	urgent, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q", Priority: 10})
+	require.NoError(t, err)
+
+	// A one-job lease is the sharp form of the claim: of 101 leasable rows,
+	// the single row the store chooses to hand out is the urgent one.
+	got, err := s.Lease(ctx, []string{"q"}, 1, 30*time.Second, "w")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, urgent.ID, got[0].ID)
+	require.Equal(t, int16(10), got[0].Priority)
+
+	// And the rest come out behind it, in run_at order.
+	rest, err := s.Lease(ctx, []string{"q"}, 100, 30*time.Second, "w")
+	require.NoError(t, err)
+	require.Len(t, rest, len(ordinary))
+	for i := 1; i < len(rest); i++ {
+		require.False(t, rest[i].RunAt.Before(rest[i-1].RunAt),
+			"priority-0 jobs are handed out oldest-first")
+	}
+}
