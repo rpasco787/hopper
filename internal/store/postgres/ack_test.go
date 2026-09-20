@@ -85,14 +85,16 @@ func TestStaleLeaseRejected(t *testing.T) {
 	require.NotEqual(t, *old.LeaseID, *fresh.LeaseID)
 	require.Equal(t, int32(2), fresh.Attempts)
 
-	// The stale token is rejected on both paths.
+	// The stale token is rejected on all three paths.
 	require.ErrorIs(t, s.Ack(ctx, old.ID, *old.LeaseID), store.ErrLeaseLost)
 	require.ErrorIs(t, s.Nack(ctx, old.ID, *old.LeaseID, "too late"), store.ErrLeaseLost)
+	require.ErrorIs(t, s.ExtendLease(ctx, old.ID, *old.LeaseID, time.Minute), store.ErrLeaseLost)
 
 	// And neither stale call disturbed the live lease.
 	cur := readJob(t, old.ID)
 	require.Equal(t, store.StateLeased, cur.State)
 	require.Equal(t, *fresh.LeaseID, *cur.LeaseID)
+	require.WithinDuration(t, *fresh.LeaseExpires, *cur.LeaseExpires, time.Millisecond, "stale heartbeat must not extend the live lease")
 	require.Nil(t, cur.LastError)
 
 	// The holder of the fresh lease can still finish the job.

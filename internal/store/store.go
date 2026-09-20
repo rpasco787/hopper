@@ -159,4 +159,10 @@ type Store interface {
 	// Attempts >= MaxAttempts (docs/semantics.md §6). Attempts is not
 	// changed; it was counted at lease time.
 	Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) error
+
+	// ExtendLease pushes a live lease's expiry to now + dur (a heartbeat).
+	// The same leaseID guard as Ack applies: a stale token gets ErrLeaseLost,
+	// a cancelled job gets ErrCancelled. There is no idempotent-success case;
+	// a heartbeat that misses always means the caller no longer holds the job.
+	ExtendLease(ctx context.Context, id, leaseID uuid.UUID, dur time.Duration) error
 }

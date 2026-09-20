@@ -45,8 +45,8 @@ func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
 // done is the terminal state the caller was trying to reach: a row already in
 // that state under the same lease_id means the caller's earlier attempt
 // succeeded and its response was lost, so the result is nil. Ack passes
-// completed; Nack passes scheduled or dead; Session 2's ExtendLease passes
-// leased.
+// completed; Nack passes scheduled or dead; ExtendLease passes nothing,
+// because a heartbeat that misses has no already-applied case.
 //
 // The read here is racy by design: the row can change again between the
 // caller's miss and this SELECT. That is acceptable because classifyMiss only
