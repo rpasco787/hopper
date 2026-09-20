@@ -235,17 +235,6 @@ func TestReapRacesNackWithoutDoubleProcessing(t *testing.T) {
 	}
 }
 
-// promoteDue stands in for the Session 3 promoter: scheduled rows whose
-// run_at has passed become available. It is the exact statement the promoter
-// will run; when Session 3 lands, replace this helper with the real call.
-func promoteDue(t *testing.T) {
-	t.Helper()
-	_, err := pool.Exec(context.Background(),
-		`update jobs set state = 'available', updated_at = now()
-		 where state = 'scheduled' and run_at <= now()`)
-	require.NoError(t, err)
-}
-
 // TestLeaseExpiryRedelivers is the docs/semantics.md §13 row "lease expiry →
 // redelivered exactly once more, attempts incremented". A worker leases a job
 // for 200ms and then "dies": it never acks and never heartbeats. After the
@@ -277,7 +266,9 @@ func TestLeaseExpiryRedelivers(t *testing.T) {
 	require.Equal(t, 1, n)
 
 	time.Sleep(10 * time.Millisecond) // let the ~1ms backoff elapse on the DB clock
-	promoteDue(t)
+	promoted, err := s.PromoteDue(ctx, 100)
+	require.NoError(t, err)
+	require.Equal(t, 1, promoted, "the retry is due, so the promoter makes it leasable again")
 
 	second, err := s.Lease(ctx, []string{"q"}, 10, 30*time.Second, "w-2")
 	require.NoError(t, err)

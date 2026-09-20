@@ -167,7 +167,9 @@ func TestDeadLetter(t *testing.T) {
 
 	// Attempt 2 fails: dead.
 	time.Sleep(10 * time.Millisecond)
-	promoteDue(t)
+	promoted, err := s.PromoteDue(ctx, 100)
+	require.NoError(t, err)
+	require.Equal(t, 1, promoted)
 	got, err = s.Lease(ctx, []string{"q"}, 1, time.Second, "w")
 	require.NoError(t, err)
 	require.Len(t, got, 1)

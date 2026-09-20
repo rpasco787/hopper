@@ -24,9 +24,10 @@ import (
 // the first one; NOWAIT would make them error instead.
 //
 // There is deliberately no run_at predicate. Lease trusts the state column;
-// the promoter (Session 3) is what moves scheduled rows to available when they
-// come due. That keeps the partial index on available rows exactly the set of
-// leasable rows, and keeps queue depth meaning "leasable right now".
+// PromoteDue, driven by sweep.Promoter, is what moves scheduled rows to
+// available when they come due. That keeps the partial index on available rows
+// exactly the set of leasable rows, and keeps queue depth meaning "leasable
+// right now".
 func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time.Duration, workerID string) ([]store.Job, error) {
 	if len(queues) == 0 || n <= 0 {
 		return nil, nil

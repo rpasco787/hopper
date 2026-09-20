@@ -158,6 +158,14 @@ type Store interface {
 	// not an error.
 	Lease(ctx context.Context, queues []string, n int, leaseDur time.Duration, workerID string) ([]Job, error)
 
+	// PromoteDue moves up to limit scheduled jobs whose RunAt has passed to
+	// StateAvailable, longest-overdue first, and returns how many it moved.
+	// It is the only thing that makes a delayed or retried job leasable:
+	// Lease has no run_at predicate (docs/semantics.md §4, "Due-ness is a
+	// state, not a filter"). limit <= 0 is a no-op. Safe to run concurrently
+	// from several brokers.
+	PromoteDue(ctx context.Context, limit int) (int, error)
+
 	// Ack marks a leased job completed. leaseID must be the token returned
 	// by the Lease that delivered it; a stale token gets ErrLeaseLost. Acking
 	// an already-completed job with the same leaseID returns nil, so the SDK
