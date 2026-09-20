@@ -55,6 +55,22 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 		return fmt.Errorf("store: nack: select: %w", err)
 	}
 
+	if err := s.failLeased(ctx, tx, id, attempts, maxAttempts, errMsg); err != nil {
+		return fmt.Errorf("store: nack: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: nack: commit: %w", err)
+	}
+	return nil
+}
+
+// failLeased applies docs/semantics.md §6 to a row the caller has locked with
+// SELECT ... FOR UPDATE inside tx: dead when attempts >= maxAttempts, otherwise
+// scheduled with backoff from s.retry. Nack and ReapExpiredLeases both call it,
+// which is what makes "nack" and "lease expired" wait the same way. The WHERE
+// is id-only because the row lock, not a state guard, is what protects it.
+func (s *Store) failLeased(ctx context.Context, tx pgx.Tx, id uuid.UUID, attempts, maxAttempts int32, errMsg string) error {
+	var err error
 	if attempts >= maxAttempts {
 		_, err = tx.Exec(ctx, `
 			update jobs
@@ -69,10 +85,7 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 			id, s.retry.Delay(attempts), errMsg)
 	}
 	if err != nil {
-		return fmt.Errorf("store: nack: update: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("store: nack: commit: %w", err)
+		return fmt.Errorf("update: %w", err)
 	}
 	return nil
 }

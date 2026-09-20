@@ -165,4 +165,11 @@ type Store interface {
 	// a cancelled job gets ErrCancelled. There is no idempotent-success case;
 	// a heartbeat that misses always means the caller no longer holds the job.
 	ExtendLease(ctx context.Context, id, leaseID uuid.UUID, dur time.Duration) error
+
+	// ReapExpiredLeases takes back up to limit jobs whose lease has expired
+	// and applies the retry policy exactly as Nack does: StateScheduled with
+	// backoff, or StateDead when Attempts >= MaxAttempts, with LastError set
+	// to "lease expired". It returns how many rows it moved. Calling it with
+	// limit <= 0 is a no-op. Safe to run concurrently from several brokers.
+	ReapExpiredLeases(ctx context.Context, limit int) (int, error)
 }
