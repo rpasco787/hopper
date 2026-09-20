@@ -36,7 +36,7 @@ const (
 	StateDead State = "dead"
 )
 
-// Errors returned by Ack and Nack (and, from Session 2, ExtendLease) when the
+// Errors returned by Ack, Nack and ExtendLease when the
 // guarded UPDATE touches zero rows. The mapping from row state to error is the
 // table in docs/semantics.md §5. Callers compare with errors.Is.
 var (
@@ -141,8 +141,7 @@ type DeadCursor struct {
 // Store is the persistence contract. Every method takes a context for
 // cancellation and timeouts. Implementations must make each state transition
 // a single guarded UPDATE so a lost race updates zero rows and is reported,
-// never silently overwritten. Session 1 covers these four methods; Session 2
-// adds ReapExpiredLeases, ExtendLease, ListDead, Redrive, and Purge.
+// never silently overwritten. Session 3 adds the promoter, Cancel and retention.
 type Store interface {
 	// Enqueue inserts one job and returns the stored row, including the
 	// generated ID and the state the store chose from RunAt.

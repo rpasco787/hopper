@@ -99,7 +99,7 @@ returning j.*;
   waited on. Two workers can never receive the same `(id, lease_id)`.
 - **Duration.** `lease_expires = now() + lease duration`. The default is set on
   the broker; a worker may request a different duration per stream.
-- **Extension.** `Heartbeat(id, lease_id, dur)` sets
+- **Extension.** `Heartbeat(id, lease_id, dur)` (store method: `ExtendLease`) sets
   `lease_expires = now() + dur` **only if** `state = 'leased' and lease_id = $2`.
   The SDK heartbeats at 1/3 of the lease duration. If a heartbeat is rejected
   (lease lost) the SDK cancels the handler's `context`; the handler should
@@ -272,9 +272,9 @@ that proves it; a row without a test is a claim, not a guarantee.
 | Claim | Test | Runs | Result |
 |---|---|---|---|
 | Concurrent `Lease` calls never return the same job | `store: TestLeaseDisjoint` (50 goroutines × 4 over 200 jobs, `-race`) | 2 (`-count=2`, 2026-09-18) | pass |
-| Stale-lease `Ack`/`Nack`/`Heartbeat` rejected | `store: TestStaleLeaseRejected` (Ack and Nack; Heartbeat waits for Session 2) | 2 (`-count=2`, 2026-09-18) | pass |
-| Lease expiry → redelivered exactly once more, `attempts` incremented | `store: TestLeaseExpiryRedelivers` | | pending |
-| `max_attempts` failures → `dead`; `Redrive` → `available`, `attempts = 0` | `store: TestDeadLetter` | | pending |
+| Stale-lease `Ack`/`Nack`/`Heartbeat` rejected | `store: TestStaleLeaseRejected` (all three paths) | 2 (`-count=2`, 2026-09-20) | pass |
+| Lease expiry → redelivered exactly once more, `attempts` incremented | `store: TestLeaseExpiryRedelivers` (real 200ms lease, reaper, promoter stand-in) | 2 (`-count=2`, 2026-09-20) | pass |
+| `max_attempts` failures → `dead`; `Redrive` → `available`, `attempts = 0` | `store: TestDeadLetter` | 2 (`-count=2`, 2026-09-20) | pass |
 | 1000 concurrent `Enqueue` with 10 keys → 10 rows | `store: TestIdempotencyStorm` | | pending |
 | Priority-10 job leased before 100 priority-0 jobs | `store: TestPriority` | | pending |
 | `SIGTERM` mid-job → job acked, not redelivered | `worker: TestGracefulShutdown` | | pending |

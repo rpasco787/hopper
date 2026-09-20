@@ -23,9 +23,10 @@ func leaseOne(t *testing.T, ctx context.Context, s *Store, queue, worker string)
 	return got[0]
 }
 
-// forceState rewrites a row's state with raw SQL. This stands in for the
-// reaper and Cancel, which do not exist until Session 2; production code must
-// never bypass the lease guard this way.
+// forceState rewrites a row's state with raw SQL. It stands in for Cancel and
+// the promoter, which do not exist until Session 3, and lets a test put a row
+// in a state without going through the lifecycle. Production code must never
+// bypass the lease guard this way.
 func forceState(t *testing.T, id uuid.UUID, state store.State) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),

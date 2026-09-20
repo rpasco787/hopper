@@ -105,8 +105,8 @@ func ctxT(t *testing.T) context.Context {
 }
 
 // readJob fetches a row directly by id. Tests are the one place raw SQL
-// against jobs is acceptable outside the store itself, because until Session 2
-// there is no reaper to observe rows through and no way to force state.
+// against jobs is acceptable outside the store itself: there is no read API
+// on Store yet, and assertions need to see every column.
 func readJob(t *testing.T, id uuid.UUID) store.Job {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
