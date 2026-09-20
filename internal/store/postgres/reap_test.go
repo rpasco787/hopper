@@ -234,3 +234,70 @@ func TestReapRacesNackWithoutDoubleProcessing(t *testing.T) {
 			"job %d (%s) has unexpected last_error %q", i, j.ID, *got.LastError)
 	}
 }
+
+// promoteDue stands in for the Session 3 promoter: scheduled rows whose
+// run_at has passed become available. It is the exact statement the promoter
+// will run; when Session 3 lands, replace this helper with the real call.
+func promoteDue(t *testing.T) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`update jobs set state = 'available', updated_at = now()
+		 where state = 'scheduled' and run_at <= now()`)
+	require.NoError(t, err)
+}
+
+// TestLeaseExpiryRedelivers is the docs/semantics.md §13 row "lease expiry →
+// redelivered exactly once more, attempts incremented". A worker leases a job
+// for 200ms and then "dies": it never acks and never heartbeats. After the
+// lease expires the reaper takes the job back, the promoter makes it
+// available, and a second worker receives it with attempts = 2 and a new
+// lease token. The dead worker's token is rejected everywhere.
+func TestLeaseExpiryRedelivers(t *testing.T) {
+	ctx := ctxT(t)
+	// Backoff of ~1ms so the retry is due almost immediately.
+	s := newStore(t).WithRetryPolicy(store.RetryPolicy{Base: time.Millisecond, Cap: time.Millisecond})
+
+	enq, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	require.NoError(t, err)
+
+	first, err := s.Lease(ctx, []string{"q"}, 1, 200*time.Millisecond, "w-dies")
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.Equal(t, int32(1), first[0].Attempts)
+
+	// Before expiry the reaper must leave it alone.
+	n, err := s.ReapExpiredLeases(ctx, 100)
+	require.NoError(t, err)
+	require.Equal(t, 0, n, "lease is still live")
+
+	time.Sleep(300 * time.Millisecond) // the worker is gone; the lease runs out
+
+	n, err = s.ReapExpiredLeases(ctx, 100)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	time.Sleep(10 * time.Millisecond) // let the ~1ms backoff elapse on the DB clock
+	promoteDue(t)
+
+	second, err := s.Lease(ctx, []string{"q"}, 10, 30*time.Second, "w-2")
+	require.NoError(t, err)
+	require.Len(t, second, 1, "exactly one redelivery")
+	require.Equal(t, enq.ID, second[0].ID)
+	require.Equal(t, int32(2), second[0].Attempts, "attempts accounts for the duplicate")
+	require.NotEqual(t, *first[0].LeaseID, *second[0].LeaseID)
+	require.Equal(t, "w-2", *second[0].LeasedBy)
+	require.Equal(t, "lease expired", *second[0].LastError)
+
+	// The dead worker can no longer do anything with its token...
+	require.ErrorIs(t, s.Ack(ctx, enq.ID, *first[0].LeaseID), store.ErrLeaseLost)
+	require.ErrorIs(t, s.Nack(ctx, enq.ID, *first[0].LeaseID, "late"), store.ErrLeaseLost)
+	require.ErrorIs(t, s.ExtendLease(ctx, enq.ID, *first[0].LeaseID, time.Minute), store.ErrLeaseLost)
+	// ...and the new holder can finish the job.
+	require.NoError(t, s.Ack(ctx, enq.ID, *second[0].LeaseID))
+	require.Equal(t, store.StateCompleted, readJob(t, enq.ID).State)
+
+	// Nothing else was manufactured along the way.
+	var total int
+	require.NoError(t, pool.QueryRow(ctx, `select count(*) from jobs`).Scan(&total))
+	require.Equal(t, 1, total)
+}
