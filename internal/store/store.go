@@ -236,4 +236,12 @@ type Store interface {
 	// not dead are ignored so an operator cannot delete a live job by mistake.
 	// Returns how many rows were deleted.
 	Purge(ctx context.Context, ids []uuid.UUID) (int, error)
+
+	// DeleteFinished removes up to limit completed or cancelled jobs that
+	// finished before cutoff, oldest first, and returns how many it deleted.
+	// Dead jobs are never touched: they are evidence, kept until Purge
+	// (docs/semantics.md §7, §10). Deleting a row releases its idempotency
+	// key, so this is also where dedup protection ends (§8). limit <= 0 is a
+	// no-op. Safe to run concurrently from several brokers.
+	DeleteFinished(ctx context.Context, cutoff time.Time, limit int) (int, error)
 }

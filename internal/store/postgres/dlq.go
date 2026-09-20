@@ -80,8 +80,9 @@ func (s *Store) Redrive(ctx context.Context, ids []uuid.UUID) (int, error) {
 
 // Purge deletes dead rows and with them their idempotency keys. The state
 // guard is the safety rail: an operator tool that passes the wrong id cannot
-// delete a live job. Completed and cancelled rows are the janitor's
-// (Session 3 retention), not Purge's.
+// delete a live job. Completed and cancelled rows are DeleteFinished's, not
+// Purge's — the two split the table by state so neither can delete what the
+// other is responsible for.
 func (s *Store) Purge(ctx context.Context, ids []uuid.UUID) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
