@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,4 +124,113 @@ func TestReapHonoursLimit(t *testing.T) {
 	n, err = s.ReapExpiredLeases(ctx, 0)
 	require.NoError(t, err)
 	require.Equal(t, 0, n, "limit <= 0 is a no-op")
+}
+
+// TestReapRacesNackWithoutDoubleProcessing pins the doc comment's claim in
+// reap.go: the reaper's SELECT ... FOR UPDATE SKIP LOCKED and Nack's SELECT
+// ... FOR UPDATE can run concurrently on overlapping rows without either
+// blocking forever or double-applying a failure. It follows TestLeaseDisjoint's
+// pattern (goroutines released together via a start channel, no require.* off
+// the test goroutine, results collected under a mutex and asserted after
+// wg.Wait()) rather than reasoning about the race in prose.
+//
+// Every job gets its lease expired and is then contended by two things at
+// once: half are Nacked directly by their original lease_id (expireLease only
+// backdates lease_expires, so lease_id and state are untouched, exactly what a
+// crashed worker leaves behind), and several reaper goroutines hammer
+// ReapExpiredLeases concurrently, sweeping up whatever Nack hasn't claimed
+// yet -- including, for the other half, the only path that will ever fail
+// them. If SKIP LOCKED were dropped from the reaper's query, this test would
+// deadlock or time out against ctxT's 30s budget instead of finishing; if a
+// row were ever double-processed, one of the assertions below would fail.
+func TestReapRacesNackWithoutDoubleProcessing(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	const n = 20
+	enqueueN(t, ctx, s, "q", n, 0)
+	leased, err := s.Lease(ctx, []string{"q"}, n, 30*time.Second, "w-crashed")
+	require.NoError(t, err)
+	require.Len(t, leased, n)
+	for _, j := range leased {
+		expireLease(t, j.ID)
+	}
+
+	const reapers = 3
+	var (
+		mu       sync.Mutex
+		nackErrs []error
+		reapErrs []error
+		wg       sync.WaitGroup
+		start    = make(chan struct{})
+	)
+
+	// Nack the even-indexed half directly, using each job's original
+	// lease_id -- exactly what a worker that is still alive, but whose lease
+	// has since lapsed, would do.
+	for i, j := range leased {
+		if i%2 != 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(j store.Job) {
+			defer wg.Done()
+			<-start // starting gun: everyone hits Postgres in the same instant
+			err := s.Nack(ctx, j.ID, *j.LeaseID, "explicit nack")
+			mu.Lock()
+			nackErrs = append(nackErrs, err)
+			mu.Unlock()
+		}(j)
+	}
+
+	// Several reapers hammer ReapExpiredLeases concurrently with the Nacks
+	// above, racing for the same rows, until each sees nothing left to take.
+	for range reapers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for {
+				got, err := s.ReapExpiredLeases(ctx, 3)
+				if err != nil {
+					mu.Lock()
+					reapErrs = append(reapErrs, err)
+					mu.Unlock()
+					return
+				}
+				if got == 0 {
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	for i, err := range nackErrs {
+		require.NoErrorf(t, err, "nack %d", i)
+	}
+	for i, err := range reapErrs {
+		require.NoErrorf(t, err, "reaper %d", i)
+	}
+
+	// The reapers above stop as soon as ReapExpiredLeases returns 0, which
+	// can happen while a Nack it raced against is still mid-transaction on a
+	// row the reaper skipped. One deterministic sweep after every goroutine
+	// has finished cleans up anything left expired and leased; a
+	// double-processed row would surface in the per-job assertions below,
+	// not here.
+	_, err = s.ReapExpiredLeases(ctx, n)
+	require.NoError(t, err)
+
+	for i, j := range leased {
+		got := readJob(t, j.ID)
+		require.NotEqualf(t, store.StateLeased, got.State, "job %d (%s) is still leased", i, j.ID)
+		require.Containsf(t, []store.State{store.StateScheduled, store.StateDead}, got.State,
+			"job %d (%s) ended up in unexpected state %v", i, j.ID, got.State)
+		require.NotNilf(t, got.LastError, "job %d (%s) has no last_error", i, j.ID)
+		require.Containsf(t, []string{"explicit nack", leaseExpiredError}, *got.LastError,
+			"job %d (%s) has unexpected last_error %q", i, j.ID, *got.LastError)
+	}
 }

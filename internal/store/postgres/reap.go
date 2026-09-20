@@ -18,16 +18,20 @@ const leaseExpiredError = "lease expired"
 //
 // Why a transaction with SELECT ... FOR UPDATE SKIP LOCKED rather than one
 // UPDATE: the backoff depends on attempts and max_attempts per row, and it is
-// computed in Go so it shares store.RetryPolicy with Nack. SKIP LOCKED matters
-// here for a different reason than in Lease. A Nack holds a row lock for the
-// few microseconds between its SELECT and its UPDATE; if the reaper waited on
-// that lock it would then apply a second failure to a row Nack just handled.
-// Skipping it means the row is simply picked up on the next tick if it is
-// still expired, which by then it will not be.
+// computed in Go so it shares store.RetryPolicy with Nack. SKIP LOCKED is not
+// needed for correctness here — if the reaper's SELECT blocked on a row Nack
+// is mid-transaction on, Postgres would re-evaluate the WHERE after Nack
+// commits (the same EvalPlanQual mechanism that makes Ack's UPDATE safe below)
+// and the row would simply no longer match state = 'leased', so it could never
+// be double-processed either way. SKIP LOCKED is here for liveness: without
+// it the reaper would block for the duration of every concurrent Nack
+// transaction on an overlapping row, which is unnecessary latency, not a
+// correctness fix.
 //
-// The other race, Ack versus reaper, needs no special handling. Ack's UPDATE
-// blocks on our row lock, then re-evaluates its WHERE after we commit, sees
-// state <> 'leased', updates nothing and reports ErrLeaseLost.
+// The other race, Ack versus reaper, needs no special handling. Ack's and
+// ExtendLease's UPDATEs block on our row lock, then re-evaluate their WHERE
+// after we commit, see state <> 'leased', update nothing and report
+// ErrLeaseLost — TestReapReschedulesExpiredLease asserts this for both.
 //
 // ORDER BY lease_expires matches jobs_reap_idx, so the oldest expiries go
 // first and the scan stops after limit rows.
@@ -66,7 +70,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 
 	for _, e := range batch {
 		if err := s.failLeased(ctx, tx, e.ID, e.Attempts, e.MaxAttempts, leaseExpiredError); err != nil {
-			return 0, fmt.Errorf("store: reap %s: %w", e.ID, err)
+			return 0, fmt.Errorf("store: reap: row %s: %w", e.ID, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
