@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,4 +194,69 @@ func TestEnqueueDedupsAgainstFinishedRows(t *testing.T) {
 	require.Equal(t, first.ID, again.ID)
 	require.Equal(t, store.StateCompleted, again.State,
 		"the caller gets the finished job back, not a fresh one")
+}
+
+// TestIdempotencyStorm is the docs/semantics.md §13 row and the session's
+// "done when": 1000 concurrent Enqueue calls over 10 distinct keys leave
+// exactly 10 rows, every caller for a key is handed the same id, and exactly
+// one caller per key reports having inserted.
+//
+// Unlike TestLeaseDisjoint this does not need a connection per goroutine. The
+// claim is about the unique index arbitrating writes, not about row locks, so
+// goroutines queueing on the 60-connection pool does not weaken it — it just
+// means the storm arrives in waves, which is if anything harder.
+func TestIdempotencyStorm(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+
+	const (
+		keys    = 10
+		perKey  = 100
+		callers = keys * perKey
+	)
+	keyFor := func(i int) string { return fmt.Sprintf("key-%d", i%keys) }
+
+	ids := make([]uuid.UUID, callers)
+	inserts := make([]bool, callers)
+	errs := make([]error, callers)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := keyFor(i)
+			<-start // so they genuinely collide rather than trickling in
+			j, inserted, err := s.Enqueue(ctx, store.EnqueueParams{
+				Queue:          "storm",
+				Payload:        json.RawMessage(fmt.Sprintf(`{"caller":%d}`, i)),
+				IdempotencyKey: &key,
+			})
+			ids[i], inserts[i], errs[i] = j.ID, inserted, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	byKey := make(map[string]uuid.UUID, keys)
+	insertCount := 0
+	for i := range callers {
+		require.NoErrorf(t, errs[i], "caller %d", i)
+		if inserts[i] {
+			insertCount++
+		}
+		key := keyFor(i)
+		if prev, ok := byKey[key]; ok {
+			require.Equalf(t, prev, ids[i], "every caller for %s must get the same id", key)
+		} else {
+			byKey[key] = ids[i]
+		}
+	}
+	require.Len(t, byKey, keys)
+	require.Equal(t, keys, insertCount, "exactly one caller per key may insert")
+
+	var n int
+	require.NoError(t, pool.QueryRow(ctx, `select count(*) from jobs`).Scan(&n))
+	require.Equal(t, keys, n, "1000 enqueues, 10 keys, 10 rows")
 }
