@@ -89,6 +89,19 @@ func newClient(t *testing.T) hopperv1.HopperServiceClient {
 func newClientFor(t *testing.T, st store.Store) hopperv1.HopperServiceClient {
 	t.Helper()
 
+	conn, err := grpc.NewClient(startBroker(t, st),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	return hopperv1.NewHopperServiceClient(conn)
+}
+
+// startBroker truncates the jobs table, serves a broker over st on a loopback
+// port and returns the address. Shutdown runs at cleanup and must succeed, so
+// every test also proves the broker drains with whatever streams it left open.
+func startBroker(t *testing.T, st store.Store) string {
+	t.Helper()
+
 	_, err := pool.Exec(context.Background(), "truncate jobs, cron_schedules")
 	require.NoError(t, err)
 
@@ -101,15 +114,10 @@ func newClientFor(t *testing.T, st store.Store) hopperv1.HopperServiceClient {
 	})
 	go func() { _ = srv.Serve(lis) }()
 
-	conn, err := grpc.NewClient(lis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-
 	t.Cleanup(func() {
-		conn.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		require.NoError(t, srv.Shutdown(ctx))
 	})
-	return hopperv1.NewHopperServiceClient(conn)
+	return lis.Addr().String()
 }
