@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -58,6 +59,12 @@ type Service struct {
 	// reason of its own to end.
 	shutdown  chan struct{}
 	drainOnce sync.Once
+
+	// auxActive counts handlers of auxiliary streams (health Watch, reflection)
+	// that drainStreams has started and that have not yet returned. Those
+	// handlers are abandoned, not joined, when a drain ends their RPC, so this
+	// is how a test proves they exit once gRPC cancels their context.
+	auxActive atomic.Int32
 }
 
 // NewService returns a Service. Zero values in cfg take the package defaults.
