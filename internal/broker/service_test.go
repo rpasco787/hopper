@@ -19,11 +19,17 @@ import (
 // than a socket, so everything this package does on the wire — codec,
 // interceptors, streaming, status codes — is exercised for real, with no port
 // to collide on and no Docker.
-func newTestClient(t *testing.T, svc *Service) hopperv1.HopperServiceClient {
+//
+// opts are extra server options, which the lifecycle tests use to watch
+// handlers from the server side.
+func newTestClient(t *testing.T, svc *Service, opts ...grpc.ServerOption) hopperv1.HopperServiceClient {
 	t.Helper()
 
 	lis := bufconn.Listen(1024 * 1024)
-	srv := grpc.NewServer(grpc.MaxRecvMsgSize(MaxMessageBytes), grpc.MaxSendMsgSize(MaxMessageBytes))
+	srv := grpc.NewServer(append([]grpc.ServerOption{
+		grpc.MaxRecvMsgSize(MaxMessageBytes),
+		grpc.MaxSendMsgSize(MaxMessageBytes),
+	}, opts...)...)
 	hopperv1.RegisterHopperServiceServer(srv, svc)
 
 	go func() {
