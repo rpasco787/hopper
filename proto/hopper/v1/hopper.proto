@@ -1,0 +1,203 @@
+syntax = "proto3";
+
+// Package hopper.v1 is the wire contract for the broker. It is the only way
+// into hopper from outside the process: workers, producers and the CLI all
+// speak it, and none of them has a database connection.
+//
+// Behaviour is specified in docs/semantics.md, which is authoritative. The
+// comments here say what each field means on the wire; they do not restate the
+// guarantees.
+package hopper.v1;
+
+option go_package = "github.com/rpasco787/hopper/gen/hopper/v1;hopperv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// JobState mirrors store.State (docs/semantics.md §2). UNSPECIFIED is never
+// stored; it is proto3's zero value and reaching the broker with it is a
+// client bug, which the broker reports as InvalidArgument rather than guessing.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_SCHEDULED = 1;
+  JOB_STATE_AVAILABLE = 2;
+  JOB_STATE_LEASED = 3;
+  JOB_STATE_COMPLETED = 4;
+  JOB_STATE_CANCELLED = 5;
+  JOB_STATE_DEAD = 6;
+}
+
+// Job is a row of the jobs table on the wire. Nullable columns are `optional`
+// scalars or message fields, both of which are pointers in Go, so a NULL in
+// Postgres and an absent field on the wire are the same thing.
+message Job {
+  string id = 1;
+  string queue = 2;
+  // payload is opaque JSON. The broker checks JSON syntax; PostgreSQL jsonb
+  // imposes additional Unicode/numeric constraints. Empty payload stores {}.
+  // Syntax failures are InvalidArgument; store rejections are sanitized Internal.
+  bytes payload = 3;
+  JobState state = 4;
+  // priority is int32 on the wire and smallint in Postgres; protobuf has no
+  // 16-bit integer. The broker range-checks it.
+  int32 priority = 5;
+  google.protobuf.Timestamp run_at = 6;
+  int32 attempts = 7;
+  int32 max_attempts = 8;
+  optional string lease_id = 9;
+  optional string leased_by = 10;
+  google.protobuf.Timestamp leased_at = 11;
+  google.protobuf.Timestamp lease_expires = 12;
+  optional string idempotency_key = 13;
+  optional string last_error = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+  google.protobuf.Timestamp finished_at = 17;
+}
+
+// JobSpec is the caller-supplied part of a job: store.EnqueueParams on the
+// wire. It is a separate message from EnqueueRequest so that EnqueueBatch can
+// repeat it without reusing another RPC's request type.
+message JobSpec {
+  string queue = 1;
+  bytes payload = 2;
+  int32 priority = 3;
+  // run_at absent means now. A future value enqueues as SCHEDULED and the
+  // promoter makes it leasable (docs/semantics.md §4).
+  google.protobuf.Timestamp run_at = 4;
+  // max_attempts absent or 0 takes the store default of 5.
+  int32 max_attempts = 5;
+  optional string idempotency_key = 6;
+}
+
+message EnqueueRequest {
+  JobSpec job = 1;
+}
+
+message EnqueueResponse {
+  Job job = 1;
+  // deduplicated is true when an existing job with the same (queue,
+  // idempotency_key) was returned and nothing was inserted. The request's
+  // payload, priority and run_at were then ignored (docs/semantics.md §8).
+  bool deduplicated = 2;
+}
+
+// EnqueueBatchRequest is non-atomic. Broker validation runs before writes;
+// PostgreSQL can reject additional inputs after earlier items commit. A store
+// or response-size failure does not imply rollback. Retry with stable keys;
+// deduplication lasts only while the corresponding rows exist.
+message EnqueueBatchRequest {
+  repeated JobSpec jobs = 1;
+}
+
+message EnqueueBatchResponse {
+  // results are in request order, one per spec.
+  repeated EnqueueResponse results = 1;
+}
+
+message CancelRequest {
+  string id = 1;
+}
+
+message CancelResponse {
+  Job job = 1;
+  // already_cancelled is true when the job was cancelled before this call.
+  // Cancel is idempotent so that a retried request is not reported as a
+  // failure; completed and dead jobs still fail with FAILED_PRECONDITION.
+  bool already_cancelled = 2;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {
+  string queue = 1;
+  // states empty means every state.
+  repeated JobState states = 2;
+  int32 limit = 3;
+  // page_token is the last ID on the previous page; ordering is by ID,
+  // not exact created_at or commit order. Pages are not a database snapshot.
+  string page_token = 4;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  // Empty ends traversal. A nonempty token may lead to one final empty page.
+  string next_page_token = 2;
+}
+
+// Subscription opens a lease stream. It must be the first message on the
+// stream; anything else is InvalidArgument.
+message Subscription {
+  repeated string queues = 1;
+  // worker_id is recorded on leased rows for observability only. It is never
+  // used for authorization; the lease_id is the only token that matters.
+  string worker_id = 2;
+  // lease_duration absent takes the broker's default.
+  google.protobuf.Duration lease_duration = 3;
+  // credit is free worker capacity now, after subtracting handlers still
+  // running from a previous stream. Further credits return freed slots.
+  // This is cooperative flow control, not a delivery acknowledgment.
+  uint32 credit = 4;
+}
+
+message LeaseJobsRequest {
+  oneof msg {
+    Subscription subscribe = 1;
+    // credit adds capacity as handlers finish. The worker sends it; the broker
+    // leases up to the running total and no more.
+    uint32 credit = 2;
+  }
+}
+
+message LeaseJobsResponse {
+  Job job = 1;
+}
+
+message AckRequest {
+  string id = 1;
+  string lease_id = 2;
+}
+
+message AckResponse {}
+
+message NackRequest {
+  string id = 1;
+  string lease_id = 2;
+  string error = 3;
+}
+
+message NackResponse {}
+
+message HeartbeatRequest {
+  string id = 1;
+  string lease_id = 2;
+  // lease_duration absent takes the broker's default.
+  google.protobuf.Duration lease_duration = 3;
+}
+
+message HeartbeatResponse {}
+
+// HopperService is the whole API. Producers call Enqueue/EnqueueBatch/Cancel,
+// operators call GetJob/ListJobs, and workers hold a LeaseJobs stream and call
+// Ack/Nack/Heartbeat against it.
+service HopperService {
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+  rpc EnqueueBatch(EnqueueBatchRequest) returns (EnqueueBatchResponse);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  // LeaseJobs is bidirectional so the worker can return credit as handlers
+  // finish. A server-stream cannot carry that signal, and the broker cannot
+  // infer it from Ack: brokers are stateless, so a worker's Ack may land on a
+  // different replica than its stream.
+  rpc LeaseJobs(stream LeaseJobsRequest) returns (stream LeaseJobsResponse);
+  rpc Ack(AckRequest) returns (AckResponse);
+  rpc Nack(NackRequest) returns (NackResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
