@@ -211,7 +211,7 @@ func TestRegisteredQueueArrivesWithItsHandler(t *testing.T) {
 	require.NoError(t, r.stopAndWait(t))
 }
 
-func TestOverDeliveryEndsTheStream(t *testing.T) {
+func TestOverDeliveryEndsTheStreamAndReconnects(t *testing.T) {
 	ctx := waitCtx(t)
 	f := startFake(t)
 	sp := newSpy(t, true)
@@ -231,11 +231,14 @@ func TestOverDeliveryEndsTheStream(t *testing.T) {
 	// advertise fresh credit, and the excess job would become a legitimate
 	// delivery — the test would then prove nothing and hang.
 	require.NoError(t, s.awaitEnd(ctx))
-	sp.hold.release()
-	err := r.wait(t)
-	require.ErrorIs(t, err, errOverDelivery)
-	require.NotErrorIs(t, err, ErrAbandoned)
+	s2 := f.awaitStream(t, ctx)
+	require.Equal(t, uint32(0), s2.sub.GetCredit(),
+		"the held delivery keeps its token while the protocol-violating stream is replaced")
 	require.Equal(t, int64(1), sp.dispatched.Load(), "the excess job was never dispatched")
+
+	sp.hold.release()
+	require.NoError(t, s2.awaitCredit(ctx, 1))
+	require.NoError(t, r.stopAndWait(t))
 }
 
 func TestPermanentSubscriptionErrorStopsTheWorker(t *testing.T) {

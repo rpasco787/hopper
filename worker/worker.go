@@ -36,8 +36,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 
 	hopperv1 "github.com/rpasco787/hopper/gen/hopper/v1"
 )
@@ -229,19 +231,40 @@ func (w *Worker) consume(ctx context.Context) error {
 	defer conn.Close()
 
 	var sessionErr error
-	// A worker already draining does not open a stream. Leasing jobs it has
-	// just promised not to start would consume their attempts for nothing.
-	if lc.isDraining() {
-		w.log.Info("not opening a lease stream; the worker is already draining")
-	} else {
-		s := &session{
-			w:    w,
-			lc:   lc,
-			rpc:  hopperv1.NewHopperServiceClient(conn),
-			pool: newCapacity(w.opts.Concurrency, w.log),
-			log:  w.log,
+	rpc := hopperv1.NewHopperServiceClient(conn)
+	pool := newCapacity(w.opts.Concurrency, w.log)
+	b := newBackoff()
+	for !lc.isDraining() {
+		s := &session{w: w, lc: lc, rpc: rpc, pool: pool, log: w.log}
+		err := s.run()
+		if lc.isDraining() {
+			break
 		}
-		sessionErr = s.run()
+		if permanentStreamError(err) {
+			sessionErr = err
+			break
+		}
+		if s.deliveryCount() > 0 {
+			b.reset()
+		}
+		if err != nil {
+			w.log.Warn("lease stream failed; reconnecting", "err", err)
+		} else {
+			w.log.Warn("lease stream closed; reconnecting")
+		}
+
+		delay := b.next()
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-lc.drainSignal:
+			timer.Stop()
+		case <-lc.forceCtx.Done():
+			timer.Stop()
+		}
+	}
+	if lc.isDraining() && sessionErr == nil {
+		w.log.Info("not opening another lease stream; the worker is draining")
 	}
 
 	lc.beginDrain("lease stream ended")
@@ -249,6 +272,18 @@ func (w *Worker) consume(ctx context.Context) error {
 	// stopped; an abandonment says what it left behind, and swallowing either
 	// one because the other is present loses half the story.
 	return errors.Join(sessionErr, lc.await())
+}
+
+// permanentStreamError distinguishes a configuration/authentication rejection
+// from a transport interruption. UNAVAILABLE is intentionally absent: the
+// broker uses it while draining, and a replacement broker may already be up.
+func permanentStreamError(err error) bool {
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.Unimplemented, codes.PermissionDenied, codes.Unauthenticated:
+		return true
+	default:
+		return false
+	}
 }
 
 // dial follows client.Dial's precedence: SDK defaults first, caller options
