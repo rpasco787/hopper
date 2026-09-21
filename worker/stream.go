@@ -96,6 +96,14 @@ type delivery struct {
 	handler HandlerFunc
 }
 
+// acquisitionBudget is how long this delivery may spend proving it still holds
+// its lease. It is fixed at receipt rather than recomputed per attempt, so a
+// slow broker cannot walk a delivery forward indefinitely: at worst the whole
+// grant is spent trying, and then the job is left to be redelivered.
+func (d *delivery) acquisitionBudget() time.Time {
+	return d.receivedAt.Add(d.grant - safetyMargin(d.grant))
+}
+
 // deliveryRunner owns a delivery from dispatch to completion. It is a field on
 // Worker so tests can substitute a controlled runner without a fake broker
 // having to stage a whole execution.
