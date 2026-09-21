@@ -88,8 +88,17 @@ func newClient(t *testing.T) hopperv1.HopperServiceClient {
 // fast retry policy or a store wrapper that injects failures.
 func newClientFor(t *testing.T, st store.Store) hopperv1.HopperServiceClient {
 	t.Helper()
+	return newClientAt(t, startBroker(t, st))
+}
 
-	conn, err := grpc.NewClient(startBroker(t, st),
+// newClientAt dials a broker that is already serving. It never truncates, so a
+// test that needs several clients or a worker beside its own client calls
+// startBroker once and dials that one address; calling newClientFor twice would
+// truncate the second broker's fixtures out from under the first.
+func newClientAt(t *testing.T, addr string) hopperv1.HopperServiceClient {
+	t.Helper()
+
+	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
