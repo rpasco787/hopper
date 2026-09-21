@@ -208,6 +208,12 @@ type Store interface {
 	// An unknown id gets ErrNotFound. (docs/semantics.md §10.)
 	Cancel(ctx context.Context, id uuid.UUID) (Job, error)
 
+	// GetJob returns one job by id, or ErrNotFound. It is a read with no
+	// guard and no side effects: the row it returns may have changed state by
+	// the time the caller reads it, so it is for inspection and for reporting,
+	// never for deciding a transition. Transitions are guarded UPDATEs.
+	GetJob(ctx context.Context, id uuid.UUID) (Job, error)
+
 	// ExtendLease pushes a live lease's expiry to now + dur (a heartbeat).
 	// The same leaseID guard as Ack applies: a stale token gets ErrLeaseLost,
 	// a cancelled job gets ErrCancelled. There is no idempotent-success case;
