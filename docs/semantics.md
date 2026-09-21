@@ -98,7 +98,21 @@ returning j.*;
   disjoint rows; a row another transaction has locked is skipped rather than
   waited on. Two workers can never receive the same `(id, lease_id)`.
 - **Duration.** `lease_expires = now() + lease duration`. The default is set on
-  the broker; a worker may request a different duration per stream.
+  the broker; a worker may request a different duration per stream. On the
+  wire an absent or zero duration selects that default. Any other value must be
+  a valid protobuf `Duration` that converts to a Go `time.Duration` exactly (no
+  saturation) and be positive, or the call fails with `INVALID_ARGUMENT` before
+  it reaches the store. No operational maximum is imposed.
+- **Flow control.** A worker holds one `LeaseJobs` stream and spends *credit*:
+  its first message declares how many jobs it can run, and every later message
+  returns credit as handlers finish. The broker never leases more rows than the
+  outstanding credit, and never more than `-max-lease-batch` at once. This is
+  why the stream is bidirectional: a server-stream carries no signal that a
+  handler finished, and the broker cannot infer one from `Ack`, because brokers
+  are stateless and a worker's `Ack` may land on a different replica. Credits
+  are cooperative free-slot declarations, not receipt acknowledgments. On
+  reconnect subtract handlers still running from the initial credit; stream
+  closure does not revoke their leases. A redundant subscription is rejected.
 - **Extension.** `Heartbeat(id, lease_id, dur)` (store method: `ExtendLease`) sets
   `lease_expires = now() + dur` **only if** `state = 'leased' and lease_id = $2`.
   The SDK heartbeats at 1/3 of the lease duration. If a heartbeat is rejected
@@ -139,6 +153,30 @@ The idempotent re-ack case is why `lease_id` is never cleared on completion.
 `Nack` is guarded the same way and applies the retry policy. A stale worker can
 never ack, nack, or extend a job it no longer holds; this is the property the
 "stale-lease ack rejected" test in `store` pins down.
+
+Over gRPC these become status codes:
+
+| Store result | gRPC code | What the worker should do |
+|---|---|---|
+| `OK` | `OK` | Continue. |
+| `ErrLeaseLost` | `ABORTED` | Stop working on the job. Someone else may have it. |
+| `ErrCancelled` | `FAILED_PRECONDITION` | Stop; the job was called off. |
+| `ErrTerminal` | `FAILED_PRECONDITION` | The message names the state. |
+| `ErrNotFound` | `NOT_FOUND` | The job is gone; retention may have deleted it. |
+| RPC context canceled / expired | `CANCELLED` / `DEADLINE_EXCEEDED` | Respect the caller's cancellation/deadline. |
+| broker checks reject request | `INVALID_ARGUMENT` | Correct the request. |
+| message or credit limit exceeded | `RESOURCE_EXHAUSTED` | Reduce size/credit; a response failure does not imply rollback. |
+| broker draining | `UNAVAILABLE` | Reconnect with backoff; preserve existing handler capacity. |
+| other store error | `INTERNAL` | Detail is logged. Do not retry blindly: invalid database input is permanent, and mutations may already have committed. |
+
+`ErrCancelled` is deliberately **not** `CANCELLED`: that code means the caller
+cancelled the RPC, and conflating the two would make a job outcome
+indistinguishable from a context deadline to any generic retry interceptor.
+
+`Cancel` is idempotent at the gRPC boundary although `Cancel` in the store is
+not: cancelling an already-cancelled job returns OK with `already_cancelled`,
+because a retried `Cancel` must not look like a failure. `completed` and `dead`
+still fail.
 
 ## 6. Retries and backoff
 
@@ -193,6 +231,23 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   job is purged. If you need permanent dedup, keep the key in your own store.
 - Cron uses `idempotency_key = name || '@' || next_run_at` so a leader
   failover cannot fire the same tick twice.
+- **`EnqueueBatch` is not atomic.** The broker checks every item first —
+  required fields, JSON *syntax*, priority and attempt ranges, and protobuf
+  timestamp validity — and a failure there writes nothing. PostgreSQL then
+  applies its own rules (valid JSON containing `\u0000`, or a number outside
+  `numeric` range, is not acceptable `jsonb`), so a database rejection or
+  failure can leave earlier items committed and returns a sanitized `INTERNAL`.
+  Do not read the prevalidation as "no invalid input leaves writes". Retry a
+  failed batch whole with stable per-item keys: the committed items
+  deduplicate, but only while their rows exist (retention or purge ends it). The
+  producer client does not retry for you.
+- **Message ceiling.** The broker enforces a 4 MiB limit on each incoming and
+  outgoing gRPC message. A response can exceed it after every store call has
+  already succeeded, so `RESOURCE_EXHAUSTED` from `EnqueueBatch` does **not**
+  mean nothing was written; retry with the same keys and a smaller batch. The
+  same limit applies to `ListJobs` pages: request a smaller `limit`.
+- Wire timestamps that are not valid protobuf `Timestamp` values are
+  `INVALID_ARGUMENT`, checked before any conversion.
 
 ## 9. Ordering and fairness
 
@@ -211,6 +266,17 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   candidates but still sorts the combined stream; `ListDead` similarly uses
   `jobs_dead_idx` and incrementally sorts its `id` tiebreaker. The other hot
   sweeps use their indexes without an explicit sort.
+- **Idle queues are polled.** After an empty lease result, a stream waits up
+  to `-poll-interval` (default 250ms), unless a credit update wakes it earlier.
+  Normal additional polling delay is between zero and one interval, plus
+  scheduling/database/network latency. There is no strict delivery bound.
+  Session 11 evaluates `LISTEN/NOTIFY` and pool sizing under load.
+- **`ListJobs` order is by ID, not by creation.** Pages are keyed on the last
+  ID seen. UUIDv7 ids follow application clocks, so order approximates but does
+  not equal `created_at` or commit order. A traversal is live, not a snapshot:
+  rows inserted or changed behind the cursor may be missed, and a cursor whose
+  row was since deleted still works. It has no dedicated index and walks the
+  primary key; Session 11 revisits that if it matters.
 
 ## 10. Cancellation and retention
 
@@ -230,7 +296,9 @@ use `errors.Is` for the class and `errors.As` for the detail.
 a configurable window (default 24h; store method: `DeleteFinished`, ticker:
 `sweep.Janitor`). `dead` rows are kept until purged.
 Retention bounds table and index size and, per §8, is also the lifetime of
-idempotency protection.
+idempotency protection. The broker's `-retention` window must be positive
+(default 24h); a nonpositive value is rejected before migration, sweeps or
+network serving start, so it can never reach the janitor.
 
 ## 11. Where duplicates come from (the honest list)
 
@@ -258,6 +326,13 @@ lease is granted and not acked:
    minus the preStop sleep. A handler still running at the deadline is
    abandoned and its lease expires normally. Size the grace period to your
    slowest handler.
+5. **A lease stream fails before delivery is confirmed by subsequent work.**
+   The broker leases rows, but a disconnect may leave some buffered or never
+   received by the worker. Send success is not an application receipt. Unacked
+   leases consume attempts and are reaped under the normal retry policy; they
+   may eventually become dead without handler execution. `-max-lease-batch`
+   bounds one store call, not all unreceived or unacknowledged jobs on a stream.
+   Do not immediately release/nack them: some may already be executing.
 
 What is **not** a source of duplicates: two workers receiving the same lease
 (prevented by `SKIP LOCKED`), a broker restart (brokers are stateless; workers
@@ -275,6 +350,13 @@ idempotency keys).
 - **Payload inspection**, routing on payload contents, or per-job rate limits.
 - **Unbounded retention.** Completed history is pruned; ship it to your logs
   or warehouse if you need it.
+- **Authentication, authorization and transport security.** The broker is a
+  trusted-network prototype: plaintext gRPC, loopback by default, no identities
+  and no role separation. Anyone who can connect can enqueue, cancel, inspect
+  and list every job, and can read lease tokens from `GetJob`/`ListJobs`, which
+  is enough to ack or nack a job they do not hold. Binding a non-loopback
+  `-listen` address opts into that trust model (the broker logs a warning); use
+  it for controlled local or container demos only. TLS and RBAC are future work.
 
 ## 13. Verified behavior
 
@@ -292,6 +374,19 @@ that proves it; a row without a test is a claim, not a guarantee.
 | Delayed job is leasable only after the promoter runs | `store: TestPromoteDueMakesDelayedJobsLeasable` | 2 (`-count=2`, 2026-09-20) | pass |
 | `Cancel` of a leased job → holder gets `ErrCancelled` at its next call | `store: TestCancelLeasedJobIsLearnedByTheWorker` | 2 (`-count=2`, 2026-09-20) | pass |
 | Retention deletes finished rows and releases their idempotency keys | `store: TestRetentionEndsIdempotencyProtection` | 2 (`-count=2`, 2026-09-20) | pass |
+| Enqueue → lease stream → ack over gRPC leaves the job `completed` | `integration: TestEnqueueLeaseAck` | 2 (`-count=2`, 2026-09-20) | pass |
+| Duplicate `Enqueue` over gRPC returns the first job with `deduplicated` | `integration: TestIdempotentEnqueueOverGRPC` | 2 (`-count=2`, 2026-09-20) | pass |
+| Stale-lease `Ack` over gRPC is `ABORTED` | `integration: TestStaleAckOverGRPC` | 2 (`-count=2`, 2026-09-20) | pass |
+| After a real reap and re-grant, the old lease token is `ABORTED` and the new one acks | `integration: TestStaleTokenAfterReapAndRelease` | 2 (`-count=2`, 2026-09-20) | pass |
+| A cancelled leased job tells its worker `FAILED_PRECONDITION`; a retried `Cancel` succeeds | `integration: TestCancelledLeasedJobTellsTheWorkerToStop` | 2 (`-count=2`, 2026-09-20) | pass |
+| A batch the database rejects part way leaves the committed prefix and a sanitized `INTERNAL` | `integration: TestBatchDatabaseRejectionKeepsPrefix` | 2 (`-count=2`, 2026-09-20) | pass |
+| Retrying a failed batch with the same keys inserts nothing twice | `integration: TestBatchRetryAfterTransientErrorDoesNotDuplicate` | 2 (`-count=2`, 2026-09-20) | pass |
+| A lease stream never hands out more jobs than the worker's credit | `broker: TestLeaseStreamNeverExceedsCredit` | 3 (`-count=3`, 2026-09-20) | pass |
+| Busy streams stop on drain or half-close | `broker: TestLeaseStreamBusyTermination` | 3 (`-count=3`, 2026-09-20) | pass |
+| A blocked `Send` does not stop drain or half-close from ending the handler | `broker: TestLeaseStreamBlockedSendTerminates` | 3 (`-count=3`, 2026-09-20) | pass |
+| Broker shutdown ends lease streams so `GracefulStop` terminates | `broker: TestServerShutdownEndsLeaseStreams` | 2 (`-count=2`, 2026-09-20) | pass |
+| Broker process runs maintenance and exits on SIGTERM with active streams | `integration: TestBrokerLifecycle` | 2 (`-count=2`, 2026-09-20) | pass |
+| `ListJobs` visits every row once in ID order across mixed UUIDv4/v7 ids | `store: TestListJobsPagesInIDOrder` | 2 (`-count=2`, 2026-09-20) | pass |
 | `SIGTERM` mid-job → job acked, not redelivered | `worker: TestGracefulShutdown` | | pending |
 | Random worker kills during 10k jobs → every duplicate explained by `attempts` | `chaos: TestWorkerKills` | | pending |
 | Broker restart mid-run → no job lost, workers reconnect | `chaos: TestBrokerRestart` | | pending |
