@@ -9,9 +9,11 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/rpasco787/hopper/internal/broker"
 	"github.com/rpasco787/hopper/internal/store"
 	"github.com/rpasco787/hopper/internal/store/postgres"
+	"github.com/rpasco787/hopper/internal/sweep"
 )
 
 var pool *pgxpool.Pool
@@ -110,6 +113,14 @@ func newClientAt(t *testing.T, addr string) hopperv1.HopperServiceClient {
 // every test also proves the broker drains with whatever streams it left open.
 func startBroker(t *testing.T, st store.Store) string {
 	t.Helper()
+	return startBrokerWithConfig(t, st, broker.Config{
+		LeaseDuration: 30 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	})
+}
+
+func startBrokerWithConfig(t *testing.T, st store.Store, cfg broker.Config) string {
+	t.Helper()
 
 	_, err := pool.Exec(context.Background(), "truncate jobs, cron_schedules")
 	require.NoError(t, err)
@@ -117,10 +128,7 @@ func startBroker(t *testing.T, st store.Store) string {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	srv := broker.NewServer(st, broker.Config{
-		LeaseDuration: 30 * time.Second,
-		PollInterval:  10 * time.Millisecond,
-	})
+	srv := broker.NewServer(st, cfg)
 	go func() { _ = srv.Serve(lis) }()
 
 	t.Cleanup(func() {
@@ -129,4 +137,41 @@ func startBroker(t *testing.T, st store.Store) string {
 		require.NoError(t, srv.Shutdown(ctx))
 	})
 	return lis.Addr().String()
+}
+
+// maintenanceRun owns a test-only sweep loop. Cleanup always cancels and joins
+// it before another integration test can truncate the shared database.
+type maintenanceRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+}
+
+func startMaintenance(t *testing.T, loop *sweep.Loop) *maintenanceRun {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &maintenanceRun{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		err := loop.Run(ctx)
+		r.mu.Lock()
+		r.err = err
+		r.mu.Unlock()
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-r.done:
+			r.mu.Lock()
+			err := r.err
+			r.mu.Unlock()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("maintenance loop %q stopped: %v", loop.Name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Errorf("maintenance loop %q did not stop", loop.Name)
+		}
+	})
+	return r
 }
