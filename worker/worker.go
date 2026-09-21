@@ -128,7 +128,7 @@ func New(target string, opts Options) *Worker {
 		log:      opts.Logger.With("worker_id", opts.ID),
 		handlers: make(map[string]HandlerFunc),
 	}
-	w.runner = w.dropDelivery
+	w.runner = w.execute
 	return w
 }
 
@@ -271,15 +271,6 @@ func (w *Worker) dial() (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("worker: dial %s: %w", w.target, err)
 	}
 	return conn, nil
-}
-
-// dropDelivery is the delivery runner until Tasks 4 and 5 add ownership
-// validation, execution and confirmation. It returns the delivery's token and
-// nothing else, so the job's lease simply expires and the broker redelivers it
-// under the normal retry policy. No binary depends on this package yet.
-func (w *Worker) dropDelivery(_ *lifecycle, _ *work, _ hopperv1.HopperServiceClient, d *delivery) {
-	w.log.Warn("delivery dropped; this build cannot execute jobs",
-		"job_id", d.job.ID, "queue", d.job.Queue, "lease_id", d.leaseID, "attempt", d.job.Attempt)
 }
 
 // defaultID names this worker for the leased_by column. It is observability
