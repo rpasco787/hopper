@@ -36,6 +36,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+
+	hopperv1 "github.com/rpasco787/hopper/gen/hopper/v1"
 )
 
 const (
@@ -95,6 +99,10 @@ type Worker struct {
 	// nothing here pretends it does.
 	handlers map[string]HandlerFunc
 	started  atomic.Bool
+
+	// runner owns a delivery once it is off the stream. It is a field so tests
+	// can drive dispatch and capacity without staging a whole execution.
+	runner deliveryRunner
 }
 
 // New creates a Worker. It does no network work; the connection is made by Run.
@@ -114,12 +122,14 @@ func New(target string, opts Options) *Worker {
 	// Defaults replace zero values only. A negative duration or concurrency
 	// survives to Run, which rejects it: silently correcting a negative would
 	// hide the bug that produced it.
-	return &Worker{
+	w := &Worker{
 		target:   target,
 		opts:     opts,
 		log:      opts.Logger.With("worker_id", opts.ID),
 		handlers: make(map[string]HandlerFunc),
 	}
+	w.runner = w.dropDelivery
+	return w
 }
 
 // Handle registers a handler for a queue and returns the Worker so calls can
@@ -200,12 +210,76 @@ func (w *Worker) validate() error {
 	return nil
 }
 
-// consume is the session loop. Task 3 replaces this placeholder with the real
-// lifecycle, stream and dispatch; until then it does the one thing a caller
-// can already rely on, which is to return when the caller cancels.
+// consume dials, holds a lease stream, and drains on the way out.
+//
+// The order matters. The lifecycle and its cancellation watcher are installed
+// before anything can block on the network, so a caller who cancels during the
+// dial gets the same bounded shutdown as one who cancels an hour later. The
+// drain is begun explicitly after the stream ends, because a permanent stream
+// failure has to start the same clock a cancelled context does.
 func (w *Worker) consume(ctx context.Context) error {
-	<-ctx.Done()
-	return nil
+	lc := newLifecycle(ctx, w.opts.ShutdownTimeout, w.log)
+	defer lc.stop()
+
+	conn, err := w.dial()
+	if err != nil {
+		lc.beginDrain("dial failed")
+		return errors.Join(err, lc.await())
+	}
+	defer conn.Close()
+
+	var sessionErr error
+	// A worker already draining does not open a stream. Leasing jobs it has
+	// just promised not to start would consume their attempts for nothing.
+	if lc.isDraining() {
+		w.log.Info("not opening a lease stream; the worker is already draining")
+	} else {
+		s := &session{
+			w:    w,
+			lc:   lc,
+			rpc:  hopperv1.NewHopperServiceClient(conn),
+			pool: newCapacity(w.opts.Concurrency, w.log),
+			log:  w.log,
+		}
+		sessionErr = s.run()
+	}
+
+	lc.beginDrain("lease stream ended")
+	// Both errors are kept. A permanent failure explains why the worker
+	// stopped; an abandonment says what it left behind, and swallowing either
+	// one because the other is present loses half the story.
+	return errors.Join(sessionErr, lc.await())
+}
+
+// dial follows client.Dial's precedence: SDK defaults first, caller options
+// after, so grpc.WithTransportCredentials replaces the plaintext default
+// rather than conflicting with it.
+//
+// Keepalive matches what the server enforces by default (a ping no oftener
+// than every five minutes). It detects a broker that vanished without a FIN;
+// it is not the shutdown mechanism, which is the lifecycle deadline.
+func (w *Worker) dial() (*grpc.ClientConn, error) {
+	base := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:    5 * time.Minute,
+			Timeout: 20 * time.Second,
+		}),
+	}
+	conn, err := grpc.NewClient(w.target, append(base, w.opts.DialOptions...)...)
+	if err != nil {
+		return nil, fmt.Errorf("worker: dial %s: %w", w.target, err)
+	}
+	return conn, nil
+}
+
+// dropDelivery is the delivery runner until Tasks 4 and 5 add ownership
+// validation, execution and confirmation. It returns the delivery's token and
+// nothing else, so the job's lease simply expires and the broker redelivers it
+// under the normal retry policy. No binary depends on this package yet.
+func (w *Worker) dropDelivery(_ *lifecycle, _ *work, _ hopperv1.HopperServiceClient, d *delivery) {
+	w.log.Warn("delivery dropped; this build cannot execute jobs",
+		"job_id", d.job.ID, "queue", d.job.Queue, "lease_id", d.leaseID, "attempt", d.job.Attempt)
 }
 
 // defaultID names this worker for the leased_by column. It is observability

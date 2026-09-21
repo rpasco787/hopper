@@ -1,0 +1,309 @@
+package worker
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+)
+
+// lifecycle owns shutdown.
+//
+// There is exactly one deadline. Cancelling Run means stop accepting work and
+// drain; a permanent consume failure means the same. The first transition to
+// draining records shutdownAt + ShutdownTimeout, and opening a stream, sending
+// on it, half-closing it, waiting for handlers and retrying confirmations all
+// share that one instant. There is deliberately no second timeout after stream
+// teardown: two sequential budgets would let a worker take twice as long as it
+// was configured to, which is how a pod gets SIGKILLed mid-handler.
+//
+// It also owns the counts. They are kept separately because they call for
+// different responses: handlers still running at the deadline means the budget
+// is too small for the slowest handler, while confirmations still pending means
+// jobs that almost certainly ran are about to be redelivered.
+type lifecycle struct {
+	log     *slog.Logger
+	timeout time.Duration
+
+	// forceCtx carries the caller's values but not its cancellation, so a
+	// handler can still read a trace id out of the context that started the
+	// worker without being cancelled the instant the caller is. Its own
+	// cancellation is the forced-shutdown signal, and everything the SDK does
+	// on the network descends from it.
+	forceCtx context.Context
+	force    context.CancelCauseFunc
+
+	// drainSignal is closed when drain begins. The stream writer selects on it
+	// to half-close; nothing else may close it.
+	drainSignal chan struct{}
+	// drained is closed when the last active delivery finishes during drain.
+	drained chan struct{}
+	// stopped ends the caller-cancellation watcher when Run returns.
+	stopped chan struct{}
+
+	mu            sync.Mutex
+	draining      bool
+	deadline      time.Time
+	active        int
+	acquiring     int
+	handlers      int
+	confirming    int
+	drainedClosed bool
+	stopOnce      sync.Once
+}
+
+// counts is a consistent snapshot of what is in flight.
+type counts struct {
+	deliveries, acquiring, handlers, confirming int
+}
+
+// newLifecycle installs cancellation handling. It is called before anything
+// dials or opens a stream: a caller who cancels during the dial must get the
+// same bounded drain as one who cancels an hour later.
+func newLifecycle(ctx context.Context, timeout time.Duration, log *slog.Logger) *lifecycle {
+	forceCtx, force := context.WithCancelCause(context.WithoutCancel(ctx))
+	l := &lifecycle{
+		log:         log,
+		timeout:     timeout,
+		forceCtx:    forceCtx,
+		force:       force,
+		drainSignal: make(chan struct{}),
+		drained:     make(chan struct{}),
+		stopped:     make(chan struct{}),
+	}
+	// A context that is already cancelled must put the worker in drain before
+	// newLifecycle returns, not whenever the watcher happens to be scheduled.
+	// Otherwise whether a doomed worker opens a lease stream — and leases jobs
+	// it will immediately abandon — depends on goroutine timing.
+	if ctx.Err() != nil {
+		l.beginDrain("caller cancelled")
+		return l
+	}
+	go l.watch(ctx)
+	return l
+}
+
+func (l *lifecycle) watch(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		l.beginDrain("caller cancelled")
+	case <-l.stopped:
+	}
+}
+
+// beginDrain starts the drain and is safe to call from anywhere, any number of
+// times. Only the first call sets the deadline: a later caller must not be able
+// to extend a shutdown that is already running out of time.
+func (l *lifecycle) beginDrain(reason string) {
+	l.mu.Lock()
+	if l.draining {
+		l.mu.Unlock()
+		return
+	}
+	l.draining = true
+	l.deadline = time.Now().Add(l.timeout)
+	snap := l.countsLocked()
+	deadline := l.deadline
+	if l.active == 0 {
+		l.closeDrainedLocked()
+	}
+	l.mu.Unlock()
+
+	close(l.drainSignal)
+	// Task 11 reads this line out of the worker process's stdout to prove the
+	// signal landed while a handler was actually running, so the snapshot has
+	// to be the synchronized one taken above, not a second look from here.
+	l.log.Info("shutdown started",
+		"reason", reason,
+		"deadline", deadline.Format(time.RFC3339Nano),
+		"timeout", l.timeout.String(),
+		"active_deliveries", snap.deliveries,
+		"running_handlers", snap.handlers)
+	go l.enforceDeadline()
+}
+
+// enforceDeadline is what makes the budget real. It cannot wait for the drain
+// to finish, because the drain itself may be blocked on a broker that never
+// answered a half-close; the timer has to be able to cancel the transport out
+// from under it.
+func (l *lifecycle) enforceDeadline() {
+	timer := time.NewTimer(l.timeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		l.log.Warn("shutdown deadline reached", "counts", l.counts())
+		l.force(ErrShuttingDown)
+	case <-l.forceCtx.Done():
+	}
+}
+
+// await blocks until everything has drained or the deadline passes. It returns
+// an error wrapping ErrAbandoned when work was still in flight at the deadline.
+func (l *lifecycle) await() error {
+	l.beginDrain("run returned")
+	select {
+	case <-l.drained:
+		return nil
+	case <-l.forceCtx.Done():
+		snap := l.counts()
+		if snap.deliveries == 0 {
+			return nil
+		}
+		return &abandonedError{
+			deliveries: snap.deliveries,
+			handlers:   snap.handlers,
+			acquiring:  snap.acquiring,
+			confirming: snap.confirming,
+		}
+	}
+}
+
+// stop releases the lifecycle. It cancels anything still attached to the force
+// context, which is the last line of defence against an SDK goroutine
+// outliving Run.
+func (l *lifecycle) stop() {
+	l.stopOnce.Do(func() {
+		close(l.stopped)
+		l.force(ErrShuttingDown)
+	})
+}
+
+func (l *lifecycle) isDraining() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.draining
+}
+
+// shutdownDeadline reports the shared deadline, if drain has begun.
+func (l *lifecycle) shutdownDeadline() (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.deadline, l.draining
+}
+
+func (l *lifecycle) counts() counts {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.countsLocked()
+}
+
+func (l *lifecycle) countsLocked() counts {
+	return counts{
+		deliveries: l.active,
+		acquiring:  l.acquiring,
+		handlers:   l.handlers,
+		confirming: l.confirming,
+	}
+}
+
+func (l *lifecycle) closeDrainedLocked() {
+	if !l.drainedClosed {
+		l.drainedClosed = true
+		close(l.drained)
+	}
+}
+
+// phase is what a delivery is spending its capacity token on. Every phase is
+// active delivery work: a delivery holds its token from the moment it is read
+// off the stream until its confirmation ends, because a job whose outcome is
+// still unknown has not freed a slot for anything else.
+type phase int
+
+const (
+	phaseNone phase = iota
+	phaseAcquiring
+	phaseRunning
+	phaseConfirming
+)
+
+// work is one delivery's claim on the lifecycle. It exists so a delivery that
+// ends early — malformed, refused, abandoned — still decrements exactly the
+// counters it incremented, exactly once.
+type work struct {
+	lc  *lifecycle
+	mu  sync.Mutex
+	cur phase
+}
+
+// begin registers a new active delivery, in its acquisition phase.
+func (l *lifecycle) begin() *work {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.active++
+	l.acquiring++
+	return &work{lc: l, cur: phaseAcquiring}
+}
+
+// acceptHandler is the linearization point between shutdown and user code.
+//
+// It has to be one atomic decision under the same lock that beginDrain takes.
+// Checking a flag and then starting a handler is two decisions, and a drain
+// that lands between them starts a handler the worker has already promised not
+// to start. Once acceptance wins, that handler is in flight and shutdown waits
+// for it; once drain wins, user code never runs and the job is nacked unstarted.
+func (w *work) acceptHandler() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.cur != phaseAcquiring {
+		return false
+	}
+	w.lc.mu.Lock()
+	defer w.lc.mu.Unlock()
+	if w.lc.draining {
+		return false
+	}
+	w.lc.acquiring--
+	w.lc.handlers++
+	w.cur = phaseRunning
+	return true
+}
+
+// confirming moves this delivery into its confirmation phase. Handler time and
+// confirmation time are counted separately so a future metric cannot label one
+// as the other.
+func (w *work) confirming() {
+	w.to(phaseConfirming)
+}
+
+func (w *work) to(next phase) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.cur == phaseNone || w.cur == next {
+		return
+	}
+	w.lc.mu.Lock()
+	defer w.lc.mu.Unlock()
+	w.lc.countOf(w.cur, -1)
+	w.lc.countOf(next, +1)
+	w.cur = next
+}
+
+// end finishes the delivery. It is idempotent: a delivery is finished once, no
+// matter how many unwinding paths lead here.
+func (w *work) end() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.cur == phaseNone {
+		return
+	}
+	w.lc.mu.Lock()
+	defer w.lc.mu.Unlock()
+	w.lc.countOf(w.cur, -1)
+	w.cur = phaseNone
+	w.lc.active--
+	if w.lc.draining && w.lc.active == 0 {
+		w.lc.closeDrainedLocked()
+	}
+}
+
+// countOf adjusts the counter for one phase. Callers hold l.mu.
+func (l *lifecycle) countOf(p phase, delta int) {
+	switch p {
+	case phaseAcquiring:
+		l.acquiring += delta
+	case phaseRunning:
+		l.handlers += delta
+	case phaseConfirming:
+		l.confirming += delta
+	}
+}

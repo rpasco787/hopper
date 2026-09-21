@@ -376,6 +376,17 @@ func (s *fakeStream) awaitEOF(ctx context.Context) error {
 	}
 }
 
+// awaitEnd waits for this stream's reader to stop for any reason: a
+// half-close, a failure, or the client cancelling the transport.
+func (s *fakeStream) awaitEnd(ctx context.Context) error {
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the stream to end: %w", ctx.Err())
+	}
+}
+
 // awaitCredit blocks until the worker has advertised at least n free slots.
 func (s *fakeStream) awaitCredit(ctx context.Context, n uint64) error {
 	for {
@@ -440,7 +451,7 @@ func (s *fakeStream) deliver(ctx context.Context, job *hopperv1.Job) error {
 
 // delivery builds a well-formed leased row. Tests mutate the fields they care
 // about, so a malformed-delivery case says exactly what is wrong with it.
-type delivery struct {
+type fixture struct {
 	ID, LeaseID uuid.UUID
 	Queue       string
 	Payload     []byte
@@ -450,8 +461,8 @@ type delivery struct {
 	LeasedAt    time.Time
 }
 
-func newDelivery(queue string) *delivery {
-	return &delivery{
+func newFixture(queue string) *fixture {
+	return &fixture{
 		ID:          uuid.New(),
 		LeaseID:     uuid.New(),
 		Queue:       queue,
@@ -464,7 +475,7 @@ func newDelivery(queue string) *delivery {
 }
 
 // proto renders the delivery the way the broker's own conversion would.
-func (d *delivery) proto() *hopperv1.Job {
+func (d *fixture) proto() *hopperv1.Job {
 	leaseID := d.LeaseID.String()
 	j := &hopperv1.Job{
 		Id:           d.ID.String(),

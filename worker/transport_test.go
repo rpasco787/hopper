@@ -137,7 +137,7 @@ func TestFakeUnaryDefaultsSucceedAndRecordCopies(t *testing.T) {
 	f := startFake(t)
 	c := f.dial(t)
 
-	d := newDelivery("q")
+	d := newFixture("q")
 	_, err := c.Ack(ctx, &hopperv1.AckRequest{Id: d.ID.String(), LeaseId: d.LeaseID.String()})
 	require.NoError(t, err)
 	_, err = c.Nack(ctx, &hopperv1.NackRequest{Id: d.ID.String(), LeaseId: d.LeaseID.String(), Error: "boom"})
@@ -223,7 +223,7 @@ func TestDeliverySpendsCreditAndOverDeliveryDoesNot(t *testing.T) {
 	stream := subscribe(t, ctx, c, &hopperv1.Subscription{Queues: []string{"q"}, WorkerId: "w", Credit: 1})
 	s := f.awaitStream(t, ctx)
 
-	d := newDelivery("q")
+	d := newFixture("q")
 	require.NoError(t, s.deliver(ctx, d.proto()))
 	got, err := stream.Recv()
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestDeliverySpendsCreditAndOverDeliveryDoesNot(t *testing.T) {
 	require.ErrorContains(t, s.spend(1), "only 0 outstanding")
 
 	// send bypasses credit, which is how a test manufactures over-delivery.
-	require.NoError(t, s.send(newDelivery("q").proto()))
+	require.NoError(t, s.send(newFixture("q").proto()))
 	_, err = stream.Recv()
 	require.NoError(t, err)
 }
@@ -359,7 +359,7 @@ func TestStreamControlDeliversBeforeASendReturns(t *testing.T) {
 	go func() { sent <- stream.Send(creditMsg(1)) }()
 
 	require.NoError(t, s.awaitCredit(ctx, 1), "the credit arrived although Send has not returned")
-	d := newDelivery("q")
+	d := newFixture("q")
 	require.NoError(t, s.deliver(ctx, d.proto()))
 
 	got, err := stream.Recv()
