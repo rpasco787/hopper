@@ -386,3 +386,44 @@ func TestBatchRetryAfterTransientErrorDoesNotDuplicate(t *testing.T) {
 	require.False(t, resp.GetResults()[2].GetDeduplicated())
 	require.Equal(t, 3, jobCount(t, ctx), "one row per key")
 }
+
+// TestListJobsOverGRPC walks a queue page by page against the real store: the
+// token round trips through the wire, the state filter reaches SQL, and other
+// queues stay out.
+func TestListJobsOverGRPC(t *testing.T) {
+	ctx := ctxT(t)
+	client := newClient(t)
+
+	want := map[string]bool{}
+	for range 5 {
+		want[enqueue(t, ctx, client, "listed").GetId()] = true
+	}
+	enqueue(t, ctx, client, "other")
+	leased := leaseOne(t, ctx, client, "listed", "w", 0)
+
+	var got []string
+	token := ""
+	for {
+		resp, err := client.ListJobs(ctx, &hopperv1.ListJobsRequest{Queue: "listed", Limit: 2, PageToken: token})
+		require.NoError(t, err)
+		for _, j := range resp.GetJobs() {
+			got = append(got, j.GetId())
+		}
+		if token = resp.GetNextPageToken(); token == "" {
+			break
+		}
+	}
+	require.Len(t, got, 5, "the other queue's job is not listed")
+	require.IsIncreasing(t, got, "ascending ID order, which is ascending string order for a uuid")
+	for _, id := range got {
+		require.True(t, want[id])
+	}
+
+	filtered, err := client.ListJobs(ctx, &hopperv1.ListJobsRequest{
+		Queue: "listed", States: []hopperv1.JobState{hopperv1.JobState_JOB_STATE_LEASED},
+	})
+	require.NoError(t, err)
+	require.Len(t, filtered.GetJobs(), 1)
+	require.Equal(t, leased.GetId(), filtered.GetJobs()[0].GetId())
+	require.Empty(t, filtered.GetNextPageToken())
+}

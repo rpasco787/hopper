@@ -214,6 +214,17 @@ type Store interface {
 	// never for deciding a transition. Transitions are guarded UPDATEs.
 	GetJob(ctx context.Context, id uuid.UUID) (Job, error)
 
+	// ListJobs pages a queue by ascending ID, optionally filtered to states
+	// (empty means all). after is the last ID on the previous page.
+	// UUIDv7 order approximates application creation time, not DB commit or
+	// created_at order. This is a live inspection traversal, not a snapshot;
+	// concurrent inserts or state changes behind the cursor may be missed.
+	//
+	// This is an inspection API, not a hot path: it has no dedicated index and
+	// walks the primary key filtering on queue and state. If it ever becomes
+	// hot, add an index on (queue, id) and say so here.
+	ListJobs(ctx context.Context, queue string, states []State, limit int, after *uuid.UUID) ([]Job, error)
+
 	// ExtendLease pushes a live lease's expiry to now + dur (a heartbeat).
 	// The same leaseID guard as Ack applies: a stale token gets ErrLeaseLost,
 	// a cancelled job gets ErrCancelled. There is no idempotent-success case;

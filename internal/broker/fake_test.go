@@ -40,6 +40,9 @@ func (f *fakeStore) Enqueue(ctx context.Context, p store.EnqueueParams) (store.J
 func (f *fakeStore) GetJob(ctx context.Context, id uuid.UUID) (store.Job, error) {
 	return f.getJobFn(ctx, id)
 }
+func (f *fakeStore) ListJobs(ctx context.Context, queue string, states []store.State, limit int, after *uuid.UUID) ([]store.Job, error) {
+	return f.listJobsFn(ctx, queue, states, limit, after)
+}
 func (f *fakeStore) Cancel(ctx context.Context, id uuid.UUID) (store.Job, error) {
 	return f.cancelFn(ctx, id)
 }

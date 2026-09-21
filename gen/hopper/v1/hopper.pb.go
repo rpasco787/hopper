@@ -749,7 +749,11 @@ type ListJobsRequest struct {
 	Queue string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`
 	// states empty means every state.
 	States []JobState `protobuf:"varint,2,rep,packed,name=states,proto3,enum=hopper.v1.JobState" json:"states,omitempty"`
-	Limit  int32      `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// limit is the page size. 0 takes the default of 100 and anything above 1000
+	// is clamped to 1000; negative is InvalidArgument. A page whose messages
+	// exceed the 4 MiB transport ceiling fails with ResourceExhausted, so a
+	// caller listing jobs with large payloads should request a smaller limit.
+	Limit int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	// page_token is the last ID on the previous page; ordering is by ID,
 	// not exact created_at or commit order. Pages are not a database snapshot.
 	PageToken     string `protobuf:"bytes,4,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`

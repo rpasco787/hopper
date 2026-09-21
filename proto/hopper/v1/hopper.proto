@@ -119,6 +119,10 @@ message ListJobsRequest {
   string queue = 1;
   // states empty means every state.
   repeated JobState states = 2;
+  // limit is the page size. 0 takes the default of 100 and anything above 1000
+  // is clamped to 1000; negative is InvalidArgument. A page whose messages
+  // exceed the 4 MiB transport ceiling fails with ResourceExhausted, so a
+  // caller listing jobs with large payloads should request a smaller limit.
   int32 limit = 3;
   // page_token is the last ID on the previous page; ordering is by ID,
   // not exact created_at or commit order. Pages are not a database snapshot.
