@@ -89,12 +89,16 @@ type schedulerRun struct {
 	done   chan error
 }
 
+// schedulerInterval is every test scheduler's leadership-retry and tick
+// period. awaitTakeover's bound is expressed in it.
+const schedulerInterval = 50 * time.Millisecond
+
 func startScheduler(name string, st store.Store) *schedulerRun {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &schedulerRun{name: name, cancel: cancel, done: make(chan error, 1)}
 	s := &scheduler.Scheduler{
 		Store:    st,
-		Interval: 50 * time.Millisecond,
+		Interval: schedulerInterval,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	go func() { r.done <- s.Run(ctx) }()
@@ -121,6 +125,44 @@ func (r *schedulerRun) stop(t *testing.T) {
 // itself rather than for the election. Three occurrences leaves room for a
 // loaded CI box without admitting a failover that is actually slow.
 const failoverBudget = 3 * time.Second
+
+// electionAllowance is what "takes over within one interval" is allowed on
+// top of the interval itself. A loser sleeps at most one interval between
+// attempts, but the attempt that wins still costs work the interval does not
+// cover: PostgreSQL ending the dead session and dropping its lock, the
+// winner's pool acquire and pg_try_advisory_lock round trip, and this test's
+// own polling. Those are milliseconds each; 150ms leaves room for -race and a
+// loaded CI box while still failing a takeover that waited a second interval
+// or more.
+const electionAllowance = 150 * time.Millisecond
+
+// awaitTakeover polls until exactly one of survivors holds the scheduler lock
+// and returns that holder and how long after since it was first observed.
+// The latency is an overestimate by up to one poll plus whatever ran between
+// since and the call, so a bound asserted on it is conservative.
+func awaitTakeover(t *testing.T, ctx context.Context, survivors []string, since time.Time) (string, time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(2 * failoverBudget)
+	for time.Now().Before(deadline) {
+		holders, err := lockHolders(ctx)
+		if err == nil && len(holders) == 1 && slices.Contains(survivors, holders[0].Name) {
+			return holders[0].Name, time.Since(since)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	holders, err := lockHolders(ctx)
+	t.Fatalf("no survivor of %v took the lock within %s of the kill (holders %v, err %v)",
+		survivors, 2*failoverBudget, holders, err)
+	return "", 0
+}
+
+// requireTakeoverWithinOneInterval is the spec's "another takes over within
+// one interval", with the bound stated in electionAllowance.
+func requireTakeoverWithinOneInterval(t *testing.T, latency, interval time.Duration) {
+	t.Helper()
+	require.LessOrEqual(t, latency, interval+electionAllowance,
+		"takeover took %s; one interval is %s plus %s for the winning election", latency, interval, electionAllowance)
+}
 
 // TestSchedulerFailover is the session's acceptance evidence: three
 // schedulers, one fires; its database session is killed; a different one
@@ -200,6 +242,8 @@ func failoverRound(t *testing.T, names []string, stores map[string]store.Store) 
 	stopped[leader] = true
 
 	survivors := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == leader })
+	successor, latency := awaitTakeover(t, ctx, survivors, killedAt)
+	requireTakeoverWithinOneInterval(t, latency, schedulerInterval)
 	// Wait for the survivor to advance past P, not merely to enqueue it: the
 	// job row appears one statement before the advance (decision 4), so a
 	// condition on the job alone can let the cancel below land between the
@@ -208,14 +252,15 @@ func failoverRound(t *testing.T, names []string, stores map[string]store.Store) 
 		return heldBy(ctx, survivors) && jobAt(ctx, pending) && nextRunAt(ctx).After(pending)
 	}, 2*failoverBudget, 10*time.Millisecond,
 		"a survivor must take the lock, fire the tick pending at the crash (%s) and advance past it", pending)
-	t.Logf("killed %s; tick %s fired %s after the kill", leader, pending.Format(time.TimeOnly), time.Since(killedAt).Round(time.Millisecond))
+	t.Logf("killed %s; %s took over in %s and fired tick %s %s after the kill", leader, successor,
+		latency.Round(time.Millisecond), pending.Format(time.TimeOnly), time.Since(killedAt).Round(time.Millisecond))
 
 	for _, name := range survivors {
 		runs[name].stop(t)
 		stopped[name] = true
 	}
 
-	assertScheduleIntegrity(t, ctx, seed, pending)
+	assertScheduleIntegrity(t, ctx, "cron_demo", "failover", seed, pending)
 }
 
 // nextRunAt reads the schedule's pending tick, or the zero time on error.
@@ -242,9 +287,10 @@ func jobAt(ctx context.Context, runAt time.Time) bool {
 // a failover, and deliberately not "no gaps": the catch-up policy skips
 // occurrences a slow failover missed (docs/semantics.md §13), so a gap is
 // the design working, and only a gap beyond the failover budget is a defect.
-func assertScheduleIntegrity(t *testing.T, ctx context.Context, seed, pending time.Time) {
+// pending lists the tick outstanding at each kill; every one must have fired.
+func assertScheduleIntegrity(t *testing.T, ctx context.Context, queue, schedule string, seed time.Time, pending ...time.Time) {
 	t.Helper()
-	rows, err := pool.Query(ctx, "select run_at from jobs where queue = 'cron_demo' order by run_at, id")
+	rows, err := pool.Query(ctx, "select run_at from jobs where queue = $1 order by run_at, id", queue)
 	require.NoError(t, err)
 	runAts, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
 	require.NoError(t, err)
@@ -255,12 +301,8 @@ func assertScheduleIntegrity(t *testing.T, ctx context.Context, seed, pending ti
 	}
 
 	require.True(t, runAts[0].Equal(seed), "the seeded tick fires first: got %s, seeded %s", runAts[0], seed)
-	sawPending := false
 	for i, ts := range runAts {
 		require.True(t, onLattice(ts), "job %d run_at %s is off the one-second lattice from %s", i, ts, seed)
-		if ts.Equal(pending) {
-			sawPending = true
-		}
 		if i == 0 {
 			continue
 		}
@@ -272,11 +314,13 @@ func assertScheduleIntegrity(t *testing.T, ctx context.Context, seed, pending ti
 			t.Logf("gap of %s before %s (catch-up skipped %d occurrence(s))", gap, ts.Format(time.TimeOnly), int(gap/time.Second)-1)
 		}
 	}
-	require.True(t, sawPending, "the tick pending at the crash (%s) was lost", pending)
+	for _, p := range pending {
+		require.Truef(t, slices.ContainsFunc(runAts, p.Equal), "the tick pending at the crash (%s) was lost", p)
+	}
 
 	var next time.Time
 	require.NoError(t, pool.QueryRow(ctx,
-		"select next_run_at from cron_schedules where name = 'failover'").Scan(&next))
+		"select next_run_at from cron_schedules where name = $1", schedule).Scan(&next))
 	// Ahead of or equal to the last job, not strictly ahead: stopping the
 	// survivors can land between a tick's enqueue and its advance, which is
 	// decision 4's crash window. The tick is then enqueued and still pending,

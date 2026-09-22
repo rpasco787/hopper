@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -46,6 +47,10 @@ func dsnWithApplicationName(t *testing.T, name string) string {
 	return u.String()
 }
 
+// processSchedulerInterval is the broker processes' -scheduler-interval; the
+// takeover bound is expressed in it.
+const processSchedulerInterval = 50 * time.Millisecond
+
 // startBrokerProcess runs the broker binary with the scheduler on a fast
 // interval against cronFile. startWorkerProcess is a generic harness for a
 // process that logs JSON to stdout, so the broker reuses it.
@@ -53,7 +58,7 @@ func startBrokerProcess(t *testing.T, binary, appName, cronFile string) *workerP
 	t.Helper()
 	p := startWorkerProcess(t, binary,
 		"-dsn", dsnWithApplicationName(t, appName), "-listen", "127.0.0.1:0",
-		"-cron-file", cronFile, "-scheduler-interval", "50ms",
+		"-cron-file", cronFile, "-scheduler-interval", processSchedulerInterval.String(),
 		"-shutdown-timeout", "2s", "-log-level", "info")
 	p.waitForLog(t, 30*time.Second, func(e processLog) bool { return e.Message == "broker listening" })
 	return p
@@ -128,12 +133,17 @@ func TestBrokerProcessRunsCronFromAFile(t *testing.T) {
 	require.Empty(t, holders, "a clean shutdown releases the scheduler lock")
 }
 
-// TestBrokerProcessCronFailsOverOnKill: a SIGKILLed process cannot be
-// resurrected, so takeover is unambiguous here in a way it is not in
-// TestSchedulerFailover. The assertion is still "the tick pending at the kill
-// was fired", not "no occurrence was skipped": the catch-up policy permits a
-// slow failover to skip, so the latter is a claim about the machine's speed.
-// One round only — TestSchedulerFailover owns the repetition.
+// TestBrokerProcessCronFailsOverOnKill is the spec's test in its literal
+// shape: three real broker processes, one fires, it is SIGKILLed, and another
+// takes over within one scheduler interval — then the same again with the new
+// leader, so the role moves twice and the last broker standing ends up with it.
+// A SIGKILLed process cannot be resurrected, so each takeover is unambiguous
+// here in a way it is not in TestSchedulerFailover.
+//
+// The schedule assertion is "every tick pending at a kill was fired and no
+// occurrence fired twice", not "no occurrence was skipped": the catch-up
+// policy permits a slow failover to skip, so the latter is a claim about the
+// machine's speed. TestSchedulerFailover owns the twenty-round repetition.
 func TestBrokerProcessCronFailsOverOnKill(t *testing.T) {
 	binary := buildBrokerProcess(t)
 	ctx := ctxT(t)
@@ -141,37 +151,47 @@ func TestBrokerProcessCronFailsOverOnKill(t *testing.T) {
 	require.NoError(t, err)
 
 	file := writeProcessCronFile(t, cronProcessFile)
-	procs := map[string]*workerProcess{
-		"hopper-broker-a": startBrokerProcess(t, binary, "hopper-broker-a", file),
-		"hopper-broker-b": startBrokerProcess(t, binary, "hopper-broker-b", file),
+	names := []string{"hopper-broker-a", "hopper-broker-b", "hopper-broker-c"}
+	procs := map[string]*workerProcess{}
+	for _, name := range names {
+		procs[name] = startBrokerProcess(t, binary, name, file)
 	}
 
-	require.Eventually(t, func() bool { return !firstCronProcTick(ctx).IsZero() },
-		10*time.Second, 20*time.Millisecond, "one of the brokers must fire the schedule")
-
-	leader := requireLeader(t, ctx).Name
-	require.Contains(t, procs, leader)
-	survivor := "hopper-broker-a"
-	if leader == survivor {
-		survivor = "hopper-broker-b"
-	}
-	pending := procNextRunAt(t, ctx)
-
-	procs[leader].signal(t, syscall.SIGKILL)
-	killErr := procs[leader].wait(t, 10*time.Second)
-	require.Error(t, killErr, "a SIGKILLed process cannot exit cleanly")
-	killedAt := time.Now()
-
+	var seed time.Time
 	require.Eventually(t, func() bool {
-		return heldBy(ctx, []string{survivor}) && cronProcJobAt(ctx, pending)
-	}, 2*failoverBudget, 20*time.Millisecond,
-		"%s must take the lock and fire the tick pending at the kill (%s)\n%s",
-		survivor, pending, procs[survivor].output())
-	t.Logf("killed %s; %s fired tick %s %s after the kill",
-		leader, survivor, pending.Format(time.TimeOnly), time.Since(killedAt).Round(time.Millisecond))
+		seed = firstCronProcTick(ctx)
+		return !seed.IsZero()
+	}, 10*time.Second, 20*time.Millisecond, "one of the brokers must fire the schedule")
 
-	procs[survivor].signal(t, syscall.SIGTERM)
-	require.NoError(t, procs[survivor].wait(t, 10*time.Second), "survivor exits cleanly\n%s", procs[survivor].output())
+	alive := slices.Clone(names)
+	var pending []time.Time
+	for kill := range 2 {
+		leader := requireLeader(t, ctx).Name
+		require.Contains(t, alive, leader)
+		alive = slices.DeleteFunc(alive, func(n string) bool { return n == leader })
+		p := procNextRunAt(t, ctx)
+		pending = append(pending, p)
+
+		killedAt := time.Now()
+		procs[leader].signal(t, syscall.SIGKILL)
+		require.Error(t, procs[leader].wait(t, 10*time.Second), "a SIGKILLed process cannot exit cleanly")
+
+		successor, latency := awaitTakeover(t, ctx, alive, killedAt)
+		requireTakeoverWithinOneInterval(t, latency, processSchedulerInterval)
+		require.Eventually(t, func() bool {
+			return cronProcJobAt(ctx, p) && procNextRunAt(t, ctx).After(p)
+		}, 2*failoverBudget, 20*time.Millisecond,
+			"%s must fire and advance past the tick pending at kill %d (%s)\n%s",
+			successor, kill+1, p, procs[successor].output())
+		t.Logf("kill %d: %s SIGKILLed; %s took over in %s and fired tick %s %s after the kill",
+			kill+1, leader, successor, latency.Round(time.Millisecond),
+			p.Format(time.TimeOnly), time.Since(killedAt).Round(time.Millisecond))
+	}
+
+	last := alive[0]
+	procs[last].signal(t, syscall.SIGTERM)
+	require.NoError(t, procs[last].wait(t, 10*time.Second), "the last broker exits cleanly\n%s", procs[last].output())
+	assertScheduleIntegrity(t, ctx, "cron_proc", "proc-tick", seed, pending...)
 }
 
 // TestBrokerRejectsABadCronFileAtStartup is the CrashLoopBackOff behavior: a
