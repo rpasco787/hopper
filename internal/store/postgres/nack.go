@@ -36,13 +36,16 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit has succeeded
 
-	var attempts, maxAttempts int32
+	var (
+		queue                 string
+		attempts, maxAttempts int32
+	)
 	err = tx.QueryRow(ctx, `
-		select attempts, max_attempts from jobs
+		select queue, attempts, max_attempts from jobs
 		where id = $1 and lease_id = $2 and state = 'leased'
 		for update`,
 		id, leaseID,
-	).Scan(&attempts, &maxAttempts)
+	).Scan(&queue, &attempts, &maxAttempts)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Release the (never acquired) lock before the classifying read so
@@ -55,12 +58,14 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 		return fmt.Errorf("store: nack: select: %w", err)
 	}
 
-	if err := s.failLeased(ctx, tx, id, attempts, maxAttempts, errMsg); err != nil {
+	dead, err := s.failLeased(ctx, tx, id, attempts, maxAttempts, errMsg)
+	if err != nil {
 		return fmt.Errorf("store: nack: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: nack: commit: %w", err)
 	}
+	s.obs.Nacked(queue, dead)
 	return nil
 }
 
@@ -69,9 +74,10 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 // scheduled with backoff from s.retry. Nack and ReapExpiredLeases both call it,
 // which is what makes "nack" and "lease expired" wait the same way. The WHERE
 // is id-only because the row lock, not a state guard, is what protects it.
-func (s *Store) failLeased(ctx context.Context, tx pgx.Tx, id uuid.UUID, attempts, maxAttempts int32, errMsg string) error {
+func (s *Store) failLeased(ctx context.Context, tx pgx.Tx, id uuid.UUID, attempts, maxAttempts int32, errMsg string) (bool, error) {
+	dead := attempts >= maxAttempts
 	var err error
-	if attempts >= maxAttempts {
+	if dead {
 		_, err = tx.Exec(ctx, `
 			update jobs
 			set state = 'dead', finished_at = now(), last_error = $2, updated_at = now()
@@ -85,7 +91,7 @@ func (s *Store) failLeased(ctx context.Context, tx pgx.Tx, id uuid.UUID, attempt
 			id, s.retry.Delay(attempts), errMsg)
 	}
 	if err != nil {
-		return fmt.Errorf("update: %w", err)
+		return false, fmt.Errorf("update: %w", err)
 	}
-	return nil
+	return dead, nil
 }

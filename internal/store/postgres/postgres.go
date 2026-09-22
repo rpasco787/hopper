@@ -20,6 +20,7 @@ import (
 type Store struct {
 	pool  *pgxpool.Pool
 	retry store.RetryPolicy
+	obs   store.Observer
 }
 
 // Compile-time proof that *Store satisfies the interface. This is what turns a
@@ -51,7 +52,7 @@ func qualify(alias, list string) string {
 // New returns a Store over an existing pool, using the default retry policy.
 // The caller owns the pool and is responsible for closing it.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, retry: store.DefaultRetryPolicy()}
+	return &Store{pool: pool, retry: store.DefaultRetryPolicy(), obs: store.NopObserver{}}
 }
 
 // WithRetryPolicy returns a copy of s that uses p for retry backoff. It copies
@@ -61,5 +62,18 @@ func New(pool *pgxpool.Pool) *Store {
 func (s *Store) WithRetryPolicy(p store.RetryPolicy) *Store {
 	clone := *s
 	clone.retry = p
+	return &clone
+}
+
+// WithObserver returns a copy of s that reports committed transitions to o
+// (store.Observer). It copies for the reason WithRetryPolicy does: a component
+// handed an instrumented Store cannot change what another component holds.
+// A nil o observes nothing.
+func (s *Store) WithObserver(o store.Observer) *Store {
+	if o == nil {
+		o = store.NopObserver{}
+	}
+	clone := *s
+	clone.obs = o
 	return &clone
 }

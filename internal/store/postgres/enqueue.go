@@ -103,6 +103,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 		job, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
 		switch {
 		case err == nil:
+			s.obs.Enqueued(job.Queue)
 			return job, true, nil
 		case !errors.Is(err, pgx.ErrNoRows):
 			return store.Job{}, false, fmt.Errorf("store: enqueue: %w", err)

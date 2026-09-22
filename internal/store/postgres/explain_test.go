@@ -71,7 +71,7 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 		{
 			name:  "reap",
 			index: "jobs_reap_idx",
-			sql: `select id, attempts, max_attempts from jobs
+			sql: `select id, queue, attempts, max_attempts from jobs
 			      where state = 'leased' and lease_expires < now()
 			      order by lease_expires
 			      limit $1 for update skip locked`,

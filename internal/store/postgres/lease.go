@@ -79,5 +79,6 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 	if len(jobs) == 0 {
 		return nil, nil
 	}
+	s.obs.Leased(jobs)
 	return jobs, nil
 }

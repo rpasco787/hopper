@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,18 +27,29 @@ import (
 // caller's lease_id is how a retried Ack (first response lost) is recognised as
 // already done rather than rejected.
 func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `
+	var (
+		queue      string
+		leasedAt   *time.Time // nullable in the schema; always set by Lease
+		finishedAt time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
 		update jobs
 		set state = 'completed', finished_at = now(), updated_at = now()
-		where id = $1 and lease_id = $2 and state = 'leased'`,
-		id, leaseID)
-	if err != nil {
+		where id = $1 and lease_id = $2 and state = 'leased'
+		returning queue, leased_at, finished_at`,
+		id, leaseID).Scan(&queue, &leasedAt, &finishedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return s.classifyMiss(ctx, id, leaseID, store.StateCompleted)
+	case err != nil:
 		return fmt.Errorf("store: ack: %w", err)
 	}
-	if tag.RowsAffected() == 1 {
-		return nil
+	var la time.Time
+	if leasedAt != nil {
+		la = *leasedAt
 	}
-	return s.classifyMiss(ctx, id, leaseID, store.StateCompleted)
+	s.obs.Completed(queue, la, finishedAt)
+	return nil
 }
 
 // classifyMiss explains a guarded UPDATE that affected zero rows, mapping the

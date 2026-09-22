@@ -46,7 +46,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit has succeeded
 
 	rows, err := tx.Query(ctx, `
-		select id, attempts, max_attempts from jobs
+		select id, queue, attempts, max_attempts from jobs
 		where state = 'leased' and lease_expires < now()
 		order by lease_expires
 		limit $1
@@ -57,6 +57,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 	}
 	type expired struct {
 		ID          uuid.UUID
+		Queue       string
 		Attempts    int32
 		MaxAttempts int32
 	}
@@ -68,13 +69,23 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 		return 0, nil
 	}
 
+	type outcome struct {
+		queue string
+		dead  bool
+	}
+	outcomes := make([]outcome, 0, len(batch))
 	for _, e := range batch {
-		if err := s.failLeased(ctx, tx, e.ID, e.Attempts, e.MaxAttempts, leaseExpiredError); err != nil {
+		dead, err := s.failLeased(ctx, tx, e.ID, e.Attempts, e.MaxAttempts, leaseExpiredError)
+		if err != nil {
 			return 0, fmt.Errorf("store: reap: row %s: %w", e.ID, err)
 		}
+		outcomes = append(outcomes, outcome{queue: e.Queue, dead: dead})
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("store: reap: commit: %w", err)
+	}
+	for _, result := range outcomes {
+		s.obs.LeaseExpired(result.queue, result.dead)
 	}
 	return len(batch), nil
 }
