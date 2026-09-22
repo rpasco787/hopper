@@ -554,7 +554,11 @@ leads applies its own copy, and leadership may move. Without a file, the table
 is left unmanaged: the scheduler fires whatever rows exist and prunes nothing.
 There is no management RPC; that is future work.
 
-## 14. Verified behavior
+## 14. Observability
+
+*Written in Session 7; see Task 13 of the Session 7 plan.*
+
+## 15. Verified behavior
 
 Only completed, dated runs appear here. Each row names the test or scoped demo
 that produced the evidence; prospective Session 7–11 checks stay in the plan,

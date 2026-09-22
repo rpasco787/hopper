@@ -148,7 +148,7 @@ func rowExists(t *testing.T, id uuid.UUID) bool {
 	return n == 1
 }
 
-// TestDeadLetter is the docs/semantics.md §14 row "max_attempts failures →
+// TestDeadLetter is the docs/semantics.md §15 row "max_attempts failures →
 // dead; Redrive → available, attempts = 0". A job with max_attempts = 2 is
 // leased and nacked twice, dies, is redriven, and can be leased again as if new.
 func TestDeadLetter(t *testing.T) {

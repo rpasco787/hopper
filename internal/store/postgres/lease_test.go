@@ -131,7 +131,7 @@ func TestLeaseArgumentValidation(t *testing.T) {
 	require.Len(t, got, 1)
 }
 
-// TestLeaseDisjoint pins the exclusivity claim in docs/semantics.md §14:
+// TestLeaseDisjoint pins the exclusivity claim in docs/semantics.md §15:
 // concurrent Lease calls never return the same job. 50 goroutines each lease 4
 // from a pool of 200 available jobs, all released at once so they genuinely
 // overlap on the row locks. Every job must be handed out exactly once.
@@ -201,7 +201,7 @@ func TestLeaseDisjoint(t *testing.T) {
 	t.Logf("%d workers leased %d distinct jobs", workers, len(seen))
 }
 
-// TestPriority is the docs/semantics.md §14 row: a priority-10 job is leased
+// TestPriority is the docs/semantics.md §15 row: a priority-10 job is leased
 // before a hundred priority-0 jobs. The urgent job is enqueued last, so its
 // run_at is the latest of the 101 and FIFO order would put it at the very
 // back; priority is the only thing that can pull it to the front (§9).

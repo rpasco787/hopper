@@ -235,7 +235,7 @@ func TestReapRacesNackWithoutDoubleProcessing(t *testing.T) {
 	}
 }
 
-// TestLeaseExpiryRedelivers is the docs/semantics.md §14 row "lease expiry →
+// TestLeaseExpiryRedelivers is the docs/semantics.md §15 row "lease expiry →
 // redelivered exactly once more, attempts incremented". A worker leases a job
 // for 200ms and then "dies": it never acks and never heartbeats. After the
 // lease expires the reaper takes the job back, the promoter makes it

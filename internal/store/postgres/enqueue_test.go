@@ -196,7 +196,7 @@ func TestEnqueueDedupsAgainstFinishedRows(t *testing.T) {
 		"the caller gets the finished job back, not a fresh one")
 }
 
-// TestIdempotencyStorm is the docs/semantics.md §14 row and the session's
+// TestIdempotencyStorm is the docs/semantics.md §15 row and the session's
 // "done when": 1000 concurrent Enqueue calls over 10 distinct keys leave
 // exactly 10 rows, every caller for a key is handed the same id, and exactly
 // one caller per key reports having inserted.
