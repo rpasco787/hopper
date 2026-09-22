@@ -144,6 +144,45 @@ type DeadCursor struct {
 	ID         uuid.UUID
 }
 
+// CronSchedule is a row of the cron_schedules table. One row produces at most
+// one job per tick; the scheduler is described in docs/semantics.md §13.
+type CronSchedule struct {
+	// Name is the primary key and the first half of every tick's idempotency
+	// key, so renaming a schedule starts a new dedup lineage.
+	Name  string `db:"name"`
+	Queue string `db:"queue"`
+	// Payload is copied verbatim into every job this schedule enqueues.
+	Payload  json.RawMessage `db:"payload"`
+	CronExpr string          `db:"cron_expr"`
+	// Timezone is an IANA name resolved with time.LoadLocation. cmd/broker
+	// embeds time/tzdata because the distroless image has no zoneinfo.
+	Timezone    string `db:"timezone"`
+	Enabled     bool   `db:"enabled"`
+	Priority    int16  `db:"priority"`
+	MaxAttempts int32  `db:"max_attempts"`
+	// NextRunAt is the pending tick: the instant this schedule is next due,
+	// and the second half of that tick's idempotency key. It advances only
+	// through AdvanceSchedule, guarded on its current value.
+	NextRunAt time.Time `db:"next_run_at"`
+	// LastEnqueuedAt is observability only; it records when a tick was last
+	// fired, never which tick.
+	LastEnqueuedAt *time.Time `db:"last_enqueued_at"`
+	CreatedAt      time.Time  `db:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at"`
+}
+
+// CronScheduleSpec is the caller-supplied part of a schedule. NextRunAt is
+// used only when the row is inserted or its expression or timezone changed;
+// see UpsertSchedule.
+type CronScheduleSpec struct {
+	Name, Queue, CronExpr, Timezone string
+	Payload                         json.RawMessage
+	Priority                        int16
+	MaxAttempts                     int32
+	Enabled                         bool
+	NextRunAt                       time.Time
+}
+
 // TerminalStateError reports which terminal state blocked a transition. It
 // unwraps to ErrTerminal, so errors.Is(err, ErrTerminal) works and the gRPC
 // layer can still pull the state out with errors.As to choose a status code.
@@ -262,4 +301,47 @@ type Store interface {
 	// key, so this is also where dedup protection ends (§8). limit <= 0 is a
 	// no-op. Safe to run concurrently from several brokers.
 	DeleteFinished(ctx context.Context, cutoff time.Time, limit int) (int, error)
+
+	// DueSchedules returns up to limit enabled schedules whose NextRunAt has
+	// passed, soonest first, together with the database clock that judged
+	// them. Callers compute the following occurrence from that instant rather
+	// than from time.Now, so a process whose clock trails the database's
+	// cannot manufacture a backfill (docs/semantics.md §13). The returned
+	// time is zero when nothing is due, in which case there is nothing to
+	// compute. This is a plain read: exclusion between replicas comes from
+	// leadership, not from row locks.
+	DueSchedules(ctx context.Context, limit int) ([]CronSchedule, time.Time, error)
+
+	// AdvanceSchedule moves a schedule's pending tick from to to and stamps
+	// LastEnqueuedAt, reporting whether it matched. The from guard is what
+	// makes a lost leader harmless: a process that fired a tick another
+	// leader has already advanced past matches no row, reports false, and
+	// cannot rewind the schedule. A false return is a normal outcome during
+	// failover, not an error.
+	AdvanceSchedule(ctx context.Context, name string, from, to time.Time) (bool, error)
+
+	// UpsertSchedule inserts or updates one schedule and returns the stored
+	// row. An update keeps the existing NextRunAt unless CronExpr or Timezone
+	// changed, so redeploying an unchanged schedule neither skips its pending
+	// tick nor re-fires a past one.
+	UpsertSchedule(ctx context.Context, spec CronScheduleSpec) (CronSchedule, error)
+
+	// ListSchedules returns every schedule ordered by name. Inspection only.
+	ListSchedules(ctx context.Context) ([]CronSchedule, error)
+
+	// Now returns the database's current time. Reconciliation computes a
+	// newly inserted schedule's first tick from this rather than from
+	// time.Now, for the reason DueSchedules returns its own clock: every
+	// instant that decides when a schedule fires is judged by one clock, so a
+	// broker whose clock is skewed cannot write a tick the database would not
+	// have chosen (docs/semantics.md §13). The tick loop has no use for it —
+	// DueSchedules already carries the clock that judged its rows.
+	Now(ctx context.Context) (time.Time, error)
+
+	// DeleteSchedulesExcept deletes every schedule whose name is not in keep
+	// and returns how many it removed: the prune half of reconciling a
+	// declarative cron file. An empty keep is rejected rather than treated as
+	// "delete everything", because the difference between "the file lists
+	// nothing" and "no file was loaded" is one a caller must state.
+	DeleteSchedulesExcept(ctx context.Context, keep []string) (int, error)
 }
