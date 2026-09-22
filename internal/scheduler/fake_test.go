@@ -71,15 +71,18 @@ type fakeStore struct {
 	// now
 	now      time.Time
 	nowCalls int
+	nowErr   error
 
-	// upsert / delete — exercised by Task 5, kept minimal here so fakeStore
-	// satisfies Store.
-	upserts []store.CronScheduleSpec
-	deletes [][]string
+	// upsert / delete. existing holds the names of rows already in the table,
+	// so a prune can be observed deleting the ones its keep list omits.
+	upserts   []store.CronScheduleSpec
+	upsertErr error
+	deletes   [][]string
+	existing  map[string]bool
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{now: time.Now(), dedup: map[string]store.Job{}}
+	return &fakeStore{now: time.Now(), dedup: map[string]store.Job{}, existing: map[string]bool{}}
 }
 
 func (f *fakeStore) TryLeadership(context.Context) (store.Leadership, error) {
@@ -171,6 +174,9 @@ func (f *fakeStore) Now(context.Context) (time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nowCalls++
+	if f.nowErr != nil {
+		return time.Time{}, f.nowErr
+	}
 	return f.now, nil
 }
 
@@ -178,6 +184,10 @@ func (f *fakeStore) UpsertSchedule(_ context.Context, spec store.CronScheduleSpe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upserts = append(f.upserts, spec)
+	if f.upsertErr != nil {
+		return store.CronSchedule{}, f.upsertErr
+	}
+	f.existing[spec.Name] = true
 	return store.CronSchedule{
 		Name: spec.Name, Queue: spec.Queue, Payload: spec.Payload,
 		CronExpr: spec.CronExpr, Timezone: spec.Timezone, Enabled: spec.Enabled,
@@ -189,7 +199,18 @@ func (f *fakeStore) DeleteSchedulesExcept(_ context.Context, keep []string) (int
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, append([]string(nil), keep...))
-	return 0, nil
+	kept := map[string]bool{}
+	for _, name := range keep {
+		kept[name] = true
+	}
+	removed := 0
+	for name := range f.existing {
+		if !kept[name] {
+			delete(f.existing, name)
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 // Snapshot accessors. Each returns a copy so a caller cannot race the fake's
@@ -217,6 +238,38 @@ func (f *fakeStore) eventsSnapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.events...)
+}
+
+func (f *fakeStore) upsertsSnapshot() []store.CronScheduleSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]store.CronScheduleSpec(nil), f.upserts...)
+}
+
+func (f *fakeStore) deletesSnapshot() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.deletes))
+	for i, d := range f.deletes {
+		out[i] = append([]string(nil), d...)
+	}
+	return out
+}
+
+func (f *fakeStore) existingSnapshot() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]bool, len(f.existing))
+	for k, v := range f.existing {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeStore) nowCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nowCalls
 }
 
 func (f *fakeStore) releaseCount() int {

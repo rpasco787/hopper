@@ -45,6 +45,10 @@ type Scheduler struct {
 	Interval  time.Duration
 	BatchSize int // default 100
 	Logger    *slog.Logger
+	// Definitions, when non-empty, are reconciled into cron_schedules at the
+	// start of every term and are authoritative: names outside the set are
+	// pruned. Empty means the table is managed elsewhere and left alone.
+	Definitions []Definition
 }
 
 func (s *Scheduler) interval() time.Duration {
@@ -93,8 +97,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// term acquires leadership and runs Check -> pass -> wait until leadership is
-// lost, a store error occurs, or ctx is cancelled (docs/plans decision 11).
+// term acquires leadership, reconciles Definitions when there are any, and
+// runs Check -> pass -> wait until leadership is lost, a store error occurs,
+// or ctx is cancelled (docs/plans decision 11). A reconcile failure ends the
+// term before the first pass, so a half-applied configuration never fires.
 // Release always runs on a context.WithoutCancel derivative with its own
 // short timeout, so a cancelled Run still releases rather than depending on
 // the session dying on its own.
@@ -113,6 +119,12 @@ func (s *Scheduler) term(ctx context.Context) error {
 		}
 		s.logger().InfoContext(ctx, "scheduler term released")
 	}()
+
+	if len(s.Definitions) > 0 {
+		if err := s.reconcile(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Suppresses repeated bad-schedule log lines within this term; recreated
 	// per term so a restarted term reports the problem again (decision 8).
@@ -134,6 +146,50 @@ func (s *Scheduler) term(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// reconcile applies Definitions to cron_schedules: upsert every definition,
+// then prune every other name. Upsert comes first because a prune that ran
+// first would delete a row this same pass is about to recreate, losing its
+// pending tick.
+//
+// Every NextRunAt is computed from one read of the database clock, never
+// time.Now (decision 6). The value reaches the table only for a new row or
+// one whose cron_expr or timezone changed — UpsertSchedule keeps the stored
+// tick otherwise — so this clock decides a schedule's first tick, which is
+// the one instant DueSchedules never judges. Reading it once means a long
+// reconciliation cannot spread one configuration across a moving now.
+func (s *Scheduler) reconcile(ctx context.Context) error {
+	dbNow, err := s.Store.Now(ctx)
+	if err != nil {
+		return fmt.Errorf("scheduler: reconcile: read database clock: %w", err)
+	}
+	names := make([]string, 0, len(s.Definitions))
+	for _, d := range s.Definitions {
+		spec, err := ParseSpec(d.Cron, d.Timezone)
+		if err != nil {
+			return fmt.Errorf("scheduler: reconcile %s: %w", d.Name, err)
+		}
+		next, err := spec.Next(dbNow)
+		if err != nil {
+			return fmt.Errorf("scheduler: reconcile %s: %w", d.Name, err)
+		}
+		// LoadFile has range-checked Priority and MaxAttempts.
+		if _, err := s.Store.UpsertSchedule(ctx, store.CronScheduleSpec{
+			Name: d.Name, Queue: d.Queue, CronExpr: d.Cron, Timezone: d.Timezone,
+			Payload: d.Payload, Priority: int16(d.Priority), MaxAttempts: int32(d.MaxAttempts),
+			Enabled: d.enabled(), NextRunAt: next,
+		}); err != nil {
+			return fmt.Errorf("scheduler: reconcile %s: %w", d.Name, err)
+		}
+		names = append(names, d.Name)
+	}
+	pruned, err := s.Store.DeleteSchedulesExcept(ctx, names)
+	if err != nil {
+		return fmt.Errorf("scheduler: reconcile: prune: %w", err)
+	}
+	s.logger().InfoContext(ctx, "scheduler reconciled", "schedules", len(names), "pruned", pruned)
+	return nil
 }
 
 // pass reads exactly one batch of due schedules and fires each. It must not
