@@ -344,4 +344,10 @@ type Store interface {
 	// "delete everything", because the difference between "the file lists
 	// nothing" and "no file was loaded" is one a caller must state.
 	DeleteSchedulesExcept(ctx context.Context, keep []string) (int, error)
+
+	// TryLeadership attempts to become the single active scheduler, returning
+	// ErrNotLeader when another process holds the role. Leadership occupies
+	// one connection for its whole term (see the implementation), so a pool
+	// sized for N concurrent queries serves N-1 while a process leads.
+	TryLeadership(ctx context.Context) (Leadership, error)
 }
