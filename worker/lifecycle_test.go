@@ -184,3 +184,28 @@ func TestDrainSignalIsClosedOnce(t *testing.T) {
 		t.Fatal("drain signal never closed")
 	}
 }
+
+// TestAbandonmentSurvivesADeliveryUnwindingAtTheDeadline pins the one ordering
+// that used to lose a dropped job.
+//
+// An abandoned delivery decrements its own counters on the way out, and that
+// single decrement both empties the live counts and closes drained. So by the
+// time await looks, a worker that has just dropped a job is indistinguishable
+// from one that shut down perfectly — and await reported success. The verdict
+// has to come from the snapshot taken when the deadline fired.
+func TestAbandonmentSurvivesADeliveryUnwindingAtTheDeadline(t *testing.T) {
+	lc := newTestLifecycle(t, context.Background(), 20*time.Millisecond)
+	w := lc.begin()
+	require.True(t, w.acceptHandler())
+	w.confirming()
+	lc.beginDrain("test")
+
+	// The budget runs out with the confirmation still in flight...
+	<-lc.forceCtx.Done()
+	// ... and only then does the delivery unwind.
+	w.end()
+
+	err := lc.await()
+	require.ErrorIs(t, err, ErrAbandoned, "a job was dropped; a clean exit would lie about it")
+	require.ErrorContains(t, err, "1 awaiting confirmation")
+}

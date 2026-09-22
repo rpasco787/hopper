@@ -50,6 +50,13 @@ type lifecycle struct {
 	confirming    int
 	drainedClosed bool
 	stopOnce      sync.Once
+	// deadlineFired records that the budget ran out, and deadlineSnap what was
+	// still in flight at that instant. The verdict has to be this snapshot
+	// rather than a later reading of the counters: an abandoned delivery
+	// decrements them on its way out, so a second look can show an empty,
+	// apparently clean worker that has in fact just dropped a job.
+	deadlineFired bool
+	deadlineSnap  counts
 }
 
 // counts is a consistent snapshot of what is in flight.
@@ -131,10 +138,27 @@ func (l *lifecycle) enforceDeadline() {
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		l.log.Warn("shutdown deadline reached", "counts", l.counts())
+		// One synchronized snapshot, taken before anything is cancelled, serves
+		// both the log line and await's verdict. Reading the counters twice
+		// would let the two disagree about the same shutdown.
+		l.mu.Lock()
+		l.deadlineFired = true
+		l.deadlineSnap = l.countsLocked()
+		snap := l.deadlineSnap
+		l.mu.Unlock()
+
+		l.log.Warn("shutdown deadline reached", "counts", snap)
 		l.force(ErrShuttingDown)
 	case <-l.forceCtx.Done():
 	}
+}
+
+// abandonedAtDeadline reports what was in flight when the budget ran out, and
+// whether it ran out at all.
+func (l *lifecycle) abandonedAtDeadline() (counts, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.deadlineSnap, l.deadlineFired
 }
 
 // await blocks until everything has drained or the deadline passes. It returns
@@ -143,18 +167,23 @@ func (l *lifecycle) await() error {
 	l.beginDrain("run returned")
 	select {
 	case <-l.drained:
-		return nil
 	case <-l.forceCtx.Done():
-		snap := l.counts()
-		if snap.deliveries == 0 {
-			return nil
-		}
-		return &abandonedError{
-			deliveries: snap.deliveries,
-			handlers:   snap.handlers,
-			acquiring:  snap.acquiring,
-			confirming: snap.confirming,
-		}
+	}
+	// Either branch can win *after* the budget has already run out: abandoning
+	// the last delivery zeroes the counters and closes drained in the same
+	// decrement, so "drained" does not prove the drain was clean. Only the
+	// snapshot taken when the deadline fired distinguishes a worker that
+	// finished from one that gave up, and reporting success for the latter is
+	// how a process exits zero having dropped a job.
+	snap, fired := l.abandonedAtDeadline()
+	if !fired || snap.deliveries == 0 {
+		return nil
+	}
+	return &abandonedError{
+		deliveries: snap.deliveries,
+		handlers:   snap.handlers,
+		acquiring:  snap.acquiring,
+		confirming: snap.confirming,
 	}
 }
 
