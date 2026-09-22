@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hopper
+      POSTGRES_PASSWORD: hopper
+      POSTGRES_DB: hopper
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hopper -d hopper"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  broker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: broker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOPPER_DSN: postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
+      HOPPER_LISTEN: 0.0.0.0:9090
+      HOPPER_LEASE_DURATION: 30s
+      HOPPER_LOG_LEVEL: info
+    ports:
+      - "127.0.0.1:9090:9090"
+    stop_grace_period: 40s
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: worker
+    depends_on:
+      - broker
+    environment:
+      HOPPER_BROKER: broker:9090
+      HOPPER_CONCURRENCY: "4"
+      HOPPER_SHUTDOWN_TIMEOUT: 45s
+      HOPPER_LOG_LEVEL: info
+    stop_grace_period: 60s
