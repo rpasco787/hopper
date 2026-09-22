@@ -200,10 +200,14 @@ func failoverRound(t *testing.T, names []string, stores map[string]store.Store) 
 	stopped[leader] = true
 
 	survivors := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == leader })
+	// Wait for the survivor to advance past P, not merely to enqueue it: the
+	// job row appears one statement before the advance (decision 4), so a
+	// condition on the job alone can let the cancel below land between the
+	// two, and the round would never observe the survivor finish the fire.
 	require.Eventually(t, func() bool {
-		return heldBy(ctx, survivors) && jobAt(ctx, pending)
+		return heldBy(ctx, survivors) && jobAt(ctx, pending) && nextRunAt(ctx).After(pending)
 	}, 2*failoverBudget, 10*time.Millisecond,
-		"a survivor must take the lock and fire the tick pending at the crash (%s)", pending)
+		"a survivor must take the lock, fire the tick pending at the crash (%s) and advance past it", pending)
 	t.Logf("killed %s; tick %s fired %s after the kill", leader, pending.Format(time.TimeOnly), time.Since(killedAt).Round(time.Millisecond))
 
 	for _, name := range survivors {
@@ -212,6 +216,17 @@ func failoverRound(t *testing.T, names []string, stores map[string]store.Store) 
 	}
 
 	assertScheduleIntegrity(t, ctx, seed, pending)
+}
+
+// nextRunAt reads the schedule's pending tick, or the zero time on error.
+// Like heldBy, it is safe inside a require.Eventually condition.
+func nextRunAt(ctx context.Context) time.Time {
+	var next time.Time
+	if err := pool.QueryRow(ctx,
+		"select next_run_at from cron_schedules where name = 'failover'").Scan(&next); err != nil {
+		return time.Time{}
+	}
+	return next
 }
 
 // jobAt reports whether a cron_demo job exists for the tick runAt. Like
@@ -262,7 +277,15 @@ func assertScheduleIntegrity(t *testing.T, ctx context.Context, seed, pending ti
 	var next time.Time
 	require.NoError(t, pool.QueryRow(ctx,
 		"select next_run_at from cron_schedules where name = 'failover'").Scan(&next))
+	// Ahead of or equal to the last job, not strictly ahead: stopping the
+	// survivors can land between a tick's enqueue and its advance, which is
+	// decision 4's crash window. The tick is then enqueued and still pending,
+	// and the next leader re-fires it into the idempotency key. Behind the
+	// last job would be a rewound schedule, and that is what this rules out.
 	last := runAts[len(runAts)-1]
-	require.True(t, next.After(last), "next_run_at %s must be ahead of the last job %s", next, last)
+	require.False(t, next.Before(last), "next_run_at %s must not trail the last job %s", next, last)
+	if next.Equal(last) {
+		t.Logf("stopped inside the fire/advance window: %s enqueued, not yet advanced", last.Format(time.TimeOnly))
+	}
 	require.True(t, onLattice(next), "next_run_at %s is off the lattice", next)
 }
