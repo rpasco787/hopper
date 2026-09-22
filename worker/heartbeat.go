@@ -146,10 +146,6 @@ type heartbeat struct {
 	// worker that left the duration unset is using the broker's choice and has
 	// no other way to learn what that was.
 	grant time.Duration
-	// requested is Options.LeaseDuration. Zero sends no duration, which is how
-	// the wire asks the broker to choose.
-	requested time.Duration
-
 	lease lease
 
 	// ctx bounds every heartbeat RPC. Cancelling it cancels the one in flight,
@@ -166,33 +162,40 @@ type heartbeat struct {
 	// would look exactly like a rejection and suppress the Ack that follows.
 	stopping atomic.Bool
 	stopOnce sync.Once
+	lostOnce sync.Once
 	stopped  chan struct{}
 	wg       sync.WaitGroup
 }
 
 func newHeartbeat(parent context.Context, rpc hopperv1.HopperServiceClient, log *slog.Logger,
-	d *delivery, requested time.Duration, onLost func(error)) *heartbeat {
+	d *delivery, onLost func(error)) *heartbeat {
 	ctx, cancel := context.WithCancel(parent)
 	return &heartbeat{
-		rpc:       rpc,
-		log:       log.With("job_id", d.job.ID, "lease_id", d.leaseID, "queue", d.job.Queue),
-		jobID:     d.job.ID,
-		leaseID:   d.leaseID,
-		grant:     d.grant,
-		requested: requested,
-		ctx:       ctx,
-		cancel:    cancel,
-		onLost:    onLost,
-		stopped:   make(chan struct{}),
+		rpc:     rpc,
+		log:     log.With("job_id", d.job.ID, "lease_id", d.leaseID, "queue", d.job.Queue),
+		jobID:   d.job.ID,
+		leaseID: d.leaseID,
+		grant:   d.grant,
+		ctx:     ctx,
+		cancel:  cancel,
+		onLost:  onLost,
+		stopped: make(chan struct{}),
 	}
 }
 
 func (h *heartbeat) request() *hopperv1.HeartbeatRequest {
-	r := &hopperv1.HeartbeatRequest{Id: h.jobID.String(), LeaseId: h.leaseID.String()}
-	if h.requested > 0 {
-		r.LeaseDuration = durationpb.New(h.requested)
+	// The delivery's timestamps are the only demonstrated grant. Pin every
+	// validation and renewal to it: asking each broker to choose again would
+	// let rolling configuration changes shorten the store lease while this
+	// worker continued scheduling against the older, longer duration.
+	return &hopperv1.HeartbeatRequest{
+		Id: h.jobID.String(), LeaseId: h.leaseID.String(),
+		LeaseDuration: durationpb.New(h.grant),
 	}
-	return r
+}
+
+func (h *heartbeat) notifyLost(cause error) {
+	h.lostOnce.Do(func() { h.onLost(cause) })
 }
 
 // acquire proves the lease is still ours before any handler runs.
@@ -295,7 +298,7 @@ func (h *heartbeat) monitor() {
 			if h.lease.expireIfPast(time.Now()) {
 				h.log.Warn("lease expired locally; cancelling the handler",
 					"deadline", deadline.Format(time.RFC3339Nano))
-				h.onLost(ErrLeaseExpired)
+				h.notifyLost(ErrLeaseExpired)
 				return
 			}
 		case <-h.stopped:
@@ -332,6 +335,15 @@ func (h *heartbeat) renew() {
 
 		deadline, cause := h.lease.state()
 		if cause != nil {
+			h.notifyLost(cause)
+			return
+		}
+		if now := time.Now(); !now.Before(deadline) {
+			h.lease.expireIfPast(now)
+			_, cause = h.lease.state()
+			h.log.Warn("lease expired locally; cancelling the handler",
+				"deadline", deadline.Format(time.RFC3339Nano))
+			h.notifyLost(cause)
 			return
 		}
 
@@ -350,22 +362,38 @@ func (h *heartbeat) renew() {
 				return
 			}
 			cause, retry := classifyHeartbeat(err)
-			if retry && h.lease.live() {
-				continue
+			if retry {
+				now := time.Now()
+				if now.Before(deadline) && h.lease.live() {
+					continue
+				}
+				h.lease.expireIfPast(now)
+				_, cause = h.lease.state()
+				if cause == nil {
+					cause = ErrLeaseExpired
+					h.lease.lose(cause)
+				}
+				h.notifyLost(cause)
+				return
 			}
 			if h.lease.lose(cause) {
 				h.log.Warn("heartbeat rejected; cancelling the handler", "err", err)
-				h.onLost(cause)
 			}
+			_, cause = h.lease.state()
+			h.notifyLost(cause)
 			return
 		}
 
 		if !h.lease.extend(deadlineFrom(sent, h.grant), time.Now()) {
-			if h.lease.live() {
+			_, cause := h.lease.state()
+			if cause == nil {
 				// A response too late to use. The older deadline still stands,
 				// so try again rather than giving up on a live lease.
 				continue
 			}
+			h.log.Warn("lease expired while applying a renewal; cancelling the handler",
+				"err", cause)
+			h.notifyLost(cause)
 			return
 		}
 	}

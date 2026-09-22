@@ -123,10 +123,12 @@ returning j.*;
   Each delivery carries valid `leased_at` and `lease_expires` timestamps; their
   difference is the broker-granted duration. As an explicit SDK policy, the
   worker performs one bounded Heartbeat before invoking user code, then renews
-  at one third of the granted duration. A successful RPC creates a conservative
-  local deadline from the monotonic request-start instant with scheduling slack;
-  that estimate is neither a new store guard nor permission to revive an
-  already expired local lease. If ownership is definitively rejected, the job
+  at one third of the granted duration. Every Heartbeat sends that original
+  grant explicitly; it does not reselect a broker default that may have changed
+  since delivery. A successful RPC creates a conservative local deadline from
+  the monotonic request-start instant with scheduling slack; that estimate is
+  neither a new store guard nor permission to revive an already expired local
+  lease. If ownership is definitively rejected, the job
   was cancelled, or the local deadline expires, the SDK cancels the handler's
   `context`. A handler should stop, but Go context cancellation cannot forcibly
   stop code that ignores it. This initial validation costs one unary RPC for
@@ -434,5 +436,9 @@ not in this table.
 | `ListJobs` visits every row once in ID order across mixed UUIDv4/v7 ids | `store: TestListJobsPagesInIDOrder` | 2 (`-count=2`, 2026-09-20) | pass |
 | Real worker process receives `SIGTERM` mid-handler, exits zero, and commits that job once while leaving waiting work untouched | `integration: TestWorkerGracefulShutdownCompletesTheRunningJob` (`-race`) | 2 (`-count=2`, 2026-09-21) | pass |
 | Real worker process exceeding its shutdown deadline exits nonzero, does not falsely complete the job, and the reaper schedules its retry | `integration: TestWorkerShutdownDeadlineReportsAbandonment` (`-race`) | 2 (`-count=2`, 2026-09-21) | pass |
+| Drain cannot finish before stream intake, including a buffered delivery received during teardown | `worker: TestDrainWaitsForDeliveryReceivedBeforeIntakeFinishes` (`-race`) | 20 focused + 2 full-suite (2026-09-22) | pass |
+| Shutdown force-cancellation observes the original absolute deadline even if lifecycle logging blocks | `worker: TestShutdownDeadlineIsEnforcedWhileStartLogIsBlocked` (`-race`) | 20 focused + 2 full-suite (2026-09-22) | pass |
+| Every Heartbeat pins the delivery's original grant, and renewal-observed expiry cancels the handler | `worker: TestExecutionPinsHeartbeatsToTheDeliveredGrant`, `TestEveryRenewalPinsTheOriginalBrokerGrant`, `TestRenewalCancelsHandlerWhenItObservesAnExpiredLease` (`-race`) | 2 full-suite each; latter two also 20 focused (2026-09-22) | pass |
+| The sanitized, bounded handler error logged by the SDK is the same value persisted by Nack | `worker: TestAFailingHandlerIsNackedWithASanitizedError` (`-race`) | 20 focused + 2 full-suite (2026-09-22) | pass |
 | Three Compose workers complete 1,000 scoped jobs with no retries | `hopper-session5` scoped Compose demo (`s5-bulk-*`, SQL state check) | 1 (2026-09-21) | pass: 1,000 completed, 0 retried, 8s enqueue-to-completion |
 | Compose worker stop accounts for every observed handler and every extra attempt | `hopper-session5` scoped Compose demo (`s5-shutdown-*`, JSON logs + SQL state checks) | 1 (2026-09-21) | pass: 12/12 started handlers confirmed; one captured unreceived lease explains the only second attempt; 300 completed, 0 dead |

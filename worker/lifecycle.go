@@ -41,15 +41,16 @@ type lifecycle struct {
 	// stopped ends the caller-cancellation watcher when Run returns.
 	stopped chan struct{}
 
-	mu            sync.Mutex
-	draining      bool
-	deadline      time.Time
-	active        int
-	acquiring     int
-	handlers      int
-	confirming    int
-	drainedClosed bool
-	stopOnce      sync.Once
+	mu             sync.Mutex
+	draining       bool
+	deadline       time.Time
+	active         int
+	acquiring      int
+	handlers       int
+	confirming     int
+	intakeFinished bool
+	drainedClosed  bool
+	stopOnce       sync.Once
 	// deadlineFired records that the budget ran out, and deadlineSnap what was
 	// still in flight at that instant. The verdict has to be this snapshot
 	// rather than a later reading of the counters: an abandoned delivery
@@ -111,12 +112,13 @@ func (l *lifecycle) beginDrain(reason string) {
 	l.deadline = time.Now().Add(l.timeout)
 	snap := l.countsLocked()
 	deadline := l.deadline
-	if l.active == 0 {
-		l.closeDrainedLocked()
-	}
 	l.mu.Unlock()
 
 	close(l.drainSignal)
+	// Enforcement is armed from the absolute deadline before logging. A slow
+	// or blocked handler must not be able to extend the shutdown budget merely
+	// by delaying this diagnostic.
+	go l.enforceDeadline(deadline)
 	// Task 11 reads this line out of the worker process's stdout to prove the
 	// signal landed while a handler was actually running, so the snapshot has
 	// to be the synchronized one taken above, not a second look from here.
@@ -126,15 +128,14 @@ func (l *lifecycle) beginDrain(reason string) {
 		"timeout", l.timeout.String(),
 		"active_deliveries", snap.deliveries,
 		"running_handlers", snap.handlers)
-	go l.enforceDeadline()
 }
 
 // enforceDeadline is what makes the budget real. It cannot wait for the drain
 // to finish, because the drain itself may be blocked on a broker that never
 // answered a half-close; the timer has to be able to cancel the transport out
 // from under it.
-func (l *lifecycle) enforceDeadline() {
-	timer := time.NewTimer(l.timeout)
+func (l *lifecycle) enforceDeadline(deadline time.Time) {
+	timer := time.NewTimer(max(time.Until(deadline), 0))
 	defer timer.Stop()
 	select {
 	case <-timer.C:
@@ -147,8 +148,8 @@ func (l *lifecycle) enforceDeadline() {
 		snap := l.deadlineSnap
 		l.mu.Unlock()
 
-		l.log.Warn("shutdown deadline reached", "counts", snap)
 		l.force(ErrShuttingDown)
+		l.log.Warn("shutdown deadline reached", "counts", snap)
 	case <-l.forceCtx.Done():
 	}
 }
@@ -165,6 +166,10 @@ func (l *lifecycle) abandonedAtDeadline() (counts, bool) {
 // an error wrapping ErrAbandoned when work was still in flight at the deadline.
 func (l *lifecycle) await() error {
 	l.beginDrain("run returned")
+	// consume calls await only after the stream reader has stopped, so no new
+	// delivery can begin beyond this point. Before that point a half-closing
+	// stream may still yield buffered deliveries even though drain has begun.
+	l.finishIntake()
 	select {
 	case <-l.drained:
 	case <-l.forceCtx.Done():
@@ -184,6 +189,18 @@ func (l *lifecycle) await() error {
 		handlers:   snap.handlers,
 		acquiring:  snap.acquiring,
 		confirming: snap.confirming,
+	}
+}
+
+func (l *lifecycle) finishIntake() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.intakeFinished {
+		return
+	}
+	l.intakeFinished = true
+	if l.active == 0 {
+		l.closeDrainedLocked()
 	}
 }
 
@@ -320,7 +337,7 @@ func (w *work) end() {
 	w.lc.countOf(w.cur, -1)
 	w.cur = phaseNone
 	w.lc.active--
-	if w.lc.draining && w.lc.active == 0 {
+	if w.lc.draining && w.lc.intakeFinished && w.lc.active == 0 {
 		w.lc.closeDrainedLocked()
 	}
 }

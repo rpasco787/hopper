@@ -20,8 +20,9 @@ import (
 // logSink keeps log messages so a test can assert on the events the worker
 // process tests in Task 11 will later parse out of stdout.
 type logSink struct {
-	mu    sync.Mutex
-	lines []string
+	mu     sync.Mutex
+	lines  []string
+	errors map[string][]string
 }
 
 func (s *logSink) Enabled(context.Context, slog.Level) bool { return true }
@@ -32,6 +33,15 @@ func (s *logSink) Handle(_ context.Context, r slog.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lines = append(s.lines, r.Message)
+	if s.errors == nil {
+		s.errors = map[string][]string{}
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "err" {
+			s.errors[r.Message] = append(s.errors[r.Message], a.Value.String())
+		}
+		return true
+	})
 	return nil
 }
 
@@ -39,6 +49,12 @@ func (s *logSink) messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.lines)
+}
+
+func (s *logSink) errorValues(message string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.errors[message])
 }
 
 // runHandler starts a worker with one real handler and returns its run and the
@@ -123,9 +139,10 @@ func TestASuccessfulHandlerIsAcked(t *testing.T) {
 func TestAFailingHandlerIsNackedWithASanitizedError(t *testing.T) {
 	ctx := waitCtx(t)
 	f := startFake(t)
+	sink := &logSink{}
 
 	dirty := "boom \x00 " + strings.Repeat("é", maxErrorBytes) + "\xff"
-	r, s := runHandler(t, ctx, f, Options{}, "q",
+	r, s := runHandler(t, ctx, f, Options{Logger: slog.New(sink)}, "q",
 		func(context.Context, Job) error { return errors.New(dirty) })
 
 	require.NoError(t, s.deliver(ctx, newFixture("q").proto()))
@@ -139,6 +156,12 @@ func TestAFailingHandlerIsNackedWithASanitizedError(t *testing.T) {
 	require.LessOrEqual(t, len(msg), maxErrorBytes)
 	require.True(t, strings.HasPrefix(msg, "boom  "))
 	require.Empty(t, f.ackRequests())
+
+	logged := sink.errorValues("handler finished")
+	require.Len(t, logged, 1)
+	require.Equal(t, msg, logged[0], "the bounded value persisted by Nack is also the value exposed to log handlers")
+	require.NotContains(t, logged[0], "\x00")
+	require.LessOrEqual(t, len(logged[0]), maxErrorBytes)
 }
 
 func TestAPanickingHandlerIsNackedAndTheWorkerCarriesOn(t *testing.T) {
@@ -334,6 +357,24 @@ func TestAHeartbeatCancelledByNormalCompletionStillAcks(t *testing.T) {
 	require.NoError(t, r.stopAndWait(t))
 	require.Len(t, f.ackRequests(), 1, "the lease was still live under its last confirmed deadline")
 	require.Empty(t, f.nackRequests())
+}
+
+func TestExecutionPinsHeartbeatsToTheDeliveredGrant(t *testing.T) {
+	ctx := waitCtx(t)
+	f := startFake(t)
+	r, s := runHandler(t, ctx, f, Options{LeaseDuration: 12 * time.Second}, "q",
+		func(context.Context, Job) error { return nil })
+
+	fx := newFixture("q")
+	fx.Grant = 30 * time.Second
+	require.NoError(t, s.deliver(ctx, fx.proto()))
+	awaitCalls(t, ctx, f, "Ack", 1)
+	require.NoError(t, r.stopAndWait(t))
+
+	requests := f.heartbeatRequests()
+	require.NotEmpty(t, requests)
+	require.Equal(t, 30*time.Second, requests[0].GetLeaseDuration().AsDuration(),
+		"a broker configuration change must not replace the grant this delivery actually received")
 }
 
 func TestAnUnregisteredQueueIsNackedUnstarted(t *testing.T) {

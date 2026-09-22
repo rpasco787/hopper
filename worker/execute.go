@@ -29,7 +29,7 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	handlerCtx, cancelHandler := context.WithCancelCause(lc.forceCtx)
 	defer cancelHandler(errDeliveryDone)
 
-	hb := newHeartbeat(lc.forceCtx, rpc, w.log, d, w.opts.LeaseDuration, cancelHandler)
+	hb := newHeartbeat(lc.forceCtx, rpc, w.log, d, cancelHandler)
 	// Idempotent, and needed on every path: an acquisition that failed still
 	// left a context hanging off the force context, and one per delivery adds up.
 	defer hb.stop()
@@ -67,7 +67,13 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	// which is our own doing rather than a rejection, so the lease stays live
 	// and the confirmation below runs under the last deadline it won.
 	hb.stop()
-	log.Info("handler finished", "err", err, "duration_ms", time.Since(d.receivedAt).Milliseconds())
+	var message string
+	var loggedErr any
+	if err != nil {
+		message = sanitizeError(err.Error())
+		loggedErr = message
+	}
+	log.Info("handler finished", "err", loggedErr, "duration_ms", time.Since(d.receivedAt).Milliseconds())
 	wk.confirming()
 
 	if lc.forceCtx.Err() != nil {
@@ -84,7 +90,6 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 		logConfirmation(log, "ack", outcome, cerr)
 		return
 	}
-	message := sanitizeError(err.Error())
 	outcome, cerr := c.nack(message)
 	logConfirmation(log, "nack", outcome, cerr)
 }

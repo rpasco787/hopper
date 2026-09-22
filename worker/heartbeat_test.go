@@ -21,7 +21,7 @@ type hb struct {
 	f    *fake
 }
 
-func newHB(t *testing.T, f *fake, grant, requested time.Duration) *hb {
+func newHB(t *testing.T, f *fake, grant time.Duration) *hb {
 	t.Helper()
 
 	fx := newFixture("q")
@@ -33,7 +33,7 @@ func newHB(t *testing.T, f *fake, grant, requested time.Duration) *hb {
 	t.Cleanup(cancel)
 
 	lost := make(chan error, 8)
-	h := newHeartbeat(parent, f.dial(t), quietLogger(), d, requested, func(err error) { lost <- err })
+	h := newHeartbeat(parent, f.dial(t), quietLogger(), d, func(err error) { lost <- err })
 	t.Cleanup(h.stop)
 	return &hb{h: h, d: d, lost: lost, f: f}
 }
@@ -51,7 +51,7 @@ func (x *hb) awaitLost(t *testing.T, ctx context.Context) error {
 
 func TestAcquisitionSpendsOneHeartbeatAndEstablishesADeadline(t *testing.T) {
 	f := startFake(t)
-	x := newHB(t, f, 30*time.Second, 0)
+	x := newHB(t, f, 30*time.Second)
 
 	sent := time.Now()
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
@@ -65,22 +65,15 @@ func TestAcquisitionSpendsOneHeartbeatAndEstablishesADeadline(t *testing.T) {
 	require.WithinDuration(t, sent.Add(30*time.Second-leaseSafetyMargin), deadline, time.Second)
 	require.True(t, deadline.After(time.Now()), "a handler may only start against a future deadline")
 
-	require.Empty(t, f.heartbeatRequests()[0].LeaseDuration,
-		"an unset Options.LeaseDuration keeps asking the broker to choose")
-}
-
-func TestAcquisitionSendsTheConfiguredDuration(t *testing.T) {
-	f := startFake(t)
-	x := newHB(t, f, 30*time.Second, 12*time.Second)
-	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
-	require.Equal(t, 12*time.Second, f.heartbeatRequests()[0].GetLeaseDuration().AsDuration())
+	require.Equal(t, 30*time.Second, f.heartbeatRequests()[0].GetLeaseDuration().AsDuration(),
+		"validation pins the duration carried by the delivery instead of consulting a new broker default")
 }
 
 func TestRenewalUsesTheBrokerSGrantNotTheRequest(t *testing.T) {
 	f := startFake(t)
 	// The broker granted 400ms although nothing was requested. Renewal has to
 	// pace off the grant: it is the only evidence of what the broker chose.
-	x := newHB(t, f, 400*time.Millisecond, 0)
+	x := newHB(t, f, 400*time.Millisecond)
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 
 	deadline, _ := x.h.lease.state()
@@ -90,7 +83,7 @@ func TestRenewalUsesTheBrokerSGrantNotTheRequest(t *testing.T) {
 
 func TestPeriodicRenewalKeepsAHandlerAliveAcrossSeveralGrants(t *testing.T) {
 	f := startFake(t)
-	x := newHB(t, f, 200*time.Millisecond, 0)
+	x := newHB(t, f, 200*time.Millisecond)
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 	x.h.start()
 
@@ -111,9 +104,25 @@ func TestPeriodicRenewalKeepsAHandlerAliveAcrossSeveralGrants(t *testing.T) {
 	require.Empty(t, x.lost, "and the handler is never told anything went wrong")
 }
 
+func TestEveryRenewalPinsTheOriginalBrokerGrant(t *testing.T) {
+	f := startFake(t)
+	x := newHB(t, f, 150*time.Millisecond)
+	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
+	x.h.start()
+	awaitCalls(t, waitCtx(t), f, "Heartbeat", 3)
+	x.h.stop()
+
+	requests := f.heartbeatRequests()
+	require.GreaterOrEqual(t, len(requests), 3)
+	for i, req := range requests {
+		require.Equalf(t, 150*time.Millisecond, req.GetLeaseDuration().AsDuration(),
+			"heartbeat %d must not select a different broker's default", i)
+	}
+}
+
 func TestShortGrantsGetNoMinimumInterval(t *testing.T) {
 	f := startFake(t)
-	x := newHB(t, f, 60*time.Millisecond, 0)
+	x := newHB(t, f, 60*time.Millisecond)
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 	before, _ := f.counts("Heartbeat")
 	x.h.start()
@@ -142,7 +151,7 @@ func TestTerminalHeartbeatMappings(t *testing.T) {
 					return status.Error(tc.code, tc.name)
 				}
 			})
-			x := newHB(t, f, 30*time.Second, 0)
+			x := newHB(t, f, 30*time.Second)
 			err := x.h.acquire(x.d.acquisitionBudget())
 			require.ErrorIs(t, err, tc.want)
 			require.False(t, x.h.lease.live(), "a refused acquisition never starts a handler")
@@ -151,7 +160,7 @@ func TestTerminalHeartbeatMappings(t *testing.T) {
 		t.Run("renewal: "+tc.name, func(t *testing.T) {
 			ctx := waitCtx(t)
 			f := startFake(t)
-			x := newHB(t, f, 150*time.Millisecond, 0)
+			x := newHB(t, f, 150*time.Millisecond)
 			require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 
 			f.set(func() {
@@ -173,7 +182,7 @@ func TestAGenericRejectionStopsWorkWithItsDiagnostic(t *testing.T) {
 			return status.Error(codes.Internal, "internal error")
 		}
 	})
-	x := newHB(t, f, 30*time.Second, 0)
+	x := newHB(t, f, 30*time.Second)
 
 	err := x.h.acquire(x.d.acquisitionBudget())
 	require.ErrorContains(t, err, "heartbeat rejected")
@@ -200,7 +209,7 @@ func TestTransientFailuresAreRetriedWithinTheBudget(t *testing.T) {
 			return nil
 		}
 	})
-	x := newHB(t, f, 30*time.Second, 0)
+	x := newHB(t, f, 30*time.Second)
 
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 	started, _ := f.counts("Heartbeat")
@@ -217,7 +226,7 @@ func TestAcquisitionGivesUpWhenItsBudgetRunsOut(t *testing.T) {
 		}
 	})
 	// A 300ms grant leaves a 270ms budget: the whole attempt is bounded by it.
-	x := newHB(t, f, 300*time.Millisecond, 0)
+	x := newHB(t, f, 300*time.Millisecond)
 
 	start := time.Now()
 	err := x.h.acquire(x.d.acquisitionBudget())
@@ -231,7 +240,7 @@ func TestAcquisitionGivesUpWhenItsBudgetRunsOut(t *testing.T) {
 func TestExpiryIsIndependentOfHeartbeatProgress(t *testing.T) {
 	ctx := waitCtx(t)
 	f := startFake(t)
-	x := newHB(t, f, 300*time.Millisecond, 0)
+	x := newHB(t, f, 300*time.Millisecond)
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 	deadline, _ := x.h.lease.state()
 
@@ -254,12 +263,24 @@ func TestExpiryIsIndependentOfHeartbeatProgress(t *testing.T) {
 	require.Greater(t, started, 1, "renewals were attempted and got nowhere")
 }
 
+func TestRenewalCancelsHandlerWhenItObservesAnExpiredLease(t *testing.T) {
+	f := startFake(t)
+	x := newHB(t, f, 3*time.Millisecond)
+	x.h.lease.establish(time.Now().Add(-time.Second))
+
+	x.h.wg.Add(1)
+	go x.h.renew()
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, x.awaitLost(t, ctx), ErrLeaseExpired)
+}
+
 func TestStopDuringABlockedRenewalIsPromptAndNotARejection(t *testing.T) {
 	ctx := waitCtx(t)
 	f := startFake(t)
 	// A long grant means a long renewal interval, so the stalled RPC would
 	// otherwise sit there for ten seconds.
-	x := newHB(t, f, 30*time.Second, 0)
+	x := newHB(t, f, 30*time.Second)
 	require.NoError(t, x.h.acquire(x.d.acquisitionBudget()))
 
 	g := newGate(t)

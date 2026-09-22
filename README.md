@@ -87,8 +87,9 @@ func main() {
 
 Each valid delivery spends one initial Heartbeat RPC to prove that its lease is
 still owned before user code starts. The SDK then renews at one third of the
-broker-granted duration. A capacity token remains occupied through validation,
-handler execution, and Ack/Nack confirmation.
+broker-granted duration, and every Heartbeat pins that original grant rather
+than consulting a possibly changed broker default. A capacity token remains
+occupied through validation, handler execution, and Ack/Nack confirmation.
 
 ## Bulk enqueue CLI
 

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +88,76 @@ func TestAwaitWaitsForActiveDeliveries(t *testing.T) {
 		t.Fatal("await did not return after the last delivery finished")
 	}
 	require.Equal(t, counts{}, lc.counts())
+}
+
+func TestDrainWaitsForDeliveryReceivedBeforeIntakeFinishes(t *testing.T) {
+	lc := newTestLifecycle(t, context.Background(), time.Minute)
+	lc.beginDrain("caller cancelled")
+
+	select {
+	case <-lc.drained:
+		t.Fatal("drain completed before intake finished and could no longer deliver buffered work")
+	default:
+	}
+
+	late := lc.begin()
+	done := make(chan error, 1)
+	go func() { done <- lc.await() }()
+	select {
+	case err := <-done:
+		t.Fatalf("await returned %v while a delivery received during teardown was active", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	late.end()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(barrier):
+		t.Fatal("await did not return after intake ended and the late delivery finished")
+	}
+}
+
+type blockedShutdownLog struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *blockedShutdownLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h *blockedShutdownLog) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *blockedShutdownLog) WithGroup(string) slog.Handler            { return h }
+func (h *blockedShutdownLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == "shutdown started" {
+		h.once.Do(func() { close(h.entered) })
+		<-h.release
+	}
+	return nil
+}
+
+func TestShutdownDeadlineIsEnforcedWhileStartLogIsBlocked(t *testing.T) {
+	h := &blockedShutdownLog{entered: make(chan struct{}), release: make(chan struct{})}
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(h.release) }) })
+
+	const budget = 50 * time.Millisecond
+	lc := newLifecycle(context.Background(), budget, slog.New(h))
+	t.Cleanup(lc.stop)
+	lc.begin()
+	go lc.beginDrain("caller cancelled")
+
+	select {
+	case <-h.entered:
+	case <-time.After(barrier):
+		t.Fatal("shutdown-start log was never reached")
+	}
+	select {
+	case <-lc.forceCtx.Done():
+		require.ErrorIs(t, context.Cause(lc.forceCtx), ErrShuttingDown)
+	case <-time.After(5 * budget):
+		t.Fatal("blocked logging extended the forced-shutdown deadline")
+	}
+	release.Do(func() { close(h.release) })
 }
 
 func TestAwaitReportsAbandonmentWithSeparateCounts(t *testing.T) {
