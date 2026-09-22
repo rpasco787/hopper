@@ -1,3 +1,22 @@
+x-broker: &broker
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+    args:
+      BINARY: broker
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    HOPPER_DSN: postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
+    HOPPER_LISTEN: 0.0.0.0:9090
+    HOPPER_LEASE_DURATION: 30s
+    HOPPER_LOG_LEVEL: info
+    HOPPER_CRON_FILE: /etc/hopper/schedules.json
+  volumes:
+    - ./deploy/cron/schedules.json:/etc/hopper/schedules.json:ro
+  stop_grace_period: 40s
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -12,22 +31,15 @@ services:
       retries: 30
 
   broker:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        BINARY: broker
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      HOPPER_DSN: postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
-      HOPPER_LISTEN: 0.0.0.0:9090
-      HOPPER_LEASE_DURATION: 30s
-      HOPPER_LOG_LEVEL: info
+    <<: *broker
     ports:
       - "127.0.0.1:9090:9090"
-    stop_grace_period: 40s
+
+  # A second broker with no published port: it serves nothing the host can
+  # reach, but it contends for the scheduler's advisory lock, so stopping or
+  # killing whichever broker holds it demonstrates failover.
+  broker-standby:
+    <<: *broker
 
   worker:
     build:

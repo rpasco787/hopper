@@ -1,0 +1,19 @@
+{
+  "schedules": [
+    {
+      "name": "sleep-heartbeat",
+      "queue": "sleep",
+      "cron": "@every 10s",
+      "payload": {"ms": 50}
+    },
+    {
+      "name": "cpu-burn-5m",
+      "queue": "cpu_burn",
+      "cron": "*/5 * * * *",
+      "timezone": "America/New_York",
+      "payload": {"ms": 200},
+      "priority": 5,
+      "max_attempts": 3
+    }
+  ]
+}

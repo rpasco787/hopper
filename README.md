@@ -5,10 +5,11 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 5 build includes the broker, producer client, worker SDK,
-example worker, bulk enqueue CLI, and a minimal local Compose stack. Scheduling,
-metrics, image publishing, Kubernetes/Helm, KEDA, chaos automation, and load
-testing remain later-session work.
+The current Session 6 build includes the broker, producer client, worker SDK,
+example worker, bulk enqueue CLI, a leader-elected cron scheduler inside the
+broker, and a minimal local Compose stack. Metrics, image publishing,
+Kubernetes/Helm, KEDA, chaos automation, and load testing remain later-session
+work.
 
 ## Quick start
 
@@ -16,7 +17,7 @@ Requirements: Docker with Compose v2. The broker is published only on
 `127.0.0.1:9090`; PostgreSQL is not published to the host.
 
 ```bash
-docker compose -p hopper-session5 up -d --build --scale worker=3
+docker compose -p hopper-session6 up -d --build --scale worker=3
 
 go run ./cmd/hopperctl enqueue \
   -queue sleep \
@@ -25,14 +26,77 @@ go run ./cmd/hopperctl enqueue \
   -batch 100 \
   -key-prefix quickstart
 
-docker compose -p hopper-session5 logs -f broker worker
-docker compose -p hopper-session5 down -v
+docker compose -p hopper-session6 logs -f broker worker
+docker compose -p hopper-session6 down -v
 ```
 
 The example worker registers three queues:
 
 - `sleep` and `cpu_burn` accept `{"ms":100}`; omitted `ms` defaults to 100.
 - `fail_n_times` accepts `{"fail":2}` and fails while `Job.Attempt <= fail`.
+
+## Cron schedules
+
+Schedules are declared in a JSON file passed as `-cron-file`
+(`HOPPER_CRON_FILE`). The Compose stack mounts
+[deploy/cron/schedules.json](deploy/cron/schedules.json) into both brokers:
+
+```json
+{
+  "schedules": [
+    {
+      "name": "cpu-burn-5m",
+      "queue": "cpu_burn",
+      "cron": "*/5 * * * *",
+      "timezone": "America/New_York",
+      "payload": {"ms": 200},
+      "priority": 5,
+      "max_attempts": 3
+    }
+  ]
+}
+```
+
+`cron` accepts a five-field expression, a descriptor such as `@hourly`, or
+`@every <duration>` (one-second floor). `timezone` is an IANA name and defaults
+to UTC; `payload` defaults to `{}`; `enabled` defaults to `true`. Unknown
+fields, duplicate names, bad expressions, and an empty `schedules` array are
+rejected at startup, so a bad file stops the broker before it listens.
+
+Every broker contends for one PostgreSQL advisory lock, and only the holder
+runs the scheduler; if it dies, its session ends, the lock is released, and
+another broker takes over on its next `-scheduler-interval`. Each tick is
+enqueued with the idempotency key `<name>@<tick>` and then advanced with a
+compare-and-swap, so a stalled former leader cannot double-fire or rewind a
+schedule.
+
+A schedule that is overdue — after downtime or a slow failover — fires once
+for its pending tick and then skips to the next future occurrence; history is
+not backfilled. The leader applies the file at the start of each term: it is
+authoritative, so schedules absent from it are deleted. Without a file, the
+broker serves whatever rows `cron_schedules` already holds and prunes nothing.
+Schedules are file-managed only; there is no management RPC yet.
+
+Changing a schedule's `queue` starts a new delivery lineage, because
+idempotency keys deduplicate within a queue; change it between ticks, not
+while one is in flight.
+
+| Flag | Environment | Default | Meaning |
+|---|---|---:|---|
+| `-cron-file` | `HOPPER_CRON_FILE` | empty | Schedule declarations; empty leaves `cron_schedules` unmanaged. |
+| `-scheduler` | `HOPPER_SCHEDULER` | `true` | Contend for the scheduler role in this process. |
+| `-scheduler-interval` | `HOPPER_SCHEDULER_INTERVAL` | `5s` | Tick period, and how often a non-leader retries the lock. |
+
+To watch failover locally, find the leader with
+`docker compose -p hopper-session6 logs broker broker-standby | grep "term won"`,
+then `docker compose -p hopper-session6 stop <service>` (or `docker kill` its
+container for the ungraceful path). The other broker logs `scheduler term won`
+within an interval. `broker-standby` publishes no port and workers dial
+`broker`, so if you stop `broker`, start it again to let workers drain the jobs
+the standby fires.
+
+See [docs/semantics.md §13](docs/semantics.md) for the full contract, including
+the two windows in which a tick can fire twice.
 
 ## Worker SDK
 
@@ -142,7 +206,7 @@ gofmt -l .
 go vet ./...
 buf lint
 go test -race -count=2 ./...
-docker compose -p hopper-session5 config
+docker compose -p hopper-session6 config
 ```
 
 The integration suite starts PostgreSQL with Testcontainers and therefore needs
