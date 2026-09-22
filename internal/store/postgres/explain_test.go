@@ -44,14 +44,14 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 
 	for _, tc := range []struct {
 		name      string
-		index     string
+		indexes   []string
 		allowSort bool
 		sql       string
 		args      []any
 	}{
 		{
 			name:      "lease",
-			index:     "jobs_lease_idx",
+			indexes:   []string{"jobs_lease_idx"},
 			allowSort: true,
 			sql: `select id from jobs
 			      where queue = any($1) and state = 'available'
@@ -60,8 +60,8 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 			args: []any{[]string{"q"}, 10},
 		},
 		{
-			name:  "promote",
-			index: "jobs_promote_idx",
+			name:    "promote",
+			indexes: []string{"jobs_promote_idx"},
 			sql: `select id from jobs
 			      where state = 'scheduled' and run_at <= now()
 			      order by run_at
@@ -69,8 +69,8 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 			args: []any{10},
 		},
 		{
-			name:  "reap",
-			index: "jobs_reap_idx",
+			name:    "reap",
+			indexes: []string{"jobs_reap_idx"},
 			sql: `select id, queue, attempts, max_attempts from jobs
 			      where state = 'leased' and lease_expires < now()
 			      order by lease_expires
@@ -79,7 +79,7 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 		},
 		{
 			name:      "list dead",
-			index:     "jobs_dead_idx",
+			indexes:   []string{"jobs_dead_idx"},
 			allowSort: true,
 			sql: `select id from jobs
 			      where queue = $1 and state = 'dead'
@@ -89,18 +89,32 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 			args: []any{"q", nil, nil, 10},
 		},
 		{
-			name:  "retention",
-			index: "jobs_retention_idx",
+			name:    "retention",
+			indexes: []string{"jobs_retention_idx"},
 			sql: `select id from jobs
 			      where state in ('completed', 'cancelled') and finished_at < $1
 			      order by finished_at
 			      limit $2 for update skip locked`,
 			args: []any{time.Now(), 10},
 		},
+		{
+			name:      "depth",
+			indexes:   []string{"jobs_lease_idx", "jobs_promote_idx", "jobs_reap_idx", "jobs_dead_idx"},
+			allowSort: true,
+			sql: `select queue, 'available' as state, count(*) as count from jobs where state = 'available' group by queue
+			      union all
+			      select queue, 'scheduled', count(*) from jobs where state = 'scheduled' group by queue
+			      union all
+			      select queue, 'leased', count(*) from jobs where state = 'leased' group by queue
+			      union all
+			      select queue, 'dead', count(*) from jobs where state = 'dead' group by queue`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := explainPlan(t, tc.sql, tc.args...)
-			require.Contains(t, plan, tc.index, "plan:\n%s", plan)
+			for _, index := range tc.indexes {
+				require.Contains(t, plan, index, "plan:\n%s", plan)
+			}
 			require.NotContains(t, plan, "Seq Scan", "plan:\n%s", plan)
 			if !tc.allowSort {
 				require.NotContains(t, plan, "Sort", "plan:\n%s", plan)

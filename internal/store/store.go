@@ -118,6 +118,13 @@ type Job struct {
 	FinishedAt *time.Time `db:"finished_at"`
 }
 
+// QueueDepth is how many jobs one queue holds in one state at one instant.
+type QueueDepth struct {
+	Queue string `db:"queue"`
+	State State  `db:"state"`
+	Count int64  `db:"count"`
+}
+
 // EnqueueParams is the caller-supplied part of a job. Zero values take the
 // defaults noted on each field; everything else on Job is set by the store.
 type EnqueueParams struct {
@@ -195,6 +202,19 @@ func (e *TerminalStateError) Error() string {
 }
 
 func (e *TerminalStateError) Unwrap() error { return ErrTerminal }
+
+// QueueDepthSource is implemented by stores that can report queue depth. It is
+// separate from Store because only the broker's metrics need it.
+type QueueDepthSource interface {
+	// QueueDepths counts jobs per queue in the states that describe work still
+	// owed or evidence still kept — scheduled, available, leased and dead — in
+	// one statement, so the counts are one consistent snapshot. Completed and
+	// cancelled rows are deliberately not counted: they are most of the table,
+	// bounded by retention rather than load, and nothing scales on them. A
+	// queue with no rows in any counted state is absent; a caller that needs
+	// its zero must know the queue (docs/semantics.md §14).
+	QueueDepths(ctx context.Context) ([]QueueDepth, error)
+}
 
 // Store is the persistence contract. Every method takes a context for
 // cancellation and timeouts. Implementations must make each state transition
