@@ -67,6 +67,12 @@ func TestCheckFailsAfterTheSessionDies(t *testing.T) {
 
 	lead, err := s.TryLeadership(ctx)
 	require.NoError(t, err)
+	// Once the backend is killed below, lead's connection is permanently
+	// broken. Release's error path hijacks and closes it (the discard rule
+	// from Decision 1), which is what tells the pool to stop waiting on it;
+	// without this, pool.Close() in TestMain blocks forever on a connection
+	// that was checked out and never returned.
+	t.Cleanup(func() { lead.Release(context.Background()) }) //nolint:errcheck // best-effort cleanup
 
 	var pid int32
 	require.NoError(t, pool.QueryRow(ctx, `
