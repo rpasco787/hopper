@@ -92,7 +92,11 @@ func startFake(t *testing.T) *fake {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	f.addr = lis.Addr().String()
-	f.srv = grpc.NewServer()
+	// Stop cancels every transport, and WaitForHandlers makes it join handlers
+	// that were already dispatched before it returns. Without this option a
+	// handler can reach enter (and WaitGroup.Add) after cleanup has begun Wait,
+	// which is both a race and a false claim that the harness joined its work.
+	f.srv = grpc.NewServer(grpc.WaitForHandlers(true))
 	hopperv1.RegisterHopperServiceServer(f.srv, f)
 
 	served := make(chan struct{})
