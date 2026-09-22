@@ -1,5 +1,6 @@
 // Command broker serves the hopper.v1 gRPC API over a PostgreSQL store, runs
-// the reaper, promoter and janitor sweeps, and shuts down on SIGTERM/SIGINT.
+// the reaper, promoter and janitor sweeps and the cron scheduler, and shuts
+// down on SIGTERM/SIGINT.
 //
 // It is the composition root: the one place that owns process concerns —
 // flags, signals, the connection pool and migration. The library packages
@@ -22,10 +23,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// The runtime image is distroless/static, which ships no zoneinfo, so a
+	// schedule in any timezone but UTC would fail to load there. Embedding the
+	// database costs about 450 KB in the binary.
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rpasco787/hopper/internal/broker"
+	"github.com/rpasco787/hopper/internal/scheduler"
 	"github.com/rpasco787/hopper/internal/store/postgres"
 	"github.com/rpasco787/hopper/internal/sweep"
 )
@@ -34,6 +40,13 @@ type config struct {
 	dsn, listen, logLevel                                                   string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
 	maxLeaseBatch                                                           int
+
+	scheduler         bool
+	schedulerInterval time.Duration
+	cronFile          string
+	// schedules is the parsed, validated content of cronFile; nil when no
+	// file was given, which leaves cron_schedules unmanaged.
+	schedules []scheduler.Definition
 }
 
 // envVars maps each flag to the environment variable that can set it. A flag
@@ -43,6 +56,8 @@ var envVars = [][2]string{
 	{"lease-duration", "HOPPER_LEASE_DURATION"}, {"reaper-interval", "HOPPER_REAPER_INTERVAL"},
 	{"poll-interval", "HOPPER_POLL_INTERVAL"}, {"retention", "HOPPER_RETENTION"},
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"}, {"max-lease-batch", "HOPPER_MAX_LEASE_BATCH"},
+	{"scheduler", "HOPPER_SCHEDULER"}, {"scheduler-interval", "HOPPER_SCHEDULER_INTERVAL"},
+	{"cron-file", "HOPPER_CRON_FILE"},
 }
 
 // parseConfig resolves flags and environment into a validated config. Every
@@ -60,6 +75,9 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.retention, "retention", 24*time.Hour, "positive finished-job retention window (HOPPER_RETENTION)")
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "RPC drain deadline (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
+	fs.BoolVar(&c.scheduler, "scheduler", true, "run the cron scheduler in this process (HOPPER_SCHEDULER)")
+	fs.DurationVar(&c.schedulerInterval, "scheduler-interval", 5*time.Second, "leadership retry and tick period (HOPPER_SCHEDULER_INTERVAL)")
+	fs.StringVar(&c.cronFile, "cron-file", "", "JSON schedule declarations; empty leaves cron_schedules unmanaged (HOPPER_CRON_FILE)")
 	// Parse flags first so a supplied flag wins even over an invalid env value.
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -91,6 +109,7 @@ func parseConfig(args []string) (config, error) {
 	}{
 		{"lease-duration", c.leaseDuration}, {"reaper-interval", c.reaperInterval},
 		{"poll-interval", c.pollInterval}, {"retention", c.retention}, {"shutdown-timeout", c.shutdownTimeout},
+		{"scheduler-interval", c.schedulerInterval},
 	} {
 		if d.value <= 0 {
 			return c, fmt.Errorf("%s must be positive", d.name)
@@ -98,6 +117,13 @@ func parseConfig(args []string) (config, error) {
 	}
 	if c.maxLeaseBatch <= 0 {
 		return c, errors.New("max-lease-batch must be positive")
+	}
+	if c.cronFile != "" {
+		defs, err := scheduler.LoadFile(c.cronFile)
+		if err != nil {
+			return c, err
+		}
+		c.schedules = defs
 	}
 	return c, nil
 }
@@ -196,6 +222,20 @@ func run(args []string) error {
 			}
 		}(loop)
 	}
+	if cfg.scheduler {
+		sched := &scheduler.Scheduler{
+			Store: st, Interval: cfg.schedulerInterval, Logger: logger, Definitions: cfg.schedules,
+		}
+		sweeps.Add(1)
+		go func() {
+			defer sweeps.Done()
+			if err := sched.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("scheduler stopped", "err", err)
+			}
+		}()
+	}
+	logger.Info("scheduler configured", "enabled", cfg.scheduler,
+		"interval", cfg.schedulerInterval.String(), "definitions", len(cfg.schedules))
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
 	logger.Info("broker listening", "addr", lis.Addr().String(),
