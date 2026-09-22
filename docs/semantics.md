@@ -13,7 +13,8 @@ time, but it *can* be delivered more than once in sequence: whenever a worker
 holds a lease and does not ack before the lease expires, the job is redelivered.
 Handlers must therefore be idempotent. hopper provides no ordering guarantee
 across jobs and no exactly-once execution; the latter is a property your handler
-must supply, using the job id or `job.Attempt` as its dedup key.
+must supply, using the stable job ID (or a stable business ID in the payload) as
+its dedup key. `job.Attempt` is delivery history, not an idempotency key.
 
 ## 2. Job states
 
@@ -104,20 +105,32 @@ returning j.*;
   saturation) and be positive, or the call fails with `INVALID_ARGUMENT` before
   it reaches the store. No operational maximum is imposed.
 - **Flow control.** A worker holds one `LeaseJobs` stream and spends *credit*:
-  its first message declares how many jobs it can run, and every later message
-  returns credit as handlers finish. The broker never leases more rows than the
-  outstanding credit, and never more than `-max-lease-batch` at once. This is
-  why the stream is bidirectional: a server-stream carries no signal that a
-  handler finished, and the broker cannot infer one from `Ack`, because brokers
-  are stateless and a worker's `Ack` may land on a different replica. Credits
-  are cooperative free-slot declarations, not receipt acknowledgments. On
-  reconnect subtract handlers still running from the initial credit; stream
-  closure does not revoke their leases. A redundant subscription is rejected.
+  its first message declares how many delivery slots are free, and every later
+  message returns credit only after a delivery has stopped using its slot. A
+  token covers initial ownership validation, handler execution, and Ack/Nack
+  confirmation; handler return alone does not free it. The broker never leases
+  more rows than the outstanding credit, and never more than
+  `-max-lease-batch` at once. This is why the stream is bidirectional: a
+  server-stream carries no capacity-return signal, and the broker cannot infer
+  one from `Ack`, because brokers are stateless and a worker's `Ack` may land on
+  a different replica. Credits are cooperative free-slot declarations, not
+  receipt acknowledgments. Stream teardown reclaims only unresolved stream
+  credit. On reconnect the worker advertises its currently free slots; closing
+  a stream does not revoke leases or capacity held by deliveries already in
+  progress. A redundant subscription is rejected.
 - **Extension.** `Heartbeat(id, lease_id, dur)` (store method: `ExtendLease`) sets
   `lease_expires = now() + dur` **only if** `state = 'leased' and lease_id = $2`.
-  The SDK heartbeats at 1/3 of the lease duration. If a heartbeat is rejected
-  (lease lost) the SDK cancels the handler's `context`; the handler should
-  stop, but hopper cannot force it to.
+  Each delivery carries valid `leased_at` and `lease_expires` timestamps; their
+  difference is the broker-granted duration. As an explicit SDK policy, the
+  worker performs one bounded Heartbeat before invoking user code, then renews
+  at one third of the granted duration. A successful RPC creates a conservative
+  local deadline from the monotonic request-start instant with scheduling slack;
+  that estimate is neither a new store guard nor permission to revive an
+  already expired local lease. If ownership is definitively rejected, the job
+  was cancelled, or the local deadline expires, the SDK cancels the handler's
+  `context`. A handler should stop, but Go context cancellation cannot forcibly
+  stop code that ignores it. This initial validation costs one unary RPC for
+  every valid delivery.
 - **Expiry.** The reaper runs on a ticker and applies the retry policy (§6) to
   every row with `state = 'leased' and lease_expires < now()`. Redelivery is
   therefore not instantaneous: worst-case latency is lease duration + reaper
@@ -139,7 +152,8 @@ update jobs set state = 'completed', finished_at = now(), updated_at = now()
 where id = $1 and lease_id = $2 and state = 'leased';
 ```
 
-If zero rows are updated the store looks at the row and returns one of:
+For `Ack`, if zero rows are updated the store looks at the row and returns one
+of:
 
 | Situation | Result |
 |---|---|
@@ -150,9 +164,13 @@ If zero rows are updated the store looks at the row and returns one of:
 | No row | `ErrNotFound` |
 
 The idempotent re-ack case is why `lease_id` is never cleared on completion.
-`Nack` is guarded the same way and applies the retry policy. A stale worker can
-never ack, nack, or extend a job it no longer holds; this is the property the
-"stale-lease ack rejected" test in `store` pins down.
+`Nack` is guarded by the same `(id, lease_id)` ownership token and applies the
+retry policy. A retry of a Nack succeeds idempotently only while that same-token
+row is still `scheduled` or `dead`. Once the promoter changes `scheduled` to
+`available`, a repeated Nack returns `ErrLeaseLost`/`ABORTED` even though no new
+worker has necessarily leased it. A stale worker can never ack, nack, or extend
+a job it no longer holds; this is the property the "stale-lease ack rejected"
+test in `store` pins down.
 
 Over gRPC these become status codes:
 
@@ -311,21 +329,33 @@ lease is granted and not acked:
 2. **Handler runs longer than the lease and heartbeats stop** (worker
    partitioned from the broker, or the heartbeat goroutine starved). The
    reaper takes the job back while the original handler is still running.
-   Two executions can overlap in time. The SDK cancels the handler's context
-   when a heartbeat fails, but a handler that ignores its context keeps going.
+   Two executions can overlap in time. The SDK retries only transient
+   `UNAVAILABLE` and `DEADLINE_EXCEEDED` transport failures while its last
+   locally known lease deadline remains live. Definitive lease loss or
+   cancellation and local expiry stop work. Generic `INTERNAL` failures keep
+   the no-blind-retry policy because the mutation may have committed and the
+   cause may be permanent. The SDK cancels the handler's context when it must
+   stop, but a handler that ignores its context keeps going.
 3. **The ack-loss window.** Handler finishes → worker sends `Ack` → the
    broker or Postgres is unavailable before the `UPDATE` commits. The work is
-   done but the store does not know. The SDK retries `Ack` until the lease
-   would have expired; if it cannot get through, the lease expires and the
-   job is redelivered. From the client's point of view the job simply ran
-   twice. There is no way to close this window without a transactional
-   handoff between the handler's side effects and the queue; that is what
-   idempotent handlers are for.
+   done but the store does not know. The SDK retries `Ack`/`Nack` only for the
+   two transient transport codes, ending at the earlier of its conservative
+   local lease deadline and forced shutdown. If it cannot get through, the
+   lease expires and the job is redelivered. A handler's side effects can
+   therefore duplicate after failures even when its own call returned once.
+   There is no way to close this window without a transactional handoff between
+   the handler's side effects and the queue; that is what idempotent handlers
+   are for.
 4. **Graceful shutdown deadline exceeded.** On `SIGTERM` the worker stops
-   leasing and waits for in-flight handlers up to `terminationGracePeriodSeconds`
-   minus the preStop sleep. A handler still running at the deadline is
-   abandoned and its lease expires normally. Size the grace period to your
-   slowest handler.
+   accepting deliveries and drains acquisition, handlers, and confirmation
+   under one SDK deadline. That deadline must fit inside the deployment's
+   termination grace budget, after any preStop delay and with process-exit
+   overhead left over. A delivery still active at the deadline is abandoned,
+   its handler context is cancelled, and its lease expires normally. The SDK
+   reports separate active-delivery, running-handler, acquisition, and
+   confirmation counts; `cmd/worker` logs the abandonment and exits nonzero.
+   Size the budget to the slowest handler, and remember that an uncooperative
+   Go handler cannot be forcibly stopped.
 5. **A lease stream fails before delivery is confirmed by subsequent work.**
    The broker leases rows, but a disconnect may leave some buffered or never
    received by the worker. Send success is not an application receipt. Unacked
@@ -333,6 +363,20 @@ lease is granted and not acked:
    may eventually become dead without handler execution. `-max-lease-batch`
    bounds one store call, not all unreceived or unacknowledged jobs on a stream.
    Do not immediately release/nack them: some may already be executing.
+
+   This uncertainty is different from a delivery the SDK has received and
+   knows it never started, such as an unregistered queue or a delivery that
+   lost the acceptance race with shutdown. After bounded ownership validation,
+   the SDK Nacks that known-unstarted delivery immediately. Its lease already
+   consumed an attempt, so the Nack schedules the normal retry and can move the
+   row to `dead` on its final attempt.
+
+Worker-facing error text is made valid UTF-8, stripped of NUL bytes, and bounded
+to 4,096 bytes (including its truncation suffix) before logging or persistence
+in `last_error`. Logs distinguish `handler finished` from `job confirmed`, so a
+handler return is never presented as a committed queue outcome. Handler
+registration is setup-only: call `Handle` before the single `Run`. Handlers must
+deduplicate their own effects with `Job.ID` or another stable business ID.
 
 What is **not** a source of duplicates: two workers receiving the same lease
 (prevented by `SKIP LOCKED`), a broker restart (brokers are stateless; workers
@@ -360,8 +404,9 @@ idempotency keys).
 
 ## 13. Verified behavior
 
-Filled in from the chaos suite (Session 10). Each row must link to the test
-that proves it; a row without a test is a claim, not a guarantee.
+Only completed, dated runs appear here. Each row names the test or scoped demo
+that produced the evidence; prospective Session 6–11 checks stay in the plan,
+not in this table.
 
 | Claim | Test | Runs | Result |
 |---|---|---|---|
@@ -387,10 +432,7 @@ that proves it; a row without a test is a claim, not a guarantee.
 | Broker shutdown ends lease streams so `GracefulStop` terminates | `broker: TestServerShutdownEndsLeaseStreams` | 2 (`-count=2`, 2026-09-20) | pass |
 | Broker process runs maintenance and exits on SIGTERM with active streams | `integration: TestBrokerLifecycle` | 2 (`-count=2`, 2026-09-20) | pass |
 | `ListJobs` visits every row once in ID order across mixed UUIDv4/v7 ids | `store: TestListJobsPagesInIDOrder` | 2 (`-count=2`, 2026-09-20) | pass |
-| `SIGTERM` mid-job → job acked, not redelivered | `worker: TestGracefulShutdown` | | pending |
-| Random worker kills during 10k jobs → every duplicate explained by `attempts` | `chaos: TestWorkerKills` | | pending |
-| Broker restart mid-run → no job lost, workers reconnect | `chaos: TestBrokerRestart` | | pending |
-| Postgres restart mid-run → broker recovers; ack-loss window observed and bounded | `chaos: TestPostgresRestart` | | pending |
-| Duplicate enqueue storm → dedup holds | `chaos: TestEnqueueStorm` | | pending |
-| Scheduler failover → no duplicate cron enqueues (20 runs) | `scheduler: TestFailover` | | pending |
-| `kubectl rollout restart deployment/worker` under load → zero duplicates | manual, Session 8 | | pending |
+| Real worker process receives `SIGTERM` mid-handler, exits zero, and commits that job once while leaving waiting work untouched | `integration: TestWorkerGracefulShutdownCompletesTheRunningJob` (`-race`) | 2 (`-count=2`, 2026-09-21) | pass |
+| Real worker process exceeding its shutdown deadline exits nonzero, does not falsely complete the job, and the reaper schedules its retry | `integration: TestWorkerShutdownDeadlineReportsAbandonment` (`-race`) | 2 (`-count=2`, 2026-09-21) | pass |
+| Three Compose workers complete 1,000 scoped jobs with no retries | `hopper-session5` scoped Compose demo (`s5-bulk-*`, SQL state check) | 1 (2026-09-21) | pass: 1,000 completed, 0 retried, 8s enqueue-to-completion |
+| Compose worker stop accounts for every observed handler and every extra attempt | `hopper-session5` scoped Compose demo (`s5-shutdown-*`, JSON logs + SQL state checks) | 1 (2026-09-21) | pass: 12/12 started handlers confirmed; one captured unreceived lease explains the only second attempt; 300 completed, 0 dead |
