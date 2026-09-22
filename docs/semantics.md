@@ -249,8 +249,9 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   `completed` job still dedups until retention (§10) deletes the row; after
   that the same key creates a new job. A key on a `dead` job dedups until the
   job is purged. If you need permanent dedup, keep the key in your own store.
-- Cron uses `idempotency_key = name || '@' || next_run_at` so a leader
-  failover cannot fire the same tick twice.
+- Cron uses `idempotency_key = name || '@' || next_run_at`, so a leader
+  failover re-firing a tick deduplicates instead of inserting twice — within
+  the schedule's queue, and while the first row exists (§13).
 - **`EnqueueBatch` is not atomic.** The broker checks every item first —
   required fields, JSON *syntax*, priority and attempt ranges, and protobuf
   timestamp validity — and a failure there writes nothing. PostgreSQL then
@@ -383,7 +384,8 @@ deduplicate their own effects with `Job.ID` or another stable business ID.
 What is **not** a source of duplicates: two workers receiving the same lease
 (prevented by `SKIP LOCKED`), a broker restart (brokers are stateless; workers
 reconnect and their leases keep ticking), or a scheduler failover (cron uses
-idempotency keys).
+idempotency keys and a guarded advance; §13 lists the two configuration and
+retention windows in which a tick can still fire twice).
 
 ## 12. Non-goals
 
@@ -403,11 +405,159 @@ idempotency keys).
   is enough to ack or nack a job they do not hold. Binding a non-loopback
   `-listen` address opts into that trust model (the broker logs a warning); use
   it for controlled local or container demos only. TLS and RBAC are future work.
+- **Per-schedule concurrency policy.** A cron tick fires whether or not the
+  previous tick's job has finished; overlap is the handler's business.
+- **Missed-tick backfill.** An overdue schedule fires once and skips ahead
+  (§13).
+- **A schedule management API.** Schedules are declared in `-cron-file`;
+  there is no RPC for them yet.
+- **Queue-independent tick identity (future work).** Closing the queue-change
+  gap in §13 needs deduplication keyed on `(schedule, tick)` regardless of
+  destination queue: a durable cron-occurrence table with its own uniqueness
+  constraint, written before or with the enqueue. That is a new migration and
+  table, which Session 6 excluded by scope — not because the gap is imaginary.
 
-## 13. Verified behavior
+## 13. Cron schedules and leader election
+
+**What a schedule is.** One row of `cron_schedules`: a name, a destination
+queue, a payload, priority and attempt limit, and an expression evaluated in
+the row's IANA timezone (default UTC). The expression is a standard five-field
+cron line, a descriptor such as `@hourly`, or `@every <duration>`. `@every`
+works in whole seconds: sub-second parts are truncated, with a one-second
+floor, so `@every 1500ms` ticks every second. The broker embeds `tzdata`
+because its distroless runtime image has no zoneinfo database.
+
+**Exactly one active scheduler.** Every broker runs the scheduler loop, but it
+does work only while it holds a session-scoped advisory lock taken with
+`pg_try_advisory_lock` on a dedicated connection held out of the pool for the
+whole leadership term. Losers retry every `-scheduler-interval` (default 5s).
+The lock is released by an explicit unlock or by the session ending, so a
+leader that crashes, is `SIGKILL`ed, or loses its connection loses the role,
+and another broker takes it on its next retry. Leadership costs the holder one
+connection from its pool. The lock is per database: every hopper process
+pointed at one database contends for one role. Setting `-scheduler=false`
+takes a broker out of the contest.
+
+**Why not Raft.** Mutual exclusion here needs no replicated log. PostgreSQL is
+already the single source of truth, already the thing whose failure stops the
+queue, and already holds the state a consensus group would be protecting. Raft
+would add a second failure domain to protect data that lives in the first.
+
+**The lock is not a fencing token.** A leader that is paused — a GC stall, a
+suspended VM, a network path TCP has not yet declared dead — can keep acting
+after PostgreSQL has handed the lock to another broker. Nothing about advisory
+locks prevents that. Two properties of the data model make it harmless:
+
+- Each tick is enqueued with `idempotency_key = <name>@<tick>`, where `<tick>`
+  is the stored `next_run_at` formatted with exactly six fractional digits
+  (§8). The key is a pure function of the schedule and the tick, so a paused
+  leader and a new leader firing the same tick produce **one job**.
+- The advance that follows is a compare-and-swap: `next_run_at` moves only if
+  it still equals the tick that was fired. A displaced leader's advance names
+  a tick the new leader has already moved past, matches no row, and is logged
+  as `scheduler stale advance` rather than rewinding the schedule.
+
+**The dedup key is scoped to a queue.** §8's unique index is
+`(queue, idempotency_key)`, so `name@tick` identifies a tick *within a queue*.
+Every claim in this section that a tick is deduplicated assumes the schedule's
+queue did not change.
+
+**Leadership is checked between passes, not between enqueues.** A term runs
+check → pass → wait. A pass reads at most one batch (100) of due schedules
+and never loops to drain a larger backlog. A leader that loses the lock
+mid-pass therefore finishes that pass — at most one batch of schedules, two
+statements each — and stops at the next check. The window is deliberate: a
+per-enqueue check would narrow it without closing it, since the lock can move
+in the gap between any check and the statement after it. Safety across the
+window is the idempotency key and the guarded advance, exactly as for a paused
+leader. An ambiguous check failure (a timeout) is treated as lost leadership,
+and so is any store error: the term ends, the lock is released, and the role
+goes back up for contention.
+
+**Fire, then advance.** Per due schedule, the scheduler enqueues the tick and
+then advances `next_run_at`, as two statements rather than one transaction. A
+crash between them leaves the tick enqueued and the schedule un-advanced; the
+next leader re-fires the same tick, the key deduplicates it, and the advance
+succeeds. A failover therefore costs at most a repeated enqueue that inserts
+nothing. `run_at` is the tick itself, which is never in the future, so the job
+is written as `available` and waits for no promoter pass.
+
+**The two honest gaps.** Both sit inside that crash window, and both work by
+making the re-fire miss the row that should have deduplicated it:
+
+- *Retention.* If the deduplicating row is deleted by retention (§10) or by
+  `Purge` before the re-fire, the tick fires twice. Cron periods are normally
+  much shorter than the retention window, but the window exists.
+- *A queue change.* Because dedup is per queue, a schedule whose `queue` is
+  changed while a tick is in flight can produce two jobs for one occurrence:
+  one on the old queue, one on the new. A schedule's queue is part of its dedup
+  identity. Changing it starts a new delivery lineage, the same way renaming a
+  schedule does, so make that change between ticks. This is a property of a
+  deliberate configuration change, not an ambient failure mode; §12 records
+  what would close it.
+
+**Catch-up: one fire, then skip.** An overdue schedule fires once, for its
+stored tick, and `next_run_at` advances to the first occurrence strictly after
+the database's current time. Downtime does not backfill, so a failover slower
+than the schedule's period legitimately leaves a hole in the sequence of fired
+ticks. What an ungraceful failover guarantees is that the tick *pending at the
+moment of death* is fired, once — not that every wall-clock occurrence in
+between is. A computed next occurrence that does not move strictly past the
+fired tick marks the schedule as bad (below) rather than re-firing it forever.
+
+Because the next occurrence is computed from the time of the pass, not from the
+fired tick, an `@every` schedule is anchored to when the previous tick was
+processed (floored to the second), not to a fixed lattice. Its phase can shift
+after a late pass or a failover. Use a five-field expression when ticks must
+land on particular wall-clock instants.
+
+**Latency.** A tick fires within roughly one `-scheduler-interval` of its
+instant, plus up to one more interval when leadership has just moved.
+
+**Clocks.** Due-ness, the next occurrence, and a newly declared schedule's
+first occurrence all come from the database's clock. `DueSchedules` returns
+the `now()` that judged its rows, and the next occurrence is computed from that
+value. Reconciliation runs before anything is due, so it reads the database
+clock through the store's `Now` and computes each new schedule's first tick
+from it. A broker with a skewed clock cannot manufacture ticks, from the moment
+a schedule is inserted.
+
+**Bad schedules.** A row whose expression or timezone does not parse — which
+means it was edited outside the cron file — is skipped, and the rest of the
+pass continues. It is logged once per leadership term per
+`(name, expression, timezone)`, not on every pass.
+
+**DST.** The instants below are observed behavior of `robfig/cron` v3.0.1,
+pinned by `scheduler: TestNextAcrossDaylightSavingTransitions` for
+`30 2 * * *` in `America/New_York`. They are not a guarantee this project
+makes, and a parser upgrade that changes them is a reason to re-read this
+section.
+
+- *Skipped hour.* On 2023-03-12 the clocks jump from 02:00 to 03:00, so 02:30
+  does not exist. The parser does not shift it to another instant that day;
+  the day is skipped, and the next occurrence is 2023-03-13 02:30 EDT
+  (06:30 UTC).
+- *Repeated hour.* On 2023-11-05 the clocks fall back from 02:00 to 01:00, so
+  the repeated hour is 01:00–01:59. 02:30 lies outside it and fires once, at
+  2023-11-05 02:30 EST (07:30 UTC), followed by a normal occurrence 24 hours
+  later. An occurrence *inside* the repeated hour (for example `30 1 * * *`)
+  has not been measured; do not assume it fires once or twice.
+
+**Management.** Schedules come from the JSON file named by `-cron-file`. It is
+validated in full at process start, so a malformed file stops the broker
+before it listens. The file is applied by the leader at the start of every
+term and is authoritative: its schedules are upserted and every other name is
+deleted. An upsert keeps the stored `next_run_at` unless the expression or
+timezone changed, so a redeploy neither skips a pending tick nor re-fires a
+past one. During a rolling deploy that changes the file, whichever broker
+leads applies its own copy, and leadership may move. Without a file, the table
+is left unmanaged: the scheduler fires whatever rows exist and prunes nothing.
+There is no management RPC; that is future work.
+
+## 14. Verified behavior
 
 Only completed, dated runs appear here. Each row names the test or scoped demo
-that produced the evidence; prospective Session 6–11 checks stay in the plan,
+that produced the evidence; prospective Session 7–11 checks stay in the plan,
 not in this table.
 
 | Claim | Test | Runs | Result |
@@ -442,3 +592,10 @@ not in this table.
 | The sanitized, bounded handler error logged by the SDK is the same value persisted by Nack | `worker: TestAFailingHandlerIsNackedWithASanitizedError` (`-race`) | 20 focused + 2 full-suite (2026-09-22) | pass |
 | Three Compose workers complete 1,000 scoped jobs with no retries | `hopper-session5` scoped Compose demo (`s5-bulk-*`, SQL state check) | 1 (2026-09-21) | pass: 1,000 completed, 0 retried, 8s enqueue-to-completion |
 | Compose worker stop accounts for every observed handler and every extra attempt | `hopper-session5` scoped Compose demo (`s5-shutdown-*`, JSON logs + SQL state checks) | 1 (2026-09-21) | pass: 12/12 started handlers confirmed; one captured unreceived lease explains the only second attempt; 300 completed, 0 dead |
+| One scheduler is active across three instances; an ungraceful kill hands the role to a *different* instance, and the tick pending at the kill is fired exactly once | `integration: TestSchedulerFailover` (20 rounds per run, backend terminated, leader identified by `application_name`, `-race`) | 2 (`-count=2`, 40 rounds, 2026-09-22) | pass: ~20s per 20-round run |
+| A newly declared schedule's first tick is computed from the database clock, not the broker's | `scheduler: TestReconcileIgnoresTheProcessClock` (`-race`) | 5 (`-count=5`, 2026-09-22) | pass |
+| A tick already fired by a previous leader deduplicates rather than double-firing | `scheduler: TestDuplicateTickIsNotReFired` (`-race`) | 5 (`-count=5`, 2026-09-22) | pass |
+| A stale advance from a displaced leader matches no row | `store: TestAdvanceScheduleIsGuarded` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
+| Releasing leadership never returns a locked connection to the pool | `store: TestReleaseDoesNotPoisonThePool` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
+| The real broker process schedules from a file and fails over on `SIGKILL` | `integration: TestBrokerProcessCronFailsOverOnKill` (two `-race` broker binaries) | 2 (`-count=2`, 2026-09-22) | pass |
+| Two Compose brokers elect one scheduler; stop and `docker kill` of the leader both hand the role over, and cron jobs (including an `America/New_York` schedule in the distroless image) complete | `hopper-session6` Compose demo (`broker` + `broker-standby`, JSON logs + SQL state checks) | 1 (2026-09-22) | pass: graceful takeover in ~4s; after `docker kill` the pending tick fired ~2s late, then skipped ahead; 10/10 `sleep` jobs and the 18:30 UTC `cpu_burn` tick completed |

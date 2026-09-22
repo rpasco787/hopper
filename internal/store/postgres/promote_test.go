@@ -36,7 +36,7 @@ func TestPromoteDueIgnoresFutureJobs(t *testing.T) {
 	require.Equal(t, store.StateScheduled, readJob(t, j.ID).State)
 }
 
-// TestPromoteDueMakesDelayedJobsLeasable is the §13 row: a delayed job is not
+// TestPromoteDueMakesDelayedJobsLeasable is the §14 row: a delayed job is not
 // leasable when it is enqueued and is leasable after the promoter has run.
 func TestPromoteDueMakesDelayedJobsLeasable(t *testing.T) {
 	ctx := ctxT(t)

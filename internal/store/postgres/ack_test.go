@@ -67,7 +67,7 @@ func TestAckIsIdempotentWithSameLease(t *testing.T) {
 		"a re-ack must not rewrite the row")
 }
 
-// TestStaleLeaseRejected is the docs/semantics.md §13 row: a worker whose
+// TestStaleLeaseRejected is the docs/semantics.md §14 row: a worker whose
 // lease expired and was re-granted to someone else can neither ack nor nack
 // the job. The reaper is simulated with raw SQL.
 func TestStaleLeaseRejected(t *testing.T) {
