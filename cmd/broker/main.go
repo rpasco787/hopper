@@ -186,6 +186,15 @@ func awaitServing(ctx context.Context, serveErr, metricsErr <-chan error) (err e
 	}
 }
 
+// finalServingError preserves the event that ended serving while also waiting
+// for and reporting the gRPC server's result when another event began shutdown.
+func finalServingError(servingErr error, served bool, serveErr <-chan error, shutdownErr, metricsShutdownErr error) error {
+	if !served {
+		servingErr = errors.Join(servingErr, <-serveErr)
+	}
+	return errors.Join(servingErr, shutdownErr, metricsShutdownErr)
+}
+
 func parseLevel(level string) (slog.Level, error) {
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(level)); err != nil {
@@ -377,10 +386,7 @@ func run(args []string) error {
 			metricsShutdownErr = errors.Join(metricsShutdownErr, httpSrv.Close())
 		}
 	}
-	if !served {
-		servingErr = <-serveErr
-	}
-	if err := errors.Join(servingErr, shutdownErr, metricsShutdownErr); err != nil {
+	if err := finalServingError(servingErr, served, serveErr, shutdownErr, metricsShutdownErr); err != nil {
 		return err
 	}
 	logger.Info("shutdown complete")

@@ -149,6 +149,17 @@ func TestAwaitServing(t *testing.T) {
 	})
 }
 
+func TestFinalServingErrorPreservesMetricsFailure(t *testing.T) {
+	t.Parallel()
+	metricsFailure := errors.New("metrics stopped")
+	grpcDone := make(chan error, 1)
+	grpcDone <- nil
+
+	err := finalServingError(metricsFailure, false, grpcDone, nil, nil)
+
+	require.ErrorIs(t, err, metricsFailure)
+}
+
 func TestConfigRejectsNonPositiveKnobs(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://unused")
 	for _, name := range []string{"lease-duration", "reaper-interval", "poll-interval", "retention", "shutdown-timeout", "scheduler-interval", "max-lease-batch"} {
