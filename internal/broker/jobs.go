@@ -54,25 +54,27 @@ func leaseKeyed(id, leaseID string) (uuid.UUID, uuid.UUID, error) {
 func (s *Service) Ack(ctx context.Context, req *hopperv1.AckRequest) (*hopperv1.AckResponse, error) {
 	id, leaseID, err := leaseKeyed(req.GetId(), req.GetLeaseId())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "Ack", err, "job_id", req.GetId(), "lease_id", req.GetLeaseId())
 	}
 	if err := s.store.Ack(ctx, id, leaseID); err != nil {
-		return nil, s.fail(ctx, "Ack", err)
+		return nil, s.fail(ctx, "Ack", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
+	s.cfg.Logger.DebugContext(ctx, "job acked", "job_id", id.String(), "lease_id", leaseID.String())
 	return &hopperv1.AckResponse{}, nil
 }
 
 func (s *Service) Nack(ctx context.Context, req *hopperv1.NackRequest) (*hopperv1.NackResponse, error) {
 	id, leaseID, err := leaseKeyed(req.GetId(), req.GetLeaseId())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "Nack", err, "job_id", req.GetId(), "lease_id", req.GetLeaseId())
 	}
 	// The error string is not validated. It is a handler's message and hopper
 	// only stores it; the column is text, and truncating or rejecting it here
 	// would lose the one clue an operator reading the DLQ has.
 	if err := s.store.Nack(ctx, id, leaseID, req.GetError()); err != nil {
-		return nil, s.fail(ctx, "Nack", err)
+		return nil, s.fail(ctx, "Nack", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
+	s.cfg.Logger.DebugContext(ctx, "job nacked", "job_id", id.String(), "lease_id", leaseID.String())
 	return &hopperv1.NackResponse{}, nil
 }
 
@@ -83,14 +85,14 @@ func (s *Service) Nack(ctx context.Context, req *hopperv1.NackRequest) (*hopperv
 func (s *Service) Heartbeat(ctx context.Context, req *hopperv1.HeartbeatRequest) (*hopperv1.HeartbeatResponse, error) {
 	id, leaseID, err := leaseKeyed(req.GetId(), req.GetLeaseId())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "Heartbeat", err, "job_id", req.GetId(), "lease_id", req.GetLeaseId())
 	}
 	dur, err := s.leaseDuration(req.GetLeaseDuration())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "Heartbeat", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
 	if err := s.store.ExtendLease(ctx, id, leaseID, dur); err != nil {
-		return nil, s.fail(ctx, "Heartbeat", err)
+		return nil, s.fail(ctx, "Heartbeat", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
 	return &hopperv1.HeartbeatResponse{}, nil
 }
@@ -107,32 +109,32 @@ func (s *Service) Heartbeat(ctx context.Context, req *hopperv1.HeartbeatRequest)
 func (s *Service) Cancel(ctx context.Context, req *hopperv1.CancelRequest) (*hopperv1.CancelResponse, error) {
 	id, err := parseID("id", req.GetId())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "Cancel", err, "job_id", req.GetId())
 	}
 
 	job, err := s.store.Cancel(ctx, id)
 	if err != nil {
 		var terminal *store.TerminalStateError
 		if !errors.As(err, &terminal) || terminal.State != store.StateCancelled {
-			return nil, s.fail(ctx, "Cancel", err)
+			return nil, s.fail(ctx, "Cancel", err, "job_id", id.String())
 		}
 		// Already cancelled. Read the row so the response is as useful as the
 		// one the first caller got. A NotFound here means retention deleted
 		// the job between the two statements, which is a real NotFound.
 		job, err = s.store.GetJob(ctx, id)
 		if err != nil {
-			return nil, s.fail(ctx, "Cancel", err)
+			return nil, s.fail(ctx, "Cancel", err, "job_id", id.String())
 		}
 		p, err := jobToProto(job)
 		if err != nil {
-			return nil, s.fail(ctx, "Cancel", err)
+			return nil, s.fail(ctx, "Cancel", err, "job_id", id.String())
 		}
 		return &hopperv1.CancelResponse{Job: p, AlreadyCancelled: true}, nil
 	}
 
 	p, err := jobToProto(job)
 	if err != nil {
-		return nil, s.fail(ctx, "Cancel", err)
+		return nil, s.fail(ctx, "Cancel", err, "job_id", id.String())
 	}
 	return &hopperv1.CancelResponse{Job: p}, nil
 }
@@ -140,15 +142,15 @@ func (s *Service) Cancel(ctx context.Context, req *hopperv1.CancelRequest) (*hop
 func (s *Service) GetJob(ctx context.Context, req *hopperv1.GetJobRequest) (*hopperv1.GetJobResponse, error) {
 	id, err := parseID("id", req.GetId())
 	if err != nil {
-		return nil, err
+		return nil, s.fail(ctx, "GetJob", err, "job_id", req.GetId())
 	}
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
-		return nil, s.fail(ctx, "GetJob", err)
+		return nil, s.fail(ctx, "GetJob", err, "job_id", id.String())
 	}
 	p, err := jobToProto(job)
 	if err != nil {
-		return nil, s.fail(ctx, "GetJob", err)
+		return nil, s.fail(ctx, "GetJob", err, "job_id", id.String())
 	}
 	return &hopperv1.GetJobResponse{Job: p}, nil
 }

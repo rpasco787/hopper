@@ -236,7 +236,8 @@ func (s *session) accept(p *hopperv1.Job) error {
 	if err != nil {
 		// Nothing in a malformed message can be trusted, so there is no id and
 		// lease pair worth nacking. Return the capacity and say what arrived.
-		s.log.Error("discarding a malformed delivery", "err", err, "job_id", p.GetId())
+		s.log.Error("discarding a malformed delivery", "err", err,
+			"job_id", p.GetId(), "lease_id", p.GetLeaseId())
 		s.pool.release()
 		return nil
 	}

@@ -176,9 +176,13 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 			case err := <-sent:
 				if err != nil {
 					logger.WarnContext(ctx, "lease send failed",
+						"job_id", p.GetId(), "lease_id", p.GetLeaseId(),
 						"batch_not_confirmed_sent", len(jobs)-i, "err", err)
 					return err
 				}
+				logger.DebugContext(ctx, "job leased",
+					"job_id", p.GetId(), "lease_id", p.GetLeaseId(),
+					"queue", jobs[i].Queue, "attempt", jobs[i].Attempts)
 				credit.Add(^uint64(0)) // subtract one; only the writer spends credit
 			case <-ctx.Done():
 				return stopped()

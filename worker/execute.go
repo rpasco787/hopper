@@ -61,6 +61,7 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 
 	hb.start()
 	log.Info("job started")
+	started := time.Now()
 	err := invoke(handlerCtx, d)
 
 	// Stop renewal before confirming. This cancels the heartbeat RPC in flight,
@@ -73,7 +74,9 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 		message = sanitizeError(err.Error())
 		loggedErr = message
 	}
-	log.Info("handler finished", "err", loggedErr, "duration_ms", time.Since(d.receivedAt).Milliseconds())
+	log.Info("handler finished", "err", loggedErr,
+		"handler_ms", time.Since(started).Milliseconds(),
+		"duration_ms", time.Since(d.receivedAt).Milliseconds())
 	wk.confirming()
 
 	if lc.forceCtx.Err() != nil {

@@ -95,10 +95,14 @@ func (s *Service) Drain() {
 // handler funnels its store errors through this, so "the client sees Internal"
 // and "the operator sees the pgx error" are the same line of code and cannot
 // drift apart.
-func (s *Service) fail(ctx context.Context, op string, err error) error {
+func (s *Service) fail(ctx context.Context, op string, err error, attrs ...any) error {
 	out := toStatus(err)
 	if status.Code(out) == codes.Internal {
-		s.cfg.Logger.ErrorContext(ctx, "rpc failed", "rpc", op, "err", err)
+		s.cfg.Logger.ErrorContext(ctx, "rpc failed",
+			append([]any{"rpc", op, "err", err}, attrs...)...)
+	} else {
+		s.cfg.Logger.DebugContext(ctx, "rpc rejected",
+			append([]any{"rpc", op, "code", status.Code(out).String()}, attrs...)...)
 	}
 	return out
 }

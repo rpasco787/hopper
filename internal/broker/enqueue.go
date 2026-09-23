@@ -29,6 +29,8 @@ func (s *Service) Enqueue(ctx context.Context, req *hopperv1.EnqueueRequest) (*h
 	if err != nil {
 		return nil, s.fail(ctx, "Enqueue", err)
 	}
+	s.cfg.Logger.DebugContext(ctx, "job enqueued",
+		"job_id", job.ID.String(), "queue", job.Queue, "deduplicated", !inserted)
 	// inserted is inverted: the store reports what it did, the API reports the
 	// fact the caller acts on.
 	return &hopperv1.EnqueueResponse{Job: p, Deduplicated: !inserted}, nil
@@ -71,6 +73,8 @@ func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRe
 		if err != nil {
 			return nil, s.fail(ctx, "EnqueueBatch", err)
 		}
+		s.cfg.Logger.DebugContext(ctx, "job enqueued",
+			"job_id", job.ID.String(), "queue", job.Queue, "deduplicated", !inserted)
 		results = append(results, &hopperv1.EnqueueResponse{Job: proto, Deduplicated: !inserted})
 	}
 	return &hopperv1.EnqueueBatchResponse{Results: results}, nil
