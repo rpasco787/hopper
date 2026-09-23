@@ -1,0 +1,104 @@
+{{- include "hopper.checkGrace" (dict "name" "broker" "v" .Values.broker) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.broker.replicas }}
+  # A new broker answers SERVING before an old one is deleted, so the number of
+  # serving brokers never drops below replicas during a rollout.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "hopper.selectorLabels" (dict "root" . "component" "broker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 8 }}
+      annotations:
+        # A ConfigMap change alone restarts nothing; a changed pod template does.
+        checksum/config: {{ include (print $.Template.BasePath "/broker-configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.broker.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "hopper.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        # Without this a cold install crash-loops every broker until PostgreSQL
+        # finishes initdb, and CrashLoopBackOff's growing delay stalls --wait.
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -d \"$HOPPER_DSN\" -t 2; do sleep 1; done"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "hopper.fullname" . }}-broker
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            {{- include "hopper.containerSecurityContext" . | nindent 12 }}
+      containers:
+        - name: broker
+          image: {{ include "hopper.image" (dict "root" . "repository" .Values.broker.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "hopper.fullname" . }}-broker
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hopper.fullname" . }}-postgres
+                  key: password
+          ports:
+            - name: grpc
+              containerPort: 9090
+            - name: metrics
+              containerPort: 9091
+          # The broker's own grpc.health.v1 service. The port opens only after
+          # migrations, so the startup probe holds liveness off until then.
+          # Readiness is not database health (Decision 5).
+          startupProbe:
+            grpc:
+              port: 9090
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            grpc:
+              port: 9090
+            periodSeconds: 5
+          livenessProbe:
+            grpc:
+              port: 9090
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # The native sleep action: the image has no shell and no sleep
+            # binary, so an exec hook would fail and skip the delay. The delay
+            # lets endpoint removal reach kube-proxy before the broker drains.
+            preStop:
+              sleep:
+                seconds: {{ .Values.broker.preStopSleepSeconds }}
+          resources:
+            {{- toYaml .Values.broker.resources | nindent 12 }}
+          securityContext:
+            {{- include "hopper.containerSecurityContext" . | nindent 12 }}
+          {{- if .Values.broker.cronSchedules }}
+          volumeMounts:
+            - name: cron
+              mountPath: /etc/hopper
+              readOnly: true
+          {{- end }}
+      {{- if .Values.broker.cronSchedules }}
+      volumes:
+        - name: cron
+          configMap:
+            name: {{ include "hopper.fullname" . }}-broker-cron
+      {{- end }}

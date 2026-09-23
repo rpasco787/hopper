@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+data:
+  # No password here: the broker reads it from the Secret as PGPASSWORD, which
+  # pgx uses for any connection string that does not carry one.
+  HOPPER_DSN: {{ printf "postgres://%s@%s-postgres:5432/%s?sslmode=disable" .Values.postgres.user (include "hopper.fullname" .) .Values.postgres.database | quote }}
+  HOPPER_LISTEN: ":9090"
+  HOPPER_METRICS_LISTEN: ":9091"
+  HOPPER_METRICS_QUEUES: {{ join "," .Values.broker.metricsQueues | quote }}
+  HOPPER_LEASE_DURATION: {{ .Values.broker.leaseDuration | quote }}
+  HOPPER_LOG_LEVEL: {{ .Values.broker.logLevel | quote }}
+  HOPPER_SCHEDULER: {{ .Values.broker.scheduler | quote }}
+  HOPPER_SHUTDOWN_TIMEOUT: {{ printf "%ds" (int .Values.broker.shutdownTimeoutSeconds) | quote }}
+  {{- if .Values.broker.cronSchedules }}
+  HOPPER_CRON_FILE: /etc/hopper/schedules.json
+  {{- end }}
+{{- if .Values.broker.cronSchedules }}
+---
+# A separate ConfigMap because it is mounted as a file. Kept out of the env
+# ConfigMap: Kubernetes 1.34+ accepts "schedules.json" as a variable name.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker-cron
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+data:
+  schedules.json: |
+    {{- dict "schedules" .Values.broker.cronSchedules | toPrettyJson | nindent 4 }}
+{{- end }}

@@ -1,0 +1,20 @@
+# ClusterIP: each worker holds one long-lived gRPC connection, so balancing is
+# per connection, not per request (see the README). The named metrics port is
+# what a ServiceMonitor selects.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "hopper.selectorLabels" (dict "root" . "component" "broker") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: 9090
+      targetPort: grpc
+    - name: metrics
+      port: 9091
+      targetPort: metrics

@@ -1,0 +1,15 @@
+{{- if gt (int .Values.broker.replicas) 1 }}
+# Voluntary evictions (node drains) take at most one broker at a time. Not
+# rendered for one replica, where a budget would block every drain forever.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "hopper.selectorLabels" (dict "root" . "component" "broker") | nindent 6 }}
+{{- end }}

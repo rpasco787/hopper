@@ -9,14 +9,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/rpasco787/hopper/internal/scheduler"
 )
 
 const chartDir = "../../deploy/helm/hopper"
@@ -280,4 +286,158 @@ func TestPasswordLivesOnlyInTheSecret(t *testing.T) {
 		require.NoError(t, err)
 		require.NotContains(t, string(out), canary, "%s contains the PostgreSQL password", key)
 	}
+}
+
+func TestBrokerConfig(t *testing.T) {
+	objects := render(t)
+	require.Equal(t, map[string]any{
+		"HOPPER_DSN":              "postgres://hopper@hopper-postgres:5432/hopper?sslmode=disable",
+		"HOPPER_LISTEN":           ":9090",
+		"HOPPER_METRICS_LISTEN":   ":9091",
+		"HOPPER_METRICS_QUEUES":   "sleep,fail_n_times,cpu_burn",
+		"HOPPER_LEASE_DURATION":   "30s",
+		"HOPPER_LOG_LEVEL":        "info",
+		"HOPPER_SCHEDULER":        "true",
+		"HOPPER_SHUTDOWN_TIMEOUT": "30s",
+	}, dig(object(t, objects, "ConfigMap/hopper-broker"), "data"))
+
+	deploy := object(t, objects, "Deployment/hopper-broker")
+	require.Equal(t, 2, dig(deploy, "spec", "replicas"))
+	require.Equal(t, "RollingUpdate", dig(deploy, "spec", "strategy", "type"))
+	require.Equal(t, 1, dig(deploy, "spec", "strategy", "rollingUpdate", "maxSurge"))
+	require.Equal(t, 0, dig(deploy, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	broker := container(t, podSpec(t, deploy), "broker")
+	require.Equal(t, "ghcr.io/rpasco787/hopper-broker:0.1.0", broker["image"])
+	require.Equal(t, "IfNotPresent", broker["imagePullPolicy"])
+	require.Equal(t, []any{map[string]any{"configMapRef": map[string]any{"name": "hopper-broker"}}}, broker["envFrom"])
+}
+
+func TestPGPasswordCompletesThePasswordlessDSN(t *testing.T) {
+	objects := render(t)
+	dsn := dig(object(t, objects, "ConfigMap/hopper-broker"), "data", "HOPPER_DSN").(string)
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	_, hasPassword := u.User.Password()
+	require.False(t, hasPassword, "the DSN in ConfigMap/hopper-broker carries a password")
+
+	broker := container(t, podSpec(t, object(t, objects, "Deployment/hopper-broker")), "broker")
+	require.Equal(t, map[string]any{"name": "hopper-postgres", "key": "password"},
+		dig(env(broker)["PGPASSWORD"], "valueFrom", "secretKeyRef"))
+
+	// Decision 6 depends on pgx filling a missing password from PGPASSWORD.
+	t.Setenv("PGPASSWORD", "canary-7f3a")
+	cfg, err := pgxpool.ParseConfig(dsn)
+	require.NoError(t, err)
+	require.Equal(t, "canary-7f3a", cfg.ConnConfig.Password)
+	require.Equal(t, "hopper-postgres", cfg.ConnConfig.Host)
+}
+
+func TestBrokerProbesUseGRPCHealth(t *testing.T) {
+	spec := podSpec(t, object(t, render(t), "Deployment/hopper-broker"))
+	broker := container(t, spec, "broker")
+	for probe, want := range map[string]map[string]any{
+		"startupProbe":   {"periodSeconds": 2, "failureThreshold": 30},
+		"readinessProbe": {"periodSeconds": 5},
+		"livenessProbe":  {"periodSeconds": 10, "failureThreshold": 3},
+	} {
+		require.Equal(t, 9090, dig(broker, probe, "grpc", "port"), probe)
+		for field, v := range want {
+			require.Equal(t, v, dig(broker, probe, field), "%s.%s", probe, field)
+		}
+	}
+
+	wait := container(t, spec, "wait-for-postgres")
+	require.Equal(t, "postgres:16-alpine", wait["image"])
+	require.Equal(t, 70, dig(wait, "securityContext", "runAsUser"))
+	require.Equal(t, []any{map[string]any{"configMapRef": map[string]any{"name": "hopper-broker"}}}, wait["envFrom"])
+	require.Contains(t, fmt.Sprint(wait["command"]), `pg_isready -d "$HOPPER_DSN"`)
+}
+
+// requireGraceHolds checks that a component's preStop sleep, its own shutdown
+// budget and 5s for exit all fit inside its grace period.
+func requireGraceHolds(t *testing.T, objects map[string]map[string]any, name string) {
+	t.Helper()
+	spec := podSpec(t, object(t, objects, "Deployment/hopper-"+name))
+	grace := dig(spec, "terminationGracePeriodSeconds").(int)
+	preStop := dig(container(t, spec, name), "lifecycle", "preStop", "sleep", "seconds").(int)
+	budget, err := time.ParseDuration(dig(object(t, objects, "ConfigMap/hopper-"+name), "data", "HOPPER_SHUTDOWN_TIMEOUT").(string))
+	require.NoError(t, err)
+	// The grace countdown starts at deletion and includes the preStop hook.
+	require.LessOrEqual(t, time.Duration(preStop)*time.Second+budget+5*time.Second, time.Duration(grace)*time.Second,
+		"Deployment/hopper-%s", name)
+}
+
+func TestShutdownBudgetsFitTheirGracePeriods(t *testing.T) {
+	objects := render(t)
+	requireGraceHolds(t, objects, "broker")
+}
+
+func TestChartRejectsGracePeriodsTooShortForTheirDrain(t *testing.T) {
+	_, stderr, err := helmTemplate("--set", "broker.terminationGracePeriodSeconds=39")
+	require.Error(t, err)
+	require.Contains(t, stderr, "broker: terminationGracePeriodSeconds (39) must be at least preStopSleepSeconds + shutdownTimeoutSeconds + 5 = 40")
+	render(t, "--set", "broker.terminationGracePeriodSeconds=40")
+	_, stderr, err = helmTemplate("--set", "broker.shutdownTimeoutSeconds=60")
+	require.Error(t, err, "the guard must read the budget, not only the grace period")
+	require.Contains(t, stderr, "broker: terminationGracePeriodSeconds (45)")
+}
+
+func checksum(t *testing.T, objects map[string]map[string]any, key string) string {
+	t.Helper()
+	sum, ok := dig(object(t, objects, key), "spec", "template", "metadata", "annotations", "checksum/config").(string)
+	require.True(t, ok, "%s has no checksum/config annotation", key)
+	return sum
+}
+
+func TestConfigChangesRollPods(t *testing.T) {
+	base := render(t)
+	debug := render(t, "--set", "broker.logLevel=debug")
+	require.NotEqual(t, checksum(t, base, "Deployment/hopper-broker"), checksum(t, debug, "Deployment/hopper-broker"))
+}
+
+func TestBrokerServiceAndDisruptionBudget(t *testing.T) {
+	objects := render(t)
+	svc := object(t, objects, "Service/hopper-broker")
+	require.Equal(t, "ClusterIP", dig(svc, "spec", "type"))
+	require.ElementsMatch(t, []any{
+		map[string]any{"name": "grpc", "port": 9090, "targetPort": "grpc"},
+		map[string]any{"name": "metrics", "port": 9091, "targetPort": "metrics"},
+	}, dig(svc, "spec", "ports"))
+	require.Equal(t, dig(object(t, objects, "Deployment/hopper-broker"), "spec", "selector", "matchLabels"),
+		dig(svc, "spec", "selector"))
+
+	require.Equal(t, 1, dig(object(t, objects, "PodDisruptionBudget/hopper-broker"), "spec", "maxUnavailable"))
+	require.NotContains(t, render(t, "--set", "broker.replicas=1"), "PodDisruptionBudget/hopper-broker",
+		"a budget over one replica blocks every drain")
+}
+
+func TestCronSchedulesReachTheBroker(t *testing.T) {
+	objects := render(t)
+	require.NotContains(t, objects, "ConfigMap/hopper-broker-cron")
+	require.NotContains(t, dig(object(t, objects, "ConfigMap/hopper-broker"), "data"), "HOPPER_CRON_FILE")
+	spec := podSpec(t, object(t, objects, "Deployment/hopper-broker"))
+	require.Nil(t, spec["volumes"])
+
+	objects = render(t, "--set-json", `broker.cronSchedules=[`+
+		`{"name":"tick","queue":"sleep","cron":"@every 10s","payload":{"ms":50}},`+
+		`{"name":"ny","queue":"cpu_burn","cron":"*/5 * * * *","timezone":"America/New_York","max_attempts":3}]`)
+	require.Equal(t, "/etc/hopper/schedules.json",
+		dig(object(t, objects, "ConfigMap/hopper-broker"), "data", "HOPPER_CRON_FILE"))
+	spec = podSpec(t, object(t, objects, "Deployment/hopper-broker"))
+	require.Equal(t, []any{map[string]any{"name": "cron", "configMap": map[string]any{"name": "hopper-broker-cron"}}},
+		spec["volumes"])
+	require.Equal(t, []any{map[string]any{"name": "cron", "mountPath": "/etc/hopper", "readOnly": true}},
+		container(t, spec, "broker")["volumeMounts"])
+
+	// The chart's JSON must be the shape the broker parses.
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	body := dig(object(t, objects, "ConfigMap/hopper-broker-cron"), "data", "schedules.json").(string)
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	defs, err := scheduler.LoadFile(path)
+	require.NoError(t, err)
+	var names []string
+	for _, d := range defs {
+		names = append(names, d.Name)
+	}
+	require.ElementsMatch(t, []string{"tick", "ny"}, names)
 }
