@@ -416,6 +416,14 @@ retention windows in which a tick can still fire twice).
   destination queue: a durable cron-occurrence table with its own uniqueness
   constraint, written before or with the enqueue. That is a new migration and
   table, which Session 6 excluded by scope — not because the gap is imaginary.
+- **Tracing.** No spans or trace context yet; `job_id` and `lease_id` in the
+  logs are the correlation mechanism (§14).
+- **Per-job metric labels.** By design: job, lease and worker ids belong in
+  logs, and a label per id would make series unbounded (§14).
+- **Alerting rules.** None are shipped; the dashboard is for watching, not
+  paging.
+- **Counters as an exact ledger.** Transition counters can undercount in four
+  narrow windows (§14). Reconcile against the database, which is the record.
 
 ## 13. Cron schedules and leader election
 
@@ -556,7 +564,247 @@ There is no management RPC; that is future work.
 
 ## 14. Observability
 
-*Written in Session 7; see Task 13 of the Session 7 plan.*
+Brokers and workers expose Prometheus metrics on their own HTTP listener, and
+both log JSON to stdout. Metrics describe load; they are not an audit trail.
+The database is the record of what happened to a job.
+
+**Broker metrics** (`cmd/broker`). Every hopper metric is prefixed `hopper_`
+so it cannot collide with another exporter's in a shared Prometheus.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `hopper_queue_depth` | gauge | `queue`, `state` | Rows in `scheduled`, `available`, `leased` and `dead` at this broker's last successful sample |
+| `hopper_queue_depth_last_sample_timestamp_seconds` | gauge | — | Unix time of this broker's last successful depth sample |
+| `hopper_jobs_enqueued_total` | counter | `queue` | Rows inserted by `Enqueue`; deduplicated calls excluded |
+| `hopper_jobs_completed_total` | counter | `queue` | Leases acked to `completed` |
+| `hopper_jobs_failed_total` | counter | `queue` | **Failed attempts**, not failed jobs: Nacks applied, whether rescheduled or dead-lettered. A job that fails three times counts 3 |
+| `hopper_jobs_dead_total` | counter | `queue` | Transitions into `dead`, by Nack or lease expiry |
+| `hopper_lease_expirations_total` | counter | `queue` | Expired leases the reaper took back |
+| `hopper_job_wait_seconds` | histogram | `queue` | First lease minus due time (below) |
+| `hopper_job_run_seconds` | histogram | `queue` | Ack minus lease, completed deliveries only |
+| `grpc_server_*` | histogram, counters | `grpc_type`, `grpc_service`, `grpc_method`, `grpc_code` | The standard gRPC interceptor's metrics |
+
+**Worker metrics** (`cmd/worker`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `hopper_worker_inflight_jobs` | gauge | — | Handlers executing right now |
+| `hopper_worker_handler_seconds` | histogram | `queue`, `status` | Handler wall time; `status` is `ok`, `error` or `panic` |
+
+Both processes also export the client library's `go_*` and `process_*`
+collectors. Nothing registers globally: each process builds one private
+registry.
+
+**The counting rule.** The PostgreSQL store reports each transition to an
+observer **at most once, after the store call has seen definite commit
+success, and before the call returns**. So:
+
+- A retried Ack or Nack that finds its own earlier transition already applied
+  reports nothing; the transition was counted when it happened. A
+  deduplicated `Enqueue` reports nothing.
+- A gRPC response lost after the store succeeded neither loses nor duplicates
+  a count. The transition was counted before the response left, and the
+  client's retry takes the already-applied path.
+- **Counters never overcount. They undercount only when the store did not
+  see commit success for a transition that did commit**, which happens in
+  exactly four ways: the commit result was ambiguous (the connection dropped
+  after `COMMIT` was sent); the context was cancelled after the database
+  committed but before the driver read the result; the process died between
+  commit and the observer call; or the observer panicked.
+- Counters are per process. Each transition is committed by one process, so
+  **sum counters across broker replicas**. A restart resets a process's
+  counters, and `rate()` handles resets.
+
+**They are not a ledger; the database is.** Reconcile against SQL, never
+against counters.
+
+The store is the only place that counts because it is the only place that
+knows the facts. An RPC handler cannot tell a first Ack from a retried one,
+does not know the job's queue or whether a Nack dead-lettered, and never sees
+the reaper's or the scheduler's transitions.
+
+**Cardinality.** `queue` is an arbitrary client string, and the API accepts any
+non-empty queue name. Labelling every distinct value would let any client
+create unbounded series. So the `queue` label comes from an allowlist,
+`-metrics-queues` (`HOPPER_METRICS_QUEUES`), a comma-separated list of at most
+100 names. **Every other queue is reported as `queue="_other"`**, in counters,
+histograms and depth, where the unlisted queues' counts are summed. `_other` is
+reserved. The label set is fixed at startup, and every series is pre-created at
+zero, so a counter's first increment is visible to `rate()`. **Every broker
+must use the same list**; otherwise one broker folds a queue into `_other`
+while another labels it, and the replicated depth comparison below compares
+different things. This bounds metrics, not the database: API admission is
+unchanged. The worker needs no flag, because it labels only the queues it
+registered handlers for. No metric is ever labelled with a job id, lease id,
+worker id or error string. Those belong in logs, and per-worker breakdown
+comes from Prometheus's `instance` label.
+
+**Depth.** Every broker refreshes `hopper_queue_depth` every 5s from one
+statement, four `count(*) … group by queue` branches joined with `union all`,
+one per counted state. Each branch's predicate matches a partial index
+(`jobs_lease_idx`, `jobs_promote_idx`, `jobs_reap_idx`, `jobs_dead_idx`), so its
+cost follows the rows in that state rather than the table. One statement means
+one snapshot, so a job moving mid-sample is counted exactly once. `completed`
+and `cancelled` are not counted: they are most of the table, they are bounded by
+retention rather than load, and nothing scales on them. `dead` is counted
+because DLQ size is worth watching.
+
+- **A drained queue reads 0; it does not disappear.** All four states are
+  emitted for every labelled queue, zero-filled.
+- **Scrapes see whole samples.** A sample replaces an immutable snapshot in one
+  step, so a scrape never sees half an update.
+- **A failed or invalid sample keeps the last snapshot.** It logs a warning and
+  does not advance `hopper_queue_depth_last_sample_timestamp_seconds`. An
+  invalid sample has an empty queue, an unknown state, a negative count or a
+  duplicate row. Zeroing depth on a database error would tell an autoscaler the
+  backlog vanished mid-outage. Instead, the broker exports the stale value with
+  its age, and the reader decides.
+
+**Read depth by dropping brokers whose sample is older than 15s, then `max by
+(queue, state)`, never `sum`.** Every broker samples the same database, so two
+healthy brokers each export the full depth, and `sum` would count every job
+once per broker. `max` alone is not safe either: a broker whose sampling failed
+right after it saw a backlog keeps exporting that backlog, and `max` would let
+it outvote healthy brokers that saw the drain. The query is:
+
+```promql
+max by (queue, state) (
+  hopper_queue_depth
+  and on (job, instance)
+  (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)
+)
+```
+
+Total across queues with `sum(max by (queue) (…))`. The 15 is three sample
+intervals (`metrics.DepthFreshness`). Watch the worst broker's sample age,
+`time() - min(hopper_queue_depth_last_sample_timestamp_seconds)`, because `max`
+would show the freshest broker and hide a stale one.
+
+**When every broker is stale, the query returns nothing, not 0.** That is
+accurate: no one knows the depth. An autoscaler must treat it as an error, not
+as an empty queue. For KEDA's Prometheus scaler (Session 9), that means
+`ignoreNullValues: false`, so an empty result is a scaler error, plus a
+`fallback` replica count, so a database outage holds workers at the fallback
+instead of scaling them to the minimum.
+
+**Depth cost.** N brokers each run the grouped count every 5s, and each branch
+reads every row in its state, so the cost grows with the non-terminal backlog.
+It has been measured only up to a 10k burst. At 9,717 available jobs on the
+Compose stack (2026-09-22), all four branches used their partial index with a
+bitmap scan and the statement took 2.5 ms from 248 shared-buffer hits. Right
+after the burst the planner's row estimate was 26 against 9,717 actual, because
+autovacuum had not analyzed the table yet; the plan did not change. Larger
+scales are unmeasured.
+
+```
+Bitmap Index Scan on jobs_lease_idx    (actual rows=9717)  -> GroupAggregate
+Bitmap Index Scan on jobs_promote_idx  (actual rows=0)
+Bitmap Index Scan on jobs_reap_idx     (actual rows=65)
+Bitmap Index Scan on jobs_dead_idx     (actual rows=0)
+Planning Time: 0.698 ms   Execution Time: 2.502 ms   Buffers: shared hit=248
+```
+
+**Wait is lateness past due time, not time since enqueue.**
+`hopper_job_wait_seconds` observes `leased_at − run_at` when a job is leased
+with `attempts = 1`. It replaced the spec's enqueue-to-first-lease definition
+on 2026-09-22.
+
+- For an immediate job, `run_at` is the enqueue instant, so the two definitions
+  agree.
+- For a delayed job, it measures how late the job was, not the delay it asked
+  for. That includes up to one promoter interval, and for a cron job it
+  includes the scheduler's own lateness, because `run_at` is the tick.
+- Retries are excluded: their wait is backoff the policy chose, not congestion.
+- `Redrive` resets `attempts` and `run_at`, so a redriven job's next delivery
+  is a fresh wait measured from the redrive.
+- Both instants come from the database clock, so broker clock skew cannot
+  distort it.
+
+**Histogram resolution.** Job histograms use buckets from 5ms to 600s. From 10s
+to 180s adjacent buckets differ by at most 1.5× (10, 15, 20, 30, 45, 60, 90,
+120, 180); above that they are 300 and 600. When all of a rate window's
+observations fall in one bucket, `histogram_quantile` reports near that
+bucket's upper edge. So a p99 can overstate the true value by up to the bucket
+ratio: about 1.5× below 180s, and up to 2× above it. In the 10k burst the
+true wait p99, from SQL, was 91.5s; the dashboard's p99 read 119.7s over the
+final 20 seconds of the drain, because 91.5 falls in (90, 120]. Use the
+histogram for shape and trend, and SQL for an exact figure.
+
+**Run is lease to ack, on the database clock.** `hopper_job_run_seconds`
+observes `finished_at − leased_at` when an Ack completes a job. It is observed
+for completions only: a failing handler's time belongs to
+`hopper_worker_handler_seconds{status="error"}`, and mixing it in would let a
+slow-failing dependency move p99 without any job finishing. It is deliberately
+not the handler's time. It includes lease validation, confirmation and the
+network, so the gap between broker run time and worker handler time is SDK and
+transport overhead.
+
+**gRPC.** The standard `go-grpc-middleware` Prometheus interceptor wraps every
+RPC, with every method's series pre-created at zero. `LeaseJobs` is a stream
+that lives as long as its worker, so its handling time is stream lifetime, not
+latency. Latency queries filter `grpc_type="unary"`.
+
+**Worker.** In-flight means handlers executing: from the moment a handler is
+accepted to run until it returns. Capacity held for validation or confirmation
+is not counted. A delivery that never starts, because no handler is registered
+for its queue or it lost the race with shutdown, is never observed: no user
+code ran. A handler that never returns stays in flight until the process exits.
+The SDK emits these events through `worker.Observer` and imports no metrics
+library; `cmd/worker` plugs in the Prometheus implementation. The observer runs
+synchronously on the delivery's goroutine, so its latency is the delivery's:
+time spent in `HandlerFinished` delays the Ack or Nack and uses lease time.
+
+**Logs.** Both processes log JSON to stdout. `lease_id` joins a broker's lines
+to a worker's for the same delivery. Every line about a job falls in one of two
+scopes:
+
+- **Delivery-scoped: carries `job_id` and `lease_id`.** Broker: `job leased`,
+  `job acked`, `job nacked`, `lease send failed`, and `rpc failed` /
+  `rpc rejected` for `Ack`, `Nack` and `Heartbeat`. Worker: `job started`,
+  `handler finished`, `job confirmed`, `nacking an unstarted job`,
+  `discarding a malformed delivery` (with the raw, unparseable `lease_id`), and
+  the confirmation, heartbeat and lease-expiry lines.
+- **Job-scoped: carries `job_id`, and no lease exists or the RPC takes none.**
+  Broker: `job enqueued` (one per inserted or deduplicated job, including each
+  entry of an `EnqueueBatch`), and `rpc failed` / `rpc rejected` for `Cancel`
+  and `GetJob`. Scheduler: `scheduler tick fired`.
+
+A rejected `EnqueueBatch` entry has no job. It logs `enqueue batch rejected`
+with its `index`, and belongs to neither scope. `rpc failed` is an internal
+error, logged at error level. Every other rejection, such as a stale-lease
+Ack, is `rpc rejected` at debug level with its `code`. The broker's
+per-delivery lines (`job enqueued`, `job leased`, `job acked`, `job nacked`)
+are also at debug level, so they cost nothing by default and make the two logs
+joinable when switched on. The worker's `handler finished` carries
+`handler_ms`, the same duration the histogram observes, alongside
+`duration_ms`, which counts from receipt of the delivery. Payloads are never
+logged, and a lease id appears only under the `lease_id` key.
+
+**Metrics endpoints.**
+
+| Binary | Flag | Env | Default |
+|---|---|---|---|
+| `cmd/broker` | `-metrics-listen` | `HOPPER_METRICS_LISTEN` | `127.0.0.1:9091` |
+| `cmd/worker` | `-metrics-listen` | `HOPPER_METRICS_LISTEN` | empty (disabled) |
+
+The broker runs one per host and an autoscaler depends on it, so it serves
+metrics by default, on loopback. Several workers per host is normal and a fixed
+default port would make the second one fail to bind, so the worker is off
+unless asked. An empty value disables the endpoint. A broker with metrics off
+builds no registry and runs no depth sampler. Each endpoint serves `GET
+/metrics` only, and logs `metrics listening` with its bound `addr`.
+
+**When enabled, the endpoint is mandatory for the life of the process.** Both
+listeners are bound before anything serves, and a bind failure stops the
+process before it starts. If the metrics server fails at runtime, the broker
+drains gRPC and exits non-zero, and the worker drains its handlers and exits
+non-zero. A process that kept serving without metrics would leave an autoscaler
+blind. At shutdown the metrics server stops after gRPC has drained, so it stays
+scrapeable during the drain. It gets its own 2s budget, then a hard close.
+
+**Trust model.** The metrics endpoints are plaintext and unauthenticated, like
+the API (§12). They expose allowlisted queue names, counts and timings. They
+never expose payloads, job ids or lease tokens.
 
 ## 15. Verified behavior
 
@@ -603,3 +851,12 @@ not in this table.
 | Releasing leadership never returns a locked connection to the pool | `store: TestReleaseDoesNotPoisonThePool` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
 | Three real broker processes: one fires; `SIGKILL` of the leader, twice in succession, hands the role to another broker within one interval each time; every tick pending at a kill fires and no occurrence fires twice | `integration: TestBrokerProcessCronFailsOverOnKill` (three `-race` broker binaries, 50ms `-scheduler-interval`) | 20 (`-count=20`, 40 kills, 2026-09-22) | pass: takeover 7–50ms (median 28ms) |
 | Two Compose brokers elect one scheduler; stop and `docker kill` of the leader both hand the role over, and cron jobs (including an `America/New_York` schedule in the distroless image) complete | `hopper-session6` Compose demo (`broker` + `broker-standby`, JSON logs + SQL state checks) | 1 (2026-09-22) | pass: graceful takeover in ~4s; after `docker kill` the pending tick fired ~2s late, then skipped ahead; 10/10 `sleep` jobs and the 18:30 UTC `cpu_burn` tick completed |
+| Counters match the database for completions, failed attempts, dead-letters, lease expirations and dedup; wait counts first leases only; an unlisted queue counts under `_other` | `integration: TestMetricsMatchTheDatabase` (in-process broker + SDK worker, `-race`) | 2 (`-count=2`, 2026-09-22) | pass |
+| A retried Ack or Nack is not counted twice; a lost response neither loses nor duplicates a count; a failed store call reports nothing | `store: TestObserverSeesCompletionOnce`, `TestObserverSeesNackOutcome`, `TestObserverCountsOnceAcrossALostResponse`, `TestObserverSilentOnStoreFailure` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
+| Unlisted queues fold into `_other`, and the label set stays fixed | `metrics: TestBrokerFoldsUnlistedQueues` (`-race`); `integration: TestMetricsMatchTheDatabase` | 3 and 2 (`-count=3`/`-count=2`, 2026-09-22) | pass |
+| A broker that cannot reach the database keeps its last depth snapshot and a frozen sample timestamp and keeps serving; the dashboard query excludes it; all-stale is empty, not 0 | `integration: TestStaleBrokerKeepsItsLastSnapshot` (two broker binaries, one behind a severed TCP proxy); `promtool test rules deploy/prometheus/queries_test.yml` (`prom/prometheus:v3.14.0`) | 2 and 1 (2026-09-22) | pass |
+| Two broker replicas report identical depth, so depth is read with `max by`; allowlisted counters exist at 0 before any traffic | `integration: TestBrokerReplicasReportTheSameDepth` (two broker binaries) | 2 (`-count=2`, 2026-09-22) | pass |
+| A drained queue reads 0; a scrape never sees a half-updated snapshot | `metrics: TestDrainedQueueReadsZero`, `TestScrapeNeverSeesAHalfUpdate` (`-race`) | 3 (`-count=3`, 2026-09-22) | pass |
+| Delivery-scoped lines carry both ids, job-scoped lines carry `job_id`, no job-bearing line escapes both scopes; broker and worker lines join on `lease_id`; no payload, and lease ids only under `lease_id` | `integration: TestJobLogsCarryIDsAndCorrelate` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
+| The depth query can use the four partial indexes; at peak burst backlog it does | `store: TestHotQueriesUseTheirIndexes/depth`; `EXPLAIN (ANALYZE, BUFFERS)` at 9,717 available on `hopper-session7` | 2 and 1 (2026-09-22) | pass: bitmap scans on `jobs_lease_idx`, `jobs_promote_idx`, `jobs_reap_idx`, `jobs_dead_idx`; 2.5 ms, 248 shared hits; estimate 26 against 9,717 actual (stale statistics) |
+| A 10k burst drains on the dashboard; the completion counter delta equals the SQL count | `hopper-session7` Compose demo (scheduler off, 3 workers × 4, 100 ms `sleep` jobs, run `s7-1790136511`) | 1 (2026-09-22) | pass: peak fresh depth 9,747; drained in 95 s; peak 107 jobs/s; SQL completed 10,000 = counter delta 10,000. Wait p99 read 119.7 s at the end of the drain against a true p99 of 91.5 s (bucket resolution, §14) |

@@ -5,19 +5,23 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 6 build includes the broker, producer client, worker SDK,
+The current Session 7 build includes the broker, producer client, worker SDK,
 example worker, bulk enqueue CLI, a leader-elected cron scheduler inside the
-broker, and a minimal local Compose stack. Metrics, image publishing,
-Kubernetes/Helm, KEDA, chaos automation, and load testing remain later-session
-work.
+broker, Prometheus metrics with a provisioned Grafana dashboard, structured job
+logs that join broker and worker on `lease_id`, and a local Compose stack.
+Image publishing, Kubernetes/Helm, KEDA, chaos automation, and load testing
+remain later-session work.
 
 ## Quick start
 
-Requirements: Docker with Compose v2. The broker is published only on
-`127.0.0.1:9090`; PostgreSQL is not published to the host.
+Requirements: Docker with Compose v2. Everything is published on loopback
+only: the broker on `127.0.0.1:9090`, its metrics on `127.0.0.1:9091`,
+Prometheus on `127.0.0.1:9095`, and Grafana on
+[`127.0.0.1:3000`](http://127.0.0.1:3000), which opens the queue dashboard with
+no login. PostgreSQL and the workers' metrics are not published to the host.
 
 ```bash
-docker compose -p hopper-session6 up -d --build --scale worker=3
+docker compose -p hopper-session7 up -d --build --scale worker=3
 
 go run ./cmd/hopperctl enqueue \
   -queue sleep \
@@ -26,9 +30,21 @@ go run ./cmd/hopperctl enqueue \
   -batch 100 \
   -key-prefix quickstart
 
-docker compose -p hopper-session6 logs -f broker worker
-docker compose -p hopper-session6 down -v
+docker compose -p hopper-session7 logs -f broker worker
+docker compose -p hopper-session7 down -v
 ```
+
+To watch a 10k-job burst drain on the dashboard, start the stack with the
+scheduler off, so cron ticks stay out of the `sleep` queue, and use a fresh key
+prefix, so a rerun is not deduplicated against the last one:
+
+```bash
+HOPPER_SCHEDULER=false docker compose -p hopper-session7 up -d --build --scale worker=3
+go run ./cmd/hopperctl enqueue -queue sleep -payload '{"ms":100}' \
+  -n 10000 -batch 500 -key-prefix "burst-$(date +%s)"
+```
+
+With three workers at concurrency 4 this drains in about 95 seconds.
 
 The example worker registers three queues:
 
@@ -88,8 +104,8 @@ while one is in flight.
 | `-scheduler-interval` | `HOPPER_SCHEDULER_INTERVAL` | `5s` | Tick period, and how often a non-leader retries the lock. |
 
 To watch failover locally, find the leader with
-`docker compose -p hopper-session6 logs broker broker-standby | grep "term won"`,
-then `docker compose -p hopper-session6 stop <service>` (or `docker kill` its
+`docker compose -p hopper-session7 logs broker broker-standby | grep "term won"`,
+then `docker compose -p hopper-session7 stop <service>` (or `docker kill` its
 container for the ungraceful path). The other broker logs `scheduler term won`
 within an interval. `broker-standby` publishes no port and workers dial
 `broker`, so if you stop `broker`, start it again to let workers drain the jobs
@@ -199,6 +215,53 @@ duplicate across the Ack-loss window.
 For the complete ownership, retry, cancellation, and trust model, see
 [docs/semantics.md](docs/semantics.md).
 
+## Observability
+
+Brokers and workers serve Prometheus metrics on a separate HTTP listener,
+`GET /metrics` only.
+
+| Broker metric | Meaning |
+|---|---|
+| `hopper_queue_depth{queue,state}` | Jobs `scheduled`, `available`, `leased` and `dead`, sampled every 5s |
+| `hopper_queue_depth_last_sample_timestamp_seconds` | When this broker last sampled depth successfully |
+| `hopper_jobs_{enqueued,completed,failed,dead}_total{queue}` | Committed transitions; `failed` counts attempts, not jobs |
+| `hopper_lease_expirations_total{queue}` | Leases the reaper took back |
+| `hopper_job_wait_seconds{queue}` | Due time to first lease |
+| `hopper_job_run_seconds{queue}` | Lease to ack, completions only |
+| `grpc_server_*` | Standard gRPC server metrics |
+
+| Worker metric | Meaning |
+|---|---|
+| `hopper_worker_inflight_jobs` | Handlers executing now |
+| `hopper_worker_handler_seconds{queue,status}` | Handler wall time; `status` is `ok`, `error` or `panic` |
+
+`-metrics-listen` (`HOPPER_METRICS_LISTEN`) defaults to `127.0.0.1:9091` on the
+broker and is off on the worker: there is one broker per host and an autoscaler
+depends on it, while several workers on one host would collide on a default
+port. When set, the endpoint is mandatory: a bind or serve failure stops the
+process. The broker labels only the queues in `-metrics-queues`
+(`HOPPER_METRICS_QUEUES`) and reports every other queue as `_other`, so clients
+cannot create unbounded series. Give every broker the same list.
+
+**Every broker reports the same depth, so read it by dropping brokers whose
+sample is older than 15s and taking `max by (queue, state)`, never `sum`.**
+Counters are per-process events, so sum those.
+
+Every broker and worker log line about a delivery carries `job_id` and
+`lease_id`, and every other line about a job carries `job_id`, so a delivery can
+be followed across both processes by its `lease_id`. Payloads are never logged,
+and the broker's per-delivery lines are at debug level.
+
+The Go worker SDK imports no metrics library: set `worker.Options.Observer` to
+receive handler start and finish events, as `cmd/worker` does for its
+Prometheus metrics.
+
+![A 10k-job burst draining on the hopper queue dashboard](docs/img/session7-burst-drain.png)
+
+The counting rule, the depth freshness rule and its KEDA consequence, the wait
+definition, histogram resolution, and the full log contract are in
+[docs/semantics.md §14](docs/semantics.md#14-observability).
+
 ## Development
 
 ```bash
@@ -206,7 +269,17 @@ gofmt -l .
 go vet ./...
 buf lint
 go test -race -count=2 ./...
-docker compose -p hopper-session6 config
+docker compose -p hopper-session7 config
+
+# The worker SDK must not depend on Prometheus.
+! go list -deps ./worker | grep -q prometheus
+
+# Dashboard query semantics, over synthetic series.
+docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/p:ro" \
+  prom/prometheus:v3.14.0 test rules /p/queries_test.yml
+
+# With the Compose stack up: every dashboard query runs against live Prometheus.
+scripts/check-dashboard-queries.sh
 ```
 
 The integration suite starts PostgreSQL with Testcontainers and therefore needs
