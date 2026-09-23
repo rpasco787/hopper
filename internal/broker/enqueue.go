@@ -54,6 +54,8 @@ func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRe
 	for i, spec := range specs {
 		p, err := specToParams(spec)
 		if err != nil {
+			s.cfg.Logger.DebugContext(ctx, "enqueue batch rejected",
+				"index", i, "code", codes.InvalidArgument.String())
 			return nil, status.Errorf(codes.InvalidArgument, "jobs[%d]: %v", i, status.Convert(err).Message())
 		}
 		params[i] = p
