@@ -16,6 +16,7 @@ type Broker struct {
 	enqueued, completed, failed, dead, expired *prometheus.CounterVec
 	wait, run                                  *prometheus.HistogramVec
 	labels                                     map[string]struct{} // allowlist; read-only after NewBroker
+	depth                                      *depthCollector
 }
 
 var _ store.Observer = (*Broker)(nil)
@@ -67,12 +68,21 @@ func NewBroker(reg prometheus.Registerer, queues []string) (*Broker, error) {
 		}, []string{"queue"}),
 		labels: make(map[string]struct{}, len(queues)+1),
 	}
+	depthLabels := make([]string, 0, len(queues)+1)
 	for _, queue := range queues {
+		if _, exists := b.labels[queue]; exists {
+			continue
+		}
 		b.labels[queue] = struct{}{}
+		depthLabels = append(depthLabels, queue)
+	}
+	if _, exists := b.labels[OtherQueue]; !exists {
+		depthLabels = append(depthLabels, OtherQueue)
 	}
 	b.labels[OtherQueue] = struct{}{}
+	b.depth = newDepthCollector(depthLabels)
 
-	for queue := range b.labels {
+	for _, queue := range depthLabels {
 		b.enqueued.WithLabelValues(queue)
 		b.completed.WithLabelValues(queue)
 		b.failed.WithLabelValues(queue)
@@ -82,7 +92,7 @@ func NewBroker(reg prometheus.Registerer, queues []string) (*Broker, error) {
 		b.run.WithLabelValues(queue)
 	}
 	for _, collector := range []prometheus.Collector{
-		b.enqueued, b.completed, b.failed, b.dead, b.expired, b.wait, b.run,
+		b.enqueued, b.completed, b.failed, b.dead, b.expired, b.wait, b.run, b.depth,
 	} {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("metrics: register broker: %w", err)
