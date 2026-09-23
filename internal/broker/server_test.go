@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,12 +25,12 @@ import (
 // startServer runs a real Server on a loopback port and returns it with a
 // client connection. Cleanup stops it hard, so a test that already shut it
 // down loses nothing.
-func startServer(t *testing.T, st store.Store, cfg Config) (*Server, *grpc.ClientConn) {
+func startServer(t *testing.T, st store.Store, cfg Config, opts ...grpc.ServerOption) (*Server, *grpc.ClientConn) {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	srv := NewServer(st, cfg)
+	srv := NewServer(st, cfg, opts...)
 	go func() { _ = srv.Serve(lis) }()
 
 	conn, err := grpc.NewClient(lis.Addr().String(),
@@ -39,6 +41,121 @@ func startServer(t *testing.T, st store.Store, cfg Config) (*Server, *grpc.Clien
 		srv.grpc.Stop()
 	})
 	return srv, conn
+}
+
+type recordedRPC struct {
+	method string
+	err    error
+}
+
+type rpcRecorder struct {
+	mu      sync.Mutex
+	unary   []recordedRPC
+	streams []recordedRPC
+}
+
+func (r *rpcRecorder) unaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	resp, err := handler(ctx, req)
+	r.mu.Lock()
+	r.unary = append(r.unary, recordedRPC{method: info.FullMethod, err: err})
+	r.mu.Unlock()
+	return resp, err
+}
+
+func (r *rpcRecorder) streamInterceptor(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	err := handler(srv, stream)
+	r.mu.Lock()
+	r.streams = append(r.streams, recordedRPC{method: info.FullMethod, err: err})
+	r.mu.Unlock()
+	return err
+}
+
+func (r *rpcRecorder) sawUnary(method string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, call := range r.unary {
+		if call.method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *rpcRecorder) sawStream(method string, code codes.Code) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, call := range r.streams {
+		if call.method == method && status.Code(call.err) == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestServerOptionsWrapEveryRPC(t *testing.T) {
+	t.Parallel()
+
+	rec := &rpcRecorder{}
+	srv, conn := startServer(t, &fakeStore{
+		getJobFn: func(context.Context, uuid.UUID) (store.Job, error) {
+			return sampleJob("q"), nil
+		},
+		leaseFn: func(context.Context, []string, int, time.Duration, string) ([]store.Job, error) {
+			return nil, nil
+		},
+	}, Config{PollInterval: 5 * time.Millisecond},
+		grpc.ChainUnaryInterceptor(rec.unaryInterceptor),
+		grpc.ChainStreamInterceptor(rec.streamInterceptor))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := hopperv1.NewHopperServiceClient(conn)
+	_, err := client.GetJob(ctx, &hopperv1.GetJobRequest{Id: uuid.NewString()})
+	require.NoError(t, err)
+
+	leases, err := client.LeaseJobs(ctx)
+	require.NoError(t, err)
+	require.NoError(t, leases.Send(subscribeMsg(1)))
+
+	watch, err := grpc_health_v1.NewHealthClient(conn).Watch(ctx, &grpc_health_v1.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = watch.Recv()
+	require.NoError(t, err)
+
+	require.NoError(t, srv.Shutdown(ctx))
+	require.Eventually(t, func() bool {
+		return rec.sawUnary("/hopper.v1.HopperService/GetJob") &&
+			rec.sawStream("/hopper.v1.HopperService/LeaseJobs", codes.Unavailable) &&
+			rec.sawStream("/grpc.health.v1.Health/Watch", codes.Unavailable)
+	}, time.Second, 5*time.Millisecond)
+}
+
+func TestServerReportsItsServices(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer(&fakeStore{}, Config{})
+	t.Cleanup(srv.grpc.Stop)
+	services := srv.GetServiceInfo()
+	require.Contains(t, services, "hopper.v1.HopperService")
+	require.Len(t, services["hopper.v1.HopperService"].Methods, 9)
+	require.Contains(t, services, "grpc.health.v1.Health")
+}
+
+func TestServerOptionsCannotRaiseTheMessageCeiling(t *testing.T) {
+	t.Parallel()
+
+	_, conn := startServer(t, &fakeStore{
+		enqueueFn: func(_ context.Context, p store.EnqueueParams) (store.Job, bool, error) {
+			return sampleJob(p.Queue), false, nil
+		},
+	}, Config{}, grpc.MaxRecvMsgSize(64<<20))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := hopperv1.NewHopperServiceClient(conn).Enqueue(ctx, &hopperv1.EnqueueRequest{
+		Job: &hopperv1.JobSpec{Queue: "q", Payload: make([]byte, 5<<20)},
+	})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 }
 
 func TestServerServesHealthAndTheService(t *testing.T) {

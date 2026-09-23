@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -27,19 +28,23 @@ type Server struct {
 }
 
 // NewServer registers the hopper service, the standard health service and
-// server reflection.
+// server reflection. opts are applied before the server's own, which puts
+// caller interceptors outermost — gRPC runs chained interceptors in the order
+// they were added — so an instrumentation interceptor sees every RPC,
+// including the Unavailable a drain produces. The server's own message-size
+// limits come after opts and therefore win.
 //
 // Reflection is on deliberately. It is what lets grpcurl, grpcui and Postman
 // call this server with no .proto file in hand, which turns "can I try the
 // API" from a codegen exercise into one command. It exposes the service
 // descriptors only — never data — and it is how the Session 13 README's
 // quickstart works.
-func NewServer(st store.Store, cfg Config) *Server {
+func NewServer(st store.Store, cfg Config, opts ...grpc.ServerOption) *Server {
 	svc := NewService(st, cfg)
-	g := grpc.NewServer(
+	g := grpc.NewServer(slices.Concat(opts, []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(MaxMessageBytes), grpc.MaxSendMsgSize(MaxMessageBytes),
 		grpc.ChainStreamInterceptor(svc.drainStreams),
-	)
+	})...)
 
 	hopperv1.RegisterHopperServiceServer(g, svc)
 
@@ -55,6 +60,11 @@ func NewServer(st store.Store, cfg Config) *Server {
 
 	return &Server{grpc: g, service: svc, health: h}
 }
+
+// GetServiceInfo reports the registered services. It makes *Server a
+// reflection.ServiceInfoProvider, which is what an interceptor library needs
+// to pre-create per-method series before the first call.
+func (s *Server) GetServiceInfo() map[string]grpc.ServiceInfo { return s.grpc.GetServiceInfo() }
 
 // Serve blocks until the server stops. A clean shutdown returns nil.
 func (s *Server) Serve(lis net.Listener) error {
