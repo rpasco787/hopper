@@ -10,7 +10,10 @@ const namespace = "hopper"
 
 // JobBuckets spans a sub-10ms lease on an idle queue to a ten-minute backlog.
 // The client default stops at 10s, where a draining burst's p99 would clamp.
-var JobBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600}
+// From 10s to 180s adjacent buckets differ by at most 1.5x: when a rate window
+// falls in one bucket, p99 reads near its upper edge, so doubling buckets let
+// a 91s p99 show as 119.4s during a 10k-job burst (docs/semantics.md §14).
+var JobBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600}
 
 // RPCBuckets covers unary RPC latency, which is one or two database round trips.
 var RPCBuckets = []float64{.0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5}
