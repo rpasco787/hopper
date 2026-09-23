@@ -15,6 +15,11 @@ import (
 // never reported: by the time it is used the handler has already returned.
 var errDeliveryDone = errors.New("worker: delivery finished")
 
+// errHandlerPanicked marks a recovered panic so the observer can report it
+// separately from a returned error. It is unexported, so a handler cannot
+// forge the status; the Nack text is unchanged.
+var errHandlerPanicked = errors.New("worker: handler panicked")
+
 // execute owns one delivery from dispatch to confirmation. It runs on the
 // delivery's own goroutine, holding that delivery's capacity token for the
 // whole of it — validation, execution and confirmation alike.
@@ -60,9 +65,12 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	}
 
 	hb.start()
+	w.opts.Observer.HandlerStarted(d.job.Queue)
 	log.Info("job started")
 	started := time.Now()
 	err := invoke(handlerCtx, d)
+	handlerDuration := time.Since(started)
+	w.opts.Observer.HandlerFinished(d.job.Queue, handlerStatus(err), handlerDuration)
 
 	// Stop renewal before confirming. This cancels the heartbeat RPC in flight,
 	// which is our own doing rather than a rejection, so the lease stays live
@@ -75,7 +83,7 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 		loggedErr = message
 	}
 	log.Info("handler finished", "err", loggedErr,
-		"handler_ms", time.Since(started).Milliseconds(),
+		"handler_ms", handlerDuration.Milliseconds(),
 		"duration_ms", time.Since(d.receivedAt).Milliseconds())
 	wk.confirming()
 
@@ -123,8 +131,18 @@ func invoke(ctx context.Context, d *delivery) (err error) {
 		if p := recover(); p != nil {
 			// The stack is bounded when it becomes a Nack message, which is
 			// where an unbounded one would otherwise reach the database.
-			err = fmt.Errorf("worker: handler panicked: %v\n%s", p, debug.Stack())
+			err = fmt.Errorf("%w: %v\n%s", errHandlerPanicked, p, debug.Stack())
 		}
 	}()
 	return d.handler(ctx, d.job)
+}
+
+func handlerStatus(err error) HandlerStatus {
+	if err == nil {
+		return HandlerOK
+	}
+	if errors.Is(err, errHandlerPanicked) {
+		return HandlerPanic
+	}
+	return HandlerError
 }

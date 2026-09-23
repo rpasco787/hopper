@@ -82,6 +82,10 @@ type Options struct {
 	ShutdownTimeout time.Duration
 	// Logger receives lifecycle and per-delivery events. Nil takes slog.Default.
 	Logger *slog.Logger
+	// Observer receives handler lifecycle events synchronously on the
+	// delivery's goroutine. It must be safe for concurrent use, fast and
+	// non-blocking, and must not panic. Nil observes nothing.
+	Observer Observer
 	// DialOptions are appended after the SDK's defaults, so passing
 	// grpc.WithTransportCredentials replaces the plaintext default.
 	DialOptions []grpc.DialOption
@@ -120,6 +124,9 @@ func New(target string, opts Options) *Worker {
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
+	}
+	if opts.Observer == nil {
+		opts.Observer = nopObserver{}
 	}
 	// Defaults replace zero values only. A negative duration or concurrency
 	// survives to Run, which rejects it: silently correcting a negative would
