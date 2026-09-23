@@ -1,0 +1,29 @@
+# helm test: one job through the Service, the database and a worker (Decision 10).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "hopper.fullname" . }}-smoke
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "smoke") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    # Kept after it runs, so `helm test --logs` and kubectl can read it.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    {{- include "hopper.podSecurityContext" . | nindent 4 }}
+  containers:
+    - name: smoke
+      image: {{ include "hopper.image" (dict "root" . "repository" .Values.smoke.image) }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      args:
+        - smoke
+        - {{ printf "-broker=%s-broker:9090" (include "hopper.fullname" .) | quote }}
+        - {{ printf "-queue=%s" .Values.smoke.queue | quote }}
+        - {{ printf "-payload=%s" .Values.smoke.payload | quote }}
+        - {{ printf "-timeout=%s" .Values.smoke.timeout | quote }}
+      securityContext:
+        {{- include "hopper.containerSecurityContext" . | nindent 8 }}

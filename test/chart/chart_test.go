@@ -239,7 +239,9 @@ func TestPodsMeetTheRestrictedStandard(t *testing.T) {
 			}
 		}
 	}
-	require.NotZero(t, checked, "no pod specs rendered")
+	// postgres, broker, worker and the smoke test: a template that stops
+	// rendering must not quietly shrink this check.
+	require.Equal(t, 4, checked, "pod specs checked")
 }
 
 func TestSelectorsNeverIncludeChangingLabels(t *testing.T) {
@@ -370,6 +372,7 @@ func requireGraceHolds(t *testing.T, objects map[string]map[string]any, name str
 func TestShutdownBudgetsFitTheirGracePeriods(t *testing.T) {
 	objects := render(t)
 	requireGraceHolds(t, objects, "broker")
+	requireGraceHolds(t, objects, "worker")
 }
 
 func TestChartRejectsGracePeriodsTooShortForTheirDrain(t *testing.T) {
@@ -380,6 +383,14 @@ func TestChartRejectsGracePeriodsTooShortForTheirDrain(t *testing.T) {
 	_, stderr, err = helmTemplate("--set", "broker.shutdownTimeoutSeconds=60")
 	require.Error(t, err, "the guard must read the budget, not only the grace period")
 	require.Contains(t, stderr, "broker: terminationGracePeriodSeconds (45)")
+
+	_, stderr, err = helmTemplate("--set", "worker.terminationGracePeriodSeconds=54")
+	require.Error(t, err)
+	require.Contains(t, stderr, "worker: terminationGracePeriodSeconds (54) must be at least preStopSleepSeconds + shutdownTimeoutSeconds + 5 = 55")
+	render(t, "--set", "worker.terminationGracePeriodSeconds=55")
+	_, stderr, err = helmTemplate("--set", "worker.preStopSleepSeconds=20")
+	require.Error(t, err, "the guard must read the preStop sleep")
+	require.Contains(t, stderr, "worker: terminationGracePeriodSeconds (60)")
 }
 
 func checksum(t *testing.T, objects map[string]map[string]any, key string) string {
@@ -393,6 +404,13 @@ func TestConfigChangesRollPods(t *testing.T) {
 	base := render(t)
 	debug := render(t, "--set", "broker.logLevel=debug")
 	require.NotEqual(t, checksum(t, base, "Deployment/hopper-broker"), checksum(t, debug, "Deployment/hopper-broker"))
+	require.Equal(t, checksum(t, base, "Deployment/hopper-worker"), checksum(t, debug, "Deployment/hopper-worker"),
+		"a broker setting must not roll the workers")
+
+	wider := render(t, "--set", "worker.concurrency=16")
+	require.NotEqual(t, checksum(t, base, "Deployment/hopper-worker"), checksum(t, wider, "Deployment/hopper-worker"))
+	require.Equal(t, checksum(t, base, "Deployment/hopper-broker"), checksum(t, wider, "Deployment/hopper-broker"),
+		"a worker setting must not roll the brokers")
 }
 
 func TestBrokerServiceAndDisruptionBudget(t *testing.T) {
@@ -440,4 +458,63 @@ func TestCronSchedulesReachTheBroker(t *testing.T) {
 		names = append(names, d.Name)
 	}
 	require.ElementsMatch(t, []string{"tick", "ny"}, names)
+}
+
+func TestWorkerConfig(t *testing.T) {
+	objects := render(t)
+	require.Equal(t, map[string]any{
+		"HOPPER_BROKER":           "hopper-broker:9090",
+		"HOPPER_CONCURRENCY":      "8",
+		"HOPPER_SHUTDOWN_TIMEOUT": "45s",
+		"HOPPER_LOG_LEVEL":        "info",
+		"HOPPER_METRICS_LISTEN":   ":9092",
+	}, dig(object(t, objects, "ConfigMap/hopper-worker"), "data"))
+
+	deploy := object(t, objects, "Deployment/hopper-worker")
+	require.Equal(t, 1, dig(deploy, "spec", "replicas"))
+	require.Equal(t, "RollingUpdate", dig(deploy, "spec", "strategy", "type"))
+	require.Equal(t, 1, dig(deploy, "spec", "strategy", "rollingUpdate", "maxSurge"))
+	require.Equal(t, 0, dig(deploy, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	spec := podSpec(t, deploy)
+	require.Len(t, containers(spec), 1, "Deployment/hopper-worker has no init containers")
+	worker := container(t, spec, "worker")
+	require.Equal(t, "ghcr.io/rpasco787/hopper-worker:0.1.0", worker["image"])
+	require.Equal(t, []any{map[string]any{"configMapRef": map[string]any{"name": "hopper-worker"}}}, worker["envFrom"])
+	require.Equal(t, []any{map[string]any{"name": "metrics", "containerPort": 9092}}, worker["ports"])
+	for _, probe := range []string{"startupProbe", "readinessProbe", "livenessProbe"} {
+		require.Nil(t, worker[probe], "Deployment/hopper-worker: %s (Decision 5: workers have none)", probe)
+	}
+}
+
+func TestImagesShareOneTag(t *testing.T) {
+	images := func(objects map[string]map[string]any) map[string]string {
+		out := map[string]string{}
+		for _, key := range []string{"Deployment/hopper-broker", "Deployment/hopper-worker", "Pod/hopper-smoke", "StatefulSet/hopper-postgres"} {
+			for _, c := range containers(podSpec(t, object(t, objects, key))) {
+				out[fmt.Sprint(c["name"])] = fmt.Sprint(c["image"])
+			}
+		}
+		return out
+	}
+	for tag, args := range map[string][]string{"0.1.0": nil, "abc": {"--set", "image.tag=abc"}} {
+		got := images(render(t, args...))
+		require.Equal(t, map[string]string{
+			"broker":            "ghcr.io/rpasco787/hopper-broker:" + tag,
+			"worker":            "ghcr.io/rpasco787/hopper-worker:" + tag,
+			"smoke":             "ghcr.io/rpasco787/hopperctl:" + tag,
+			"wait-for-postgres": "postgres:16-alpine",
+			"postgres":          "postgres:16-alpine",
+		}, got, "tag %s", tag)
+	}
+}
+
+func TestSmokeTestHook(t *testing.T) {
+	pod := object(t, render(t), "Pod/hopper-smoke")
+	require.Equal(t, "test", dig(pod, "metadata", "annotations", "helm.sh/hook"))
+	require.Equal(t, "before-hook-creation", dig(pod, "metadata", "annotations", "helm.sh/hook-delete-policy"))
+	spec := podSpec(t, pod)
+	require.Equal(t, "Never", spec["restartPolicy"])
+	require.Equal(t, []any{
+		"smoke", "-broker=hopper-broker:9090", "-queue=sleep", `-payload={"ms":10}`, "-timeout=60s",
+	}, container(t, spec, "smoke")["args"])
 }

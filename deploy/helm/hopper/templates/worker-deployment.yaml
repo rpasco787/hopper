@@ -1,0 +1,56 @@
+{{- include "hopper.checkGrace" (dict "name" "worker" "v" .Values.worker) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hopper.fullname" . }}-worker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  # Surge first, so a replacement pod exists before an old one is deleted.
+  # With no readiness probe, "ready" means only that the container started,
+  # so this orders the pods; it does not promise the new worker is leasing.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "hopper.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hopper.labels" (dict "root" . "component" "worker") | nindent 8 }}
+      annotations:
+        # A ConfigMap change alone restarts nothing; a changed pod template does.
+        checksum/config: {{ include (print $.Template.BasePath "/worker-configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "hopper.podSecurityContext" . | nindent 8 }}
+      containers:
+        # No probes: the SDK reconnects on its own, so a restart would not help
+        # a worker that cannot reach a broker (Decision 5).
+        - name: worker
+          image: {{ include "hopper.image" (dict "root" . "repository" .Values.worker.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "hopper.fullname" . }}-worker
+          ports:
+            - name: metrics
+              containerPort: 9092
+          lifecycle:
+            # Nothing routes to a worker, so this sleep only delays SIGTERM, during
+            # which the worker keeps taking work. Harmless, and counted in the grace
+            # budget (Decision 4).
+            preStop:
+              sleep:
+                seconds: {{ .Values.worker.preStopSleepSeconds }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- include "hopper.containerSecurityContext" . | nindent 12 }}
