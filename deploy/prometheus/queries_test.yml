@@ -1,0 +1,139 @@
+# Semantics of the dashboard's depth, age and quantile queries, evaluated over
+# synthetic series with no live stack:
+#
+#   docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/p:ro" \
+#     prom/prometheus:v3.14.0 test rules /p/queries_test.yml
+#
+# The expressions are copied verbatim from deploy/grafana/dashboards/queue.json,
+# except that $__rate_interval (a Grafana variable) is written as 1m.
+# TestDashboardQueryShape enforces the dashboard's shape, so keep these copies
+# in sync with it. The 15 is metrics.DepthFreshness in seconds.
+#
+# Each broker's sample timestamp is its own series; "advancing" means it equals
+# the evaluation time, "frozen" means it stopped at 40s.
+
+rule_files: []
+evaluation_interval: 5s
+
+tests:
+  # One broker stopped sampling right after it saw a 10k backlog. The fresh-only
+  # read ignores it; the unsafe max would report the stale 10000.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+        values: '0x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
+        values: '10000x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+        values: '0+5x8 40x12'
+    promql_expr_test:
+      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{queue="m"}'
+            value: 0
+      # Why the filter exists.
+      - expr: max by (queue) (hopper_queue_depth{state="available"})
+        eval_time: 100s
+        exp_samples:
+          - labels: '{queue="m"}'
+            value: 10000
+      # Worst age is the stale broker's, not the healthy one's.
+      - expr: time() - min(hopper_queue_depth_last_sample_timestamp_seconds)
+        eval_time: 100s
+        exp_samples:
+          - labels: '{}'
+            value: 60
+
+  # Every broker is stale: fresh depth is empty ("no data"), never 0.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+        values: '0+5x8 40x12'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+        values: '0+5x8 40x12'
+    promql_expr_test:
+      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+        eval_time: 100s
+        exp_samples: []
+      - expr: sum(max by (queue) (hopper_queue_depth{state="dead"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+        eval_time: 100s
+        exp_samples: []
+
+  # Both brokers fresh and agreeing: max, not sum. Totals across queues sum the
+  # per-queue max, so two queues with 2 and 3 dead jobs read 5, not 10.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+        values: '7x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
+        values: '7x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="leased"}'
+        values: '4x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="leased"}'
+        values: '4x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="dead"}'
+        values: '2x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="dead"}'
+        values: '2x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="n",state="dead"}'
+        values: '3x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="n",state="dead"}'
+        values: '3x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+        values: '0+5x20'
+    promql_expr_test:
+      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{queue="m"}'
+            value: 7
+      - expr: sum by (state) (max by (queue, state) (hopper_queue_depth{state=~"scheduled|available|leased"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{state="available"}'
+            value: 7
+          - labels: '{state="leased"}'
+            value: 4
+      - expr: sum(max by (queue) (hopper_queue_depth{state="dead"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{}'
+            value: 5
+
+  # Quantiles keep queue: a fast queue (every wait under 100ms) and a slow one
+  # (every wait between 1s and 10s) give two series with their own p99s.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="fast",le="0.1"}'
+        values: '0+10x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="fast",le="1"}'
+        values: '0+10x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="fast",le="10"}'
+        values: '0+10x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="fast",le="+Inf"}'
+        values: '0+10x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="slow",le="0.1"}'
+        values: '0x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="slow",le="1"}'
+        values: '0x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="slow",le="10"}'
+        values: '0+10x20'
+      - series: 'hopper_job_wait_seconds_bucket{job="broker",instance="a:9091",queue="slow",le="+Inf"}'
+        values: '0+10x20'
+    promql_expr_test:
+      - expr: histogram_quantile(0.99, sum by (le, queue) (rate(hopper_job_wait_seconds_bucket[1m])))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{queue="fast"}'
+            value: 0.099
+          - labels: '{queue="slow"}'
+            value: 9.91

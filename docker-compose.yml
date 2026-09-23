@@ -13,6 +13,13 @@ x-broker: &broker
     HOPPER_LEASE_DURATION: 30s
     HOPPER_LOG_LEVEL: info
     HOPPER_CRON_FILE: /etc/hopper/schedules.json
+    # HOPPER_SCHEDULER=false docker compose up turns cron off, for a benchmark
+    # that must not see scheduled jobs.
+    HOPPER_SCHEDULER: ${HOPPER_SCHEDULER:-true}
+    HOPPER_METRICS_LISTEN: 0.0.0.0:9091
+    # Every broker must label the same queues, or the replicated depth gauge
+    # compares different things across brokers.
+    HOPPER_METRICS_QUEUES: sleep,fail_n_times,cpu_burn
   volumes:
     - ./deploy/cron/schedules.json:/etc/hopper/schedules.json:ro
   stop_grace_period: 40s
@@ -34,6 +41,7 @@ services:
     <<: *broker
     ports:
       - "127.0.0.1:9090:9090"
+      - "127.0.0.1:9091:9091"
 
   # A second broker with no published port: it serves nothing the host can
   # reach, but it contends for the scheduler's advisory lock, so stopping or
@@ -54,4 +62,28 @@ services:
       HOPPER_CONCURRENCY: "4"
       HOPPER_SHUTDOWN_TIMEOUT: 45s
       HOPPER_LOG_LEVEL: info
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9092
     stop_grace_period: 60s
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9095:9090"
+    depends_on:
+      - broker
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/queue.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus

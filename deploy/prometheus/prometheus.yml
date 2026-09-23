@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s      # matches the broker's depth sample interval
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: broker
+    static_configs:
+      - targets: ["broker:9091", "broker-standby:9091"]
+
+  # Compose's DNS answers one A record per replica, so --scale worker=N needs
+  # no change here.
+  - job_name: worker
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9092
+        refresh_interval: 5s
