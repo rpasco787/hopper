@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -23,6 +26,7 @@ var workerEnvironment = []string{
 	"HOPPER_LEASE_DURATION",
 	"HOPPER_SHUTDOWN_TIMEOUT",
 	"HOPPER_LOG_LEVEL",
+	"HOPPER_METRICS_LISTEN",
 }
 
 func clearWorkerEnvironment(t *testing.T) {
@@ -79,6 +83,25 @@ func TestConfigFlagsOverrideInvalidEnvironment(t *testing.T) {
 	c, err := parseConfig([]string{"-concurrency", "3"})
 	require.NoError(t, err)
 	require.Equal(t, 3, c.concurrency)
+}
+
+func TestMetricsListenConfiguration(t *testing.T) {
+	clearWorkerEnvironment(t)
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	require.Empty(t, c.metricsListen)
+
+	t.Setenv("HOPPER_METRICS_LISTEN", "127.0.0.1:9191")
+	c, err = parseConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:9191", c.metricsListen)
+
+	c, err = parseConfig([]string{"-metrics-listen", "127.0.0.1:9292"})
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:9292", c.metricsListen)
+
+	_, err = parseConfig([]string{"-metrics-listen", "nohost"})
+	require.EqualError(t, err, "invalid metrics-listen address")
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -168,6 +191,109 @@ func TestRunReturnsWorkerErrorsAndCleanStops(t *testing.T) {
 		func(context.Context, *workersdk.Worker) error { return nil })
 	require.NoError(t, err)
 	require.Contains(t, stdout.String(), `"worker_id"`)
+}
+
+func TestWorkerServesMetricsUntilStartReturns(t *testing.T) {
+	clearWorkerEnvironment(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithContext(context.Background(), []string{"-metrics-listen", "127.0.0.1:0"}, &stdout,
+			func(context.Context, *workersdk.Worker) error {
+				close(started)
+				<-release
+				return nil
+			}, lis)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker start function was not called")
+	}
+
+	body := getMetrics(t, addr)
+	require.Contains(t, body, "hopper_worker_inflight_jobs")
+	require.Contains(t, body, "hopper_worker_handler_seconds")
+	require.Contains(t, stdout.String(), `"msg":"metrics listening"`)
+	require.Contains(t, stdout.String(), fmt.Sprintf(`"addr":%q`, addr))
+
+	close(release)
+	require.NoError(t, <-done)
+	require.Eventually(t, func() bool { return connectionRefused(addr) }, time.Second, 10*time.Millisecond)
+}
+
+func TestWorkerMetricsClosedWhenStartFails(t *testing.T) {
+	clearWorkerEnvironment(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	want := errors.New("broker is unreachable")
+	err = runWithContext(context.Background(), []string{"-metrics-listen", "127.0.0.1:0"}, io.Discard,
+		func(context.Context, *workersdk.Worker) error { return want }, lis)
+	require.ErrorIs(t, err, want)
+	require.Eventually(t, func() bool { return connectionRefused(addr) }, time.Second, 10*time.Millisecond)
+}
+
+func TestWorkerStopsWhenMetricsServerDies(t *testing.T) {
+	clearWorkerEnvironment(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithContext(context.Background(), []string{"-metrics-listen", "127.0.0.1:0"}, io.Discard,
+			func(ctx context.Context, _ *workersdk.Worker) error {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				return nil
+			}, lis)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker start function was not called")
+	}
+	require.NoError(t, lis.Close())
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("metrics server failure did not cancel the worker context")
+	}
+	require.Error(t, <-done)
+}
+
+func getMetrics(t *testing.T, addr string) string {
+	t.Helper()
+	var body string
+	require.Eventually(t, func() bool {
+		resp, err := http.Get("http://" + addr + "/metrics")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			return false
+		}
+		body = string(data)
+		return true
+	}, 2*time.Second, 10*time.Millisecond)
+	return body
+}
+
+func connectionRefused(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 20*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+	}
+	return err != nil
 }
 
 func TestStartupBeforeBrokerAndCancellationDrainsPromptly(t *testing.T) {

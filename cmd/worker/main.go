@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/rpasco787/hopper/internal/metrics"
 	workersdk "github.com/rpasco787/hopper/worker"
 )
 
@@ -20,6 +23,7 @@ const maxWorkerConcurrency = 1 << 16
 
 type config struct {
 	broker, id, logLevel           string
+	metricsListen                  string
 	concurrency                    int
 	leaseDuration, shutdownTimeout time.Duration
 }
@@ -31,6 +35,7 @@ var envVars = [][2]string{
 	{"lease-duration", "HOPPER_LEASE_DURATION"},
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"},
 	{"log-level", "HOPPER_LOG_LEVEL"},
+	{"metrics-listen", "HOPPER_METRICS_LISTEN"},
 }
 
 func parseConfig(args []string) (config, error) {
@@ -42,6 +47,7 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.leaseDuration, "lease-duration", 0, "requested lease duration; zero uses broker default (HOPPER_LEASE_DURATION)")
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful drain budget (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.StringVar(&c.logLevel, "log-level", "info", "debug/info/warn/error (HOPPER_LOG_LEVEL)")
+	fs.StringVar(&c.metricsListen, "metrics-listen", "", "Prometheus HTTP address; empty disables metrics (HOPPER_METRICS_LISTEN)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -71,6 +77,11 @@ func parseConfig(args []string) (config, error) {
 	}
 	if c.shutdownTimeout < 0 {
 		return c, errors.New("shutdown-timeout must not be negative")
+	}
+	if c.metricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.metricsListen); err != nil {
+			return c, errors.New("invalid metrics-listen address")
+		}
 	}
 	if _, err := parseLevel(c.logLevel); err != nil {
 		return c, err
@@ -104,7 +115,16 @@ func resolvedWorkerID() string {
 
 type workerRun func(context.Context, *workersdk.Worker) error
 
-func runWithContext(ctx context.Context, args []string, stdout io.Writer, start workerRun) error {
+var workerHandlers = []struct {
+	queue   string
+	handler workersdk.HandlerFunc
+}{
+	{queue: "sleep", handler: sleepHandler},
+	{queue: "fail_n_times", handler: failNTimesHandler},
+	{queue: "cpu_burn", handler: cpuBurnHandler},
+}
+
+func runWithContext(ctx context.Context, args []string, stdout io.Writer, start workerRun, suppliedMetricsListener ...net.Listener) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
 		return err
@@ -116,17 +136,96 @@ func runWithContext(ctx context.Context, args []string, stdout io.Writer, start 
 	if cfg.id == "" {
 		cfg.id = resolvedWorkerID()
 	}
+	if len(suppliedMetricsListener) > 1 {
+		return errors.New("worker: more than one metrics listener supplied")
+	}
+	var (
+		observer   workersdk.Observer
+		httpSrv    *http.Server
+		metricsLis net.Listener
+		metricsErr chan error
+	)
+	if cfg.metricsListen != "" {
+		reg := metrics.NewRegistry()
+		queues := make([]string, 0, len(workerHandlers))
+		for _, registered := range workerHandlers {
+			queues = append(queues, registered.queue)
+		}
+		wm, err := metrics.NewWorker(reg, queues)
+		if err != nil {
+			return err
+		}
+		observer = wm
+		if len(suppliedMetricsListener) == 1 {
+			metricsLis = suppliedMetricsListener[0]
+		} else {
+			metricsLis, err = net.Listen("tcp", cfg.metricsListen)
+			if err != nil {
+				return fmt.Errorf("metrics listen: %w", err)
+			}
+		}
+		defer metricsLis.Close()
+		httpSrv = metrics.NewHTTPServer(reg)
+		metricsErr = make(chan error, 1)
+		go func() {
+			if err := httpSrv.Serve(metricsLis); err != nil {
+				metricsErr <- fmt.Errorf("metrics: serve: %w", err)
+				return
+			}
+			metricsErr <- nil
+		}()
+		logger.Info("metrics listening", "addr", metricsLis.Addr().String())
+	}
 	w := workersdk.New(cfg.broker, workersdk.Options{
 		ID: cfg.id, Concurrency: cfg.concurrency, LeaseDuration: cfg.leaseDuration,
-		ShutdownTimeout: cfg.shutdownTimeout, Logger: logger,
+		ShutdownTimeout: cfg.shutdownTimeout, Logger: logger, Observer: observer,
 	})
-	w.Handle("sleep", sleepHandler)
-	w.Handle("fail_n_times", failNTimesHandler)
-	w.Handle("cpu_burn", cpuBurnHandler)
+	for _, registered := range workerHandlers {
+		w.Handle(registered.queue, registered.handler)
+	}
 	logger.Info("worker starting", "worker_id", cfg.id, "broker", cfg.broker,
 		"concurrency", cfg.concurrency, "lease_duration", cfg.leaseDuration.String(),
 		"shutdown_timeout", cfg.shutdownTimeout.String())
-	if err := start(ctx, w); err != nil {
+	if httpSrv == nil {
+		if err := start(ctx, w); err != nil {
+			return err
+		}
+		logger.Info("worker stopped", "worker_id", cfg.id)
+		return nil
+	}
+
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	defer cancelWorker()
+	startErr := make(chan error, 1)
+	go func() { startErr <- start(workerCtx, w) }()
+	var (
+		runErr          error
+		metricsServeErr error
+		serveResultRead bool
+	)
+	select {
+	case runErr = <-startErr:
+	case metricsServeErr = <-metricsErr:
+		serveResultRead = true
+		if !errors.Is(metricsServeErr, http.ErrServerClosed) {
+			cancelWorker()
+		}
+		runErr = <-startErr
+	}
+
+	metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), 2*time.Second)
+	metricsShutdownErr := httpSrv.Shutdown(metricsCtx)
+	cancelMetrics()
+	if metricsShutdownErr != nil {
+		metricsShutdownErr = errors.Join(metricsShutdownErr, httpSrv.Close())
+	}
+	if !serveResultRead {
+		metricsServeErr = <-metricsErr
+	}
+	if errors.Is(metricsServeErr, http.ErrServerClosed) {
+		metricsServeErr = nil
+	}
+	if err := errors.Join(runErr, metricsServeErr, metricsShutdownErr); err != nil {
 		return err
 	}
 	logger.Info("worker stopped", "worker_id", cfg.id)
