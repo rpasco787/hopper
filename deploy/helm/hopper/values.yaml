@@ -1,0 +1,69 @@
+# One tag for every hopper image: all three are built from one commit. Empty
+# uses the chart's appVersion. The images are published from Session 12; on
+# kind, scripts/kind-up.sh builds and loads them under a fresh tag.
+image:
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# A development PostgreSQL: one replica, no replication, no backups. Its volume
+# outlives `helm uninstall`.
+postgres:
+  image: postgres:16-alpine
+  user: hopper
+  database: hopper
+  # A development default, as in docker-compose.yml, stored only in the chart's
+  # Secret. Bootstrap-only: PostgreSQL reads it only when it initializes an
+  # empty volume, and the volume outlives upgrades and `helm uninstall`. A
+  # later change reaches the Secret but not the database, and brokers then
+  # fail to authenticate on their next start. To change it, delete the PVC
+  # (and its data). `helm upgrade` without --reuse-values resets it, so pass
+  # an override on every upgrade.
+  password: hopper
+  storage: 1Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+broker:
+  image: ghcr.io/rpasco787/hopper-broker
+  replicas: 2
+  # Visibility timeout for workers that do not request their own.
+  leaseDuration: 30s
+  logLevel: info
+  # Every replica runs the scheduler; a PostgreSQL advisory lock elects the one that fires.
+  scheduler: true
+  # Queues with their own metrics label; every other queue reports as _other.
+  # One list for every replica, which Session 7 requires.
+  metricsQueues: [sleep, fail_n_times, cpu_burn]
+  # Cron declarations in the -cron-file shape (see deploy/cron/schedules.json),
+  # e.g. [{name: tick, queue: sleep, cron: "@every 10s", payload: {ms: 50}}].
+  # Empty leaves cron_schedules unmanaged.
+  cronSchedules: []
+  # Shutdown: a preStop sleep, then SIGTERM starts a drain bounded by
+  # shutdownTimeoutSeconds. The grace period is counted from deletion, so it
+  # must hold both plus 5s for exit. The chart refuses to render otherwise.
+  preStopSleepSeconds: 5
+  shutdownTimeoutSeconds: 30
+  terminationGracePeriodSeconds: 45
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+worker:
+  image: ghcr.io/rpasco787/hopper-worker
+  replicas: 1
+  concurrency: 8
+  logLevel: info
+  preStopSleepSeconds: 5
+  shutdownTimeoutSeconds: 45
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+# `helm test`: enqueue one job and wait for a worker to complete it.
+smoke:
+  image: ghcr.io/rpasco787/hopperctl
+  queue: sleep
+  payload: '{"ms":10}'
+  timeout: 60s

@@ -1,0 +1,12 @@
+hopper {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+These commands act on your current kube context. For the kind cluster from
+scripts/kind-up.sh, add --kube-context kind-hopper to helm and --context
+kind-hopper to kubectl.
+
+Check it end to end (enqueues one job and waits for a worker to complete it):
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
+Enqueue from your machine:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "hopper.fullname" . }}-broker 9090:9090
+  go run ./cmd/hopperctl enqueue -queue sleep -n 100 -key-prefix demo-$(date +%s)

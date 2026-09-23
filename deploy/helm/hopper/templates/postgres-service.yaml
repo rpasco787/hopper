@@ -1,0 +1,16 @@
+# Headless: the StatefulSet's governing Service, and the broker's DSN host. Its
+# DNS name resolves straight to the PostgreSQL pod once that pod is ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hopper.fullname" . }}-postgres
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "hopper.selectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: hopper
+description: At-least-once PostgreSQL job queue with replicated gRPC brokers, example workers and a bundled development PostgreSQL.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# The preStop sleep action the pods use is GA from 1.34; older clusters refuse it.
+kubeVersion: ">=1.34.0-0"
