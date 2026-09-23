@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,6 +23,9 @@ type fakeProducer struct {
 	batches [][]client.Job
 	closed  int
 	enqueue func(context.Context, []client.Job, int) ([]client.Result, error)
+	// getJob answers the nth GetJob call, counting from 1.
+	getJob  func(ctx context.Context, id uuid.UUID, n int) (client.Result, error)
+	getJobs int
 }
 
 func (f *fakeProducer) EnqueueBatch(ctx context.Context, jobs []client.Job) ([]client.Result, error) {
@@ -30,6 +35,11 @@ func (f *fakeProducer) EnqueueBatch(ctx context.Context, jobs []client.Job) ([]c
 		return f.enqueue(ctx, copyOfJobs, len(f.batches))
 	}
 	return make([]client.Result, len(jobs)), nil
+}
+
+func (f *fakeProducer) GetJob(ctx context.Context, id uuid.UUID) (client.Result, error) {
+	f.getJobs++
+	return f.getJob(ctx, id, f.getJobs)
 }
 
 func (f *fakeProducer) Close() error { f.closed++; return nil }
@@ -218,4 +228,142 @@ func TestDefaultTimeoutIsOneMinute(t *testing.T) {
 	c, err := parseEnqueueConfig([]string{"-queue", "q"})
 	require.NoError(t, err)
 	require.Equal(t, time.Minute, c.timeout)
+}
+
+var smokeJobID = uuid.MustParse("0192f0c4-7d4e-7a51-9b3a-5f0e2c1d8a77")
+
+// enqueuedOne answers an enqueue of one job with smokeJobID.
+func enqueuedOne(context.Context, []client.Job, int) ([]client.Result, error) {
+	return []client.Result{{ID: smokeJobID, State: "JOB_STATE_AVAILABLE"}}, nil
+}
+
+// states answers GetJob call n with the nth state and repeats the last one.
+func states(id uuid.UUID, seq ...string) func(context.Context, uuid.UUID, int) (client.Result, error) {
+	return func(_ context.Context, got uuid.UUID, n int) (client.Result, error) {
+		if got != id {
+			return client.Result{}, fmt.Errorf("GetJob for %s, want %s", got, id)
+		}
+		return client.Result{ID: id, State: seq[min(n, len(seq))-1]}, nil
+	}
+}
+
+func runSmokeWith(t *testing.T, p *fakeProducer, args ...string) (string, error) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := runWithContext(context.Background(), append([]string{"smoke"}, args...), &stdout, &stderr,
+		func(string) (producer, error) { return p, nil })
+	return stdout.String(), err
+}
+
+func TestSmokeWaitsForCompletion(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	p := &fakeProducer{enqueue: enqueuedOne,
+		getJob: states(smokeJobID, "JOB_STATE_AVAILABLE", "JOB_STATE_LEASED", "JOB_STATE_COMPLETED")}
+	out, err := runSmokeWith(t, p, "-queue", "sq", "-payload", `{"ms":1}`, "-poll", "1ms")
+	require.NoError(t, err)
+	require.Equal(t, 3, p.getJobs)
+	require.Len(t, p.batches, 1)
+	require.Len(t, p.batches[0], 1)
+	job := p.batches[0][0]
+	require.Equal(t, "sq", job.Queue)
+	require.JSONEq(t, `{"ms":1}`, string(job.Payload.(json.RawMessage)))
+	require.Empty(t, job.IdempotencyKey)
+	require.Contains(t, out, "completed")
+	require.Equal(t, 1, p.closed)
+}
+
+func TestSmokeFailsOnATerminalFailure(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	for _, state := range []string{"JOB_STATE_DEAD", "JOB_STATE_CANCELLED"} {
+		t.Run(state, func(t *testing.T) {
+			p := &fakeProducer{enqueue: enqueuedOne, getJob: states(smokeJobID, state)}
+			began := time.Now()
+			_, err := runSmokeWith(t, p, "-poll", "1ms", "-timeout", "1m")
+			require.ErrorContains(t, err, state)
+			require.Less(t, time.Since(began), 10*time.Second, "a terminal failure must not wait for the timeout")
+			require.Equal(t, 1, p.getJobs)
+		})
+	}
+}
+
+func TestSmokeTimesOutWithTheLastState(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	p := &fakeProducer{enqueue: enqueuedOne, getJob: states(smokeJobID, "JOB_STATE_LEASED")}
+	_, err := runSmokeWith(t, p, "-timeout", "50ms", "-poll", "5ms")
+	require.ErrorContains(t, err, "did not complete within 50ms")
+	require.ErrorContains(t, err, "JOB_STATE_LEASED")
+}
+
+func TestSmokeKeepsPollingThroughUnavailable(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	p := &fakeProducer{enqueue: enqueuedOne,
+		getJob: func(_ context.Context, id uuid.UUID, n int) (client.Result, error) {
+			if n == 1 {
+				// Wrapped the way client.wrap wraps a transport error.
+				return client.Result{}, fmt.Errorf("hopper: get job: %w", status.Error(codes.Unavailable, "restarting"))
+			}
+			return client.Result{ID: id, State: "JOB_STATE_COMPLETED"}, nil
+		}}
+	_, err := runSmokeWith(t, p, "-poll", "1ms")
+	require.NoError(t, err)
+	require.Equal(t, 2, p.getJobs)
+}
+
+func TestSmokeFailsOnOtherErrors(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	notFound := fmt.Errorf("hopper: get job: %w",
+		errors.Join(client.ErrNotFound, status.Error(codes.NotFound, "no such job")))
+	p := &fakeProducer{enqueue: enqueuedOne,
+		getJob: func(context.Context, uuid.UUID, int) (client.Result, error) { return client.Result{}, notFound }}
+	_, err := runSmokeWith(t, p, "-poll", "1ms")
+	require.ErrorIs(t, err, client.ErrNotFound)
+	require.Equal(t, 1, p.getJobs)
+}
+
+func TestSmokeValidatesBeforeDial(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"positionals", []string{"smoke", "extra"}, "unexpected positional"},
+		{"empty broker", []string{"smoke", "-broker", ""}, "broker"},
+		{"empty queue", []string{"smoke", "-queue", ""}, "queue"},
+		{"bad json", []string{"smoke", "-payload", "{"}, "valid JSON"},
+		{"zero timeout", []string{"smoke", "-timeout", "0"}, "timeout"},
+		{"zero poll", []string{"smoke", "-poll", "0"}, "poll"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dialed := false
+			var stdout, stderr bytes.Buffer
+			err := runWithContext(context.Background(), tc.args, &stdout, &stderr,
+				func(string) (producer, error) { dialed = true; return &fakeProducer{}, nil })
+			require.ErrorContains(t, err, tc.want)
+			require.False(t, dialed)
+		})
+	}
+}
+
+func TestSmokeBrokerEnvironmentAndFlagPrecedence(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	t.Setenv("HOPPER_BROKER", "env:9090")
+	c, err := parseSmokeConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, "env:9090", c.broker)
+	c, err = parseSmokeConfig([]string{"-broker", "flag:9090"})
+	require.NoError(t, err)
+	require.Equal(t, "flag:9090", c.broker)
+}
+
+func TestUnknownCommandNamesBothCommands(t *testing.T) {
+	clearHopperctlEnvironment(t)
+	var stdout, stderr bytes.Buffer
+	err := runWithContext(context.Background(), []string{"frob"}, &stdout, &stderr,
+		func(string) (producer, error) { t.Fatal("dialed"); return nil, nil })
+	require.ErrorContains(t, err, "enqueue")
+	require.ErrorContains(t, err, "smoke")
+	require.ErrorContains(t, err, "DLQ operations are not available")
+	require.Contains(t, usageText, "enqueue")
+	require.Contains(t, usageText, "smoke")
 }

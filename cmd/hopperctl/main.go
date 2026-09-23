@@ -14,15 +14,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/rpasco787/hopper/client"
+	hopperv1 "github.com/rpasco787/hopper/gen/hopper/v1"
 )
 
-const usageText = `usage: hopperctl enqueue [flags]
+const usageText = `usage: hopperctl <enqueue|smoke> [flags]
 
-Enqueue jobs in bounded batches. DLQ operations are not available yet.
+enqueue: enqueue jobs in bounded batches.
+smoke:   enqueue one job and wait until a worker completes it.
+
+DLQ operations are not available yet.
 `
 
 type enqueueConfig struct {
@@ -51,15 +56,7 @@ func parseEnqueueConfig(args []string) (enqueueConfig, error) {
 	if fs.NArg() != 0 {
 		return c, errors.New("unexpected positional arguments")
 	}
-	brokerSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "broker" {
-			brokerSet = true
-		}
-	})
-	if env, ok := os.LookupEnv("HOPPER_BROKER"); ok && !brokerSet {
-		c.broker = env
-	}
+	brokerFromEnv(fs, &c.broker)
 	if c.broker == "" {
 		return c, errors.New("broker address is required")
 	}
@@ -87,21 +84,145 @@ func parseEnqueueConfig(args []string) (enqueueConfig, error) {
 	return c, nil
 }
 
+// brokerFromEnv applies HOPPER_BROKER unless -broker was given explicitly.
+func brokerFromEnv(fs *flag.FlagSet, broker *string) {
+	brokerSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "broker" {
+			brokerSet = true
+		}
+	})
+	if env, ok := os.LookupEnv("HOPPER_BROKER"); ok && !brokerSet {
+		*broker = env
+	}
+}
+
+type smokeConfig struct {
+	broker, queue, payload string
+	timeout, poll          time.Duration
+}
+
+func parseSmokeConfig(args []string) (smokeConfig, error) {
+	c := smokeConfig{
+		broker: "127.0.0.1:9090", queue: "sleep", payload: `{"ms":10}`,
+		timeout: time.Minute, poll: 250 * time.Millisecond,
+	}
+	fs := flag.NewFlagSet("hopperctl smoke", flag.ContinueOnError)
+	fs.StringVar(&c.broker, "broker", c.broker, "broker gRPC address (HOPPER_BROKER)")
+	fs.StringVar(&c.queue, "queue", c.queue, "a queue some worker serves")
+	fs.StringVar(&c.payload, "payload", c.payload, "JSON payload")
+	fs.DurationVar(&c.timeout, "timeout", c.timeout, "how long to wait for completion")
+	fs.DurationVar(&c.poll, "poll", c.poll, "interval between GetJob calls")
+	if err := fs.Parse(args); err != nil {
+		return c, err
+	}
+	if fs.NArg() != 0 {
+		return c, errors.New("unexpected positional arguments")
+	}
+	brokerFromEnv(fs, &c.broker)
+	switch {
+	case c.broker == "":
+		return c, errors.New("broker address is required")
+	case c.queue == "":
+		return c, errors.New("queue is required")
+	case !json.Valid([]byte(c.payload)):
+		return c, errors.New("payload must be valid JSON")
+	case c.timeout <= 0:
+		return c, errors.New("timeout must be positive")
+	case c.poll <= 0:
+		return c, errors.New("poll must be positive")
+	}
+	return c, nil
+}
+
+// producer is the broker calls hopperctl makes.
 type producer interface {
 	EnqueueBatch(context.Context, []client.Job) ([]client.Result, error)
+	GetJob(context.Context, uuid.UUID) (client.Result, error)
 	Close() error
 }
 
 type dialProducer func(string) (producer, error)
 
-func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer, dial dialProducer) (err error) {
+func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer, dial dialProducer) error {
 	if len(args) == 0 {
-		return errors.New("usage: hopperctl enqueue [flags]; DLQ operations are not available yet")
+		return errors.New("usage: hopperctl <enqueue|smoke> [flags]; DLQ operations are not available yet")
 	}
-	if args[0] != "enqueue" {
-		return fmt.Errorf("unknown command %q; DLQ operations are not available yet", args[0])
+	switch args[0] {
+	case "enqueue":
+		return runEnqueue(ctx, args[1:], stdout, stderr, dial)
+	case "smoke":
+		return runSmoke(ctx, args[1:], stdout, dial)
+	default:
+		return fmt.Errorf("unknown command %q; want enqueue or smoke. DLQ operations are not available yet", args[0])
 	}
-	cfg, err := parseEnqueueConfig(args[1:])
+}
+
+func runSmoke(ctx context.Context, args []string, stdout io.Writer, dial dialProducer) (err error) {
+	cfg, err := parseSmokeConfig(args)
+	if err != nil {
+		return err
+	}
+	p, err := dial(cfg.broker)
+	if err != nil {
+		return fmt.Errorf("dial broker: %w", err)
+	}
+	defer func() { err = errors.Join(err, p.Close()) }()
+	return smoke(ctx, cfg, p, stdout)
+}
+
+var (
+	stateCompleted = hopperv1.JobState_JOB_STATE_COMPLETED.String()
+	stateDead      = hopperv1.JobState_JOB_STATE_DEAD.String()
+	stateCancelled = hopperv1.JobState_JOB_STATE_CANCELLED.String()
+)
+
+// smoke enqueues one job and waits for a worker to complete it. Success needs
+// a reachable broker, a writable database and a worker serving the queue, so
+// it is the end-to-end check behind the chart's `helm test`.
+func smoke(ctx context.Context, cfg smokeConfig, p producer, stdout io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
+	defer cancel()
+	began := time.Now()
+	results, err := p.EnqueueBatch(ctx, []client.Job{{Queue: cfg.queue, Payload: json.RawMessage(cfg.payload)}})
+	if err != nil {
+		return fmt.Errorf("smoke: enqueue: %w", err)
+	}
+	if len(results) != 1 {
+		return fmt.Errorf("smoke: enqueue returned %d results for one job", len(results))
+	}
+	id, last := results[0].ID, results[0].State
+	fmt.Fprintf(stdout, "enqueued job %s on queue %s\n", id, cfg.queue)
+
+	ticker := time.NewTicker(cfg.poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("smoke: job %s did not complete within %s (last state %s)", id, cfg.timeout, last)
+		case <-ticker.C:
+		}
+		r, err := p.GetJob(ctx, id)
+		if err != nil {
+			// A broker restarting under us is survivable; anything else is an answer.
+			if status.Code(err) == codes.Unavailable && ctx.Err() == nil {
+				continue
+			}
+			return fmt.Errorf("smoke: get job %s: %w", id, err)
+		}
+		last = r.State
+		switch last {
+		case stateCompleted:
+			fmt.Fprintf(stdout, "job %s completed after %s\n", id, time.Since(began).Round(time.Millisecond))
+			return nil
+		case stateDead, stateCancelled:
+			return fmt.Errorf("smoke: job %s ended %s", id, last)
+		}
+	}
+}
+
+func runEnqueue(ctx context.Context, args []string, stdout, stderr io.Writer, dial dialProducer) (err error) {
+	cfg, err := parseEnqueueConfig(args)
 	if err != nil {
 		return err
 	}
