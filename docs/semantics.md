@@ -359,6 +359,14 @@ lease is granted and not acked:
    confirmation counts; `cmd/worker` logs the abandonment and exits nonzero.
    Size the budget to the slowest handler, and remember that an uncooperative
    Go handler cannot be forcibly stopped.
+
+   On Kubernetes the grace period counts from pod deletion and includes the
+   preStop hook, so `terminationGracePeriodSeconds ≥ preStop +
+   shutdown-timeout + exit allowance`. The Helm chart refuses to render values
+   that break `preStop + budget + 5s`, and derives `HOPPER_SHUTDOWN_TIMEOUT`
+   from the same value it checks. Defaults: worker 5 + 45 + 5 ≤ 60, broker
+   5 + 30 + 5 ≤ 45. The preStop delay is the native `sleep` action: the image
+   has no `sleep` binary, and a failed exec hook would silently skip the delay.
 5. **A lease stream fails before delivery is confirmed by subsequent work.**
    The broker leases rows, but a disconnect may leave some buffered or never
    received by the worker. Send success is not an application receipt. Unacked
@@ -385,7 +393,12 @@ What is **not** a source of duplicates: two workers receiving the same lease
 (prevented by `SKIP LOCKED`), a broker restart (brokers are stateless; workers
 reconnect and their leases keep ticking), or a scheduler failover (cron uses
 idempotency keys and a guarded advance; §13 lists the two configuration and
-retention windows in which a tick can still fire twice).
+retention windows in which a tick can still fire twice). Nor is a `kubectl
+rollout restart` of workers, as long as the shutdown budget holds (item 4 and
+§15). A rollout can still cause **redeliveries**, which consume attempts
+without a second execution: a delivery received during shutdown is nacked
+unstarted (item 5), and one the worker never received is reaped when its lease
+expires.
 
 ## 12. Non-goals
 
@@ -424,6 +437,25 @@ retention windows in which a tick can still fire twice).
   paging.
 - **Counters as an exact ledger.** Transition counters can undercount in four
   narrow windows (§14). Reconcile against the database, which is the record.
+- **A production database in the Helm chart.** The bundled PostgreSQL is one
+  replica with no replication and no backups, a PVC that outlives
+  `helm uninstall`, and a default development password.
+- **Password rotation.** `postgres.password` is bootstrap-only: PostgreSQL
+  reads it only when it initializes an empty volume. Changing it later updates
+  the Secret but not the database, so brokers fail to authenticate on their
+  next start. Changing it means deleting the PVC and its data.
+- **Worker readiness that tracks an active lease stream.** Workers have no
+  readiness probe, so "ready" means the container started. A rolling update
+  keeps the worker pod count, not leasing capacity.
+- **TLS, NetworkPolicy and Ingress for the chart.**
+- **Broker readiness that tracks PostgreSQL health**, deliberately. During a
+  database outage every broker would go unready and workers would see
+  connection-refused instead of a broker that can say `UNAVAILABLE`. Liveness
+  never depends on the database, which would turn an outage into a restart
+  storm.
+- **Request-level gRPC load balancing.** The broker Service balances per
+  connection, and each worker holds one long-lived connection, so after a
+  broker restart workers can stay concentrated on the surviving broker.
 
 ## 13. Cron schedules and leader election
 
@@ -860,3 +892,11 @@ not in this table.
 | Delivery-scoped lines carry both ids, job-scoped lines carry `job_id`, no job-bearing line escapes both scopes; broker and worker lines join on `lease_id`; no payload, and lease ids only under `lease_id` | `integration: TestJobLogsCarryIDsAndCorrelate` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
 | The depth query can use the four partial indexes; at peak burst backlog it does | `store: TestHotQueriesUseTheirIndexes/depth`; `EXPLAIN (ANALYZE, BUFFERS)` at 9,717 available on `hopper-session7` | 2 and 1 (2026-09-22) | pass: bitmap scans on `jobs_lease_idx`, `jobs_promote_idx`, `jobs_reap_idx`, `jobs_dead_idx`; 2.5 ms, 248 shared hits; estimate 26 against 9,717 actual (stale statistics) |
 | A 10k burst drains on the dashboard; the completion counter delta equals the SQL count | `hopper-session7` Compose demo (scheduler off, 3 workers × 4, 100 ms `sleep` jobs, run `s7-1790136511`) | 1 (2026-09-22) | pass: peak fresh depth 9,747; drained in 95 s; peak 107 jobs/s; SQL completed 10,000 = counter delta 10,000. Wait p99 read 119.7 s at the end of the drain against a true p99 of 91.5 s (bucket resolution, §14) |
+| Every shutdown budget fits its grace period, and the chart refuses values that do not | `chart: TestShutdownBudgetsFitTheirGracePeriods`, `TestChartRejectsGracePeriodsTooShortForTheirDrain` (`-race`, Helm 4.3.0) | 3 (`-count=3`, 2026-09-23) | pass: broker 5 + 30 + 5 ≤ 45, worker 5 + 45 + 5 ≤ 60; grace 39 (broker) and 54 (worker) refused, a raised budget or preStop refused too |
+| PostgreSQL, broker, worker and test pods meet the restricted Pod Security Standard, enforced by the namespace on kind | `chart: TestPodsMeetTheRestrictedStandard` (4 pod specs); kind 1.35.8 namespaces `hopper` and `hopper-plain` labeled `enforce=restricted` | 3 (`-count=3`) + every kind install (2026-09-23) | pass: all pods admitted and Running, including PostgreSQL as uid 70; no `FailedCreate` events |
+| The PostgreSQL password is only in the Secret; pgx completes the passwordless DSN from `PGPASSWORD` | `chart: TestPasswordLivesOnlyInTheSecret`, `TestPGPasswordCompletesThePasswordlessDSN` | 3 (`-count=3`, 2026-09-23) | pass; brokers on kind authenticate with the passwordless DSN |
+| `deploy/k8s/hopper.yaml` matches the chart, and applied alone it runs a working queue | `chart: TestRenderedManifestsAreCurrent` (fails after a one-line edit, passes after re-render); `hopper-plain` namespace + `hopperctl smoke` | 3 (`-count=3`) and 1 (2026-09-23) | pass: 9 objects applied into a fresh restricted namespace; smoke job completed (13 s, the worker still connecting) |
+| `helm install` on kind gives a working queue | `helm test` (`hopperctl smoke`) on the kind cluster created from nothing this session | 1 pass + 1 negative (2026-09-23) | pass: job completed after 295 ms. With `worker.replicas=0`, `helm test` failed: `did not complete within 1m0s (last state JOB_STATE_AVAILABLE)`; that job completed once workers returned |
+| Execution accounting reports duplicates, incomplete capture, unfinished jobs, unclean or idle shutdowns, and nacks the rows cannot explain; it counts redeliveries per lost lease | `accounting: Test*` (13 tests, `-race`) | 3 (`-count=3`, 2026-09-23) | pass |
+| `kubectl rollout restart` of three workers mid-run: every job's handler started exactly once; every replaced pod had handlers running at SIGTERM and stopped cleanly | `k8s: TestRolloutRestartDuplicatesNothing` (1,200 × 3 s `sleep`, 3 × 8 concurrency, restart after 50 completions) | 3 (`-count=3`, 2026-09-23) | pass, each run: 1,200/1,200 completed, 0 duplicate starts; every replaced pod `running_handlers=8`, clean stop; 0 redelivered jobs, 0 redeliveries (0 unstarted nacks, 0 never received); ~148 s per run |
+| The rollout proof fails when the drain budget is too short | the proof with `worker.shutdownTimeoutSeconds=1`, `preStopSleepSeconds=0`, grace 6 s | 1 (2026-09-23) | fails as intended: 2 of 3 replaced pods reached the shutdown deadline with 8 running handlers and exited with an error; 16 jobs' handlers started twice. The third pod's batch had started 2.1 s before SIGTERM and finished inside the 1 s budget |

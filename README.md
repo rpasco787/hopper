@@ -5,12 +5,13 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 7 build includes the broker, producer client, worker SDK,
-example worker, bulk enqueue CLI, a leader-elected cron scheduler inside the
-broker, Prometheus metrics with a provisioned Grafana dashboard, structured job
-logs that join broker and worker on `lease_id`, and a local Compose stack.
-Image publishing, Kubernetes/Helm, KEDA, chaos automation, and load testing
-remain later-session work.
+The current Session 8 build includes the broker, producer client, worker SDK,
+example worker, bulk enqueue and smoke-check CLI, a leader-elected cron
+scheduler inside the broker, Prometheus metrics with a provisioned Grafana
+dashboard, structured job logs that join broker and worker on `lease_id`, a
+local Compose stack, and a Helm chart (with rendered plain manifests) that runs
+on a local kind cluster. Image publishing, KEDA, chaos automation, and load
+testing remain later-session work.
 
 ## Quick start
 
@@ -29,6 +30,9 @@ go run ./cmd/hopperctl enqueue \
   -n 1000 \
   -batch 100 \
   -key-prefix quickstart
+
+# One job end to end: exits 0 once a worker completes it.
+go run ./cmd/hopperctl smoke
 
 docker compose -p hopper-session7 logs -f broker worker
 docker compose -p hopper-session7 down -v
@@ -194,6 +198,13 @@ resend an unkeyed batch. With a stable prefix, rerun the same command and the
 same indexed keys deduplicate while the original rows still exist; use a smaller
 batch for future attempts if message size was the problem.
 
+`hopperctl smoke` enqueues one job (default queue `sleep`, payload
+`{"ms":10}`) and polls `GetJob` every `-poll` (250ms) until it completes. It
+exits 0 on `completed`, and nonzero on `dead`, `cancelled`, any error other than
+`UNAVAILABLE` (which it rides out, so a broker restart is tolerated), or no
+completion within `-timeout` (1m). Each run is a new unkeyed job. It is the
+check behind the Helm chart's `helm test`.
+
 ## Shutdown and failure boundaries
 
 On `SIGTERM` or `SIGINT`, `cmd/worker` stops accepting work and uses one
@@ -262,14 +273,92 @@ The counting rule, the depth freshness rule and its KEDA consequence, the wait
 definition, histogram resolution, and the full log contract are in
 [docs/semantics.md §14](docs/semantics.md#14-observability).
 
+## Kubernetes
+
+The Helm chart in `deploy/helm/hopper` deploys a development PostgreSQL, two
+brokers behind a ClusterIP Service, and the example workers. It is the only
+source of hopper's Kubernetes YAML: `deploy/k8s/hopper.yaml` is rendered from
+it.
+
+Requirements: Docker, [kind](https://kind.sigs.k8s.io/) v0.33.0, kubectl, and
+Helm 4 (4.3.0 renders `deploy/k8s`). The kind node is pinned to Kubernetes
+1.35.8; the chart needs at least 1.34.
+
+```bash
+scripts/kind-up.sh                                    # cluster, images, install
+helm --kube-context kind-hopper -n hopper test hopper --logs
+
+kubectl --context kind-hopper -n hopper port-forward svc/hopper-broker 9090:9090 &
+go run ./cmd/hopperctl enqueue -queue sleep -n 100 -key-prefix demo-$(date +%s)
+```
+
+`scripts/kind-up.sh` creates the `hopper` cluster if needed, builds the
+broker, worker and `hopperctl` images under a fresh `dev-<time>` tag, loads
+them into the node, labels the namespace to enforce the restricted Pod
+Security Standard, and runs `helm upgrade --install --wait`. Extra arguments go
+to Helm (`scripts/kind-up.sh --set worker.replicas=3`). It does not pass
+`--reuse-values`, so every override must be passed again on each run. Every
+command it runs names the `kind-hopper` context. `helm test` runs
+`hopperctl smoke` against the broker Service: it passes only with a reachable
+broker, a writable database and a worker serving `sleep`.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `image.tag` | chart `appVersion` | One tag for all three hopper images |
+| `broker.replicas` | `2` | A PodDisruptionBudget (`maxUnavailable: 1`) is rendered above 1 |
+| `broker.leaseDuration` | `30s` | Default visibility timeout |
+| `broker.metricsQueues` | `[sleep, fail_n_times, cpu_burn]` | Queues with their own metrics label; one list for every replica |
+| `broker.cronSchedules` | `[]` | Cron declarations in the `-cron-file` shape; empty leaves schedules unmanaged |
+| `broker.{preStopSleep,shutdownTimeout,terminationGracePeriod}Seconds` | `5`, `30`, `45` | Shutdown budget (below) |
+| `worker.replicas` | `1` | Example workers |
+| `worker.concurrency` | `8` | Active deliveries per worker |
+| `worker.{preStopSleep,shutdownTimeout,terminationGracePeriod}Seconds` | `5`, `45`, `60` | Shutdown budget (below) |
+| `postgres.password` | `hopper` | **Bootstrap-only.** PostgreSQL applies it only when it initializes an empty volume, and the volume outlives upgrades and `helm uninstall`. A later change reaches the Secret but not the database, and brokers then fail to authenticate. Changing it means deleting the PVC. |
+
+**Shutdown budgets.** Kubernetes counts the grace period from pod deletion,
+and the preStop hook runs inside it, so
+`terminationGracePeriodSeconds ≥ preStopSleepSeconds + shutdownTimeoutSeconds + 5`.
+The chart fails to render values that break this, and derives
+`HOPPER_SHUTDOWN_TIMEOUT` from the same number. The preStop delay uses the
+native `sleep` action because the distroless image has no shell or `sleep`.
+
+**Health.** Brokers use native gRPC probes against their `grpc.health.v1`
+service. Readiness means "serving", not "database up", and liveness never
+depends on the database: a database outage must not become a restart storm or
+leave the Service with no endpoints. Workers have no probes; the SDK
+reconnects on its own. Brokers wait for PostgreSQL in an init container.
+
+**Plain manifests.** `deploy/k8s/hopper.yaml` is the chart rendered with
+default values and no test hook. Its header gives the commands to apply it into
+a namespace of your choosing. Regenerate it with `scripts/render-k8s.sh`; a
+test fails if it drifts from the chart.
+
+**Limits.**
+
+- The PostgreSQL is for development: one replica, no backups, and a PVC that
+  survives `helm uninstall`. For a fresh database, delete it with
+  `kubectl --context kind-hopper -n hopper delete pvc -l app.kubernetes.io/component=postgres`.
+  Its password is bootstrap-only (above).
+- The API is plaintext and unauthenticated, as in
+  [docs/semantics.md §12](docs/semantics.md#12-non-goals).
+- gRPC is balanced per connection, not per request. Each worker holds one
+  connection to one broker, so after a broker restart workers can stay
+  concentrated on the surviving broker until they reconnect.
+- A worker rollout keeps the pod count, not leasing capacity: with no
+  readiness probe, a new worker counts as ready before it is leasing.
+
+Tear down with `kind delete cluster --name hopper`.
+
 ## Development
 
 ```bash
 gofmt -l .
 go vet ./...
 buf lint
+helm lint --strict deploy/helm/hopper
 go test -race -count=2 ./...
 docker compose -p hopper-session7 config
+go vet -tags k8s ./test/k8s
 
 # The worker SDK must not depend on Prometheus.
 ! go list -deps ./worker | grep -q prometheus
@@ -283,4 +372,17 @@ scripts/check-dashboard-queries.sh
 ```
 
 The integration suite starts PostgreSQL with Testcontainers and therefore needs
-access to a running Docker daemon.
+access to a running Docker daemon. `test/chart` renders the Helm chart and
+needs Helm 4 on PATH; it fails, rather than skips, without it. Run
+`scripts/render-k8s.sh` with the canonical Helm (`canonicalHelm` in
+`test/chart`), or the drift test will report Helm's differences as the
+chart's.
+
+The rollout proof needs the kind cluster with three workers. It restarts them
+mid-run under 1,200 three-second jobs and fails if any job's handler started
+twice:
+
+```bash
+scripts/kind-up.sh --set worker.replicas=3
+go test -tags k8s -count=3 -timeout 45m -v -run TestRolloutRestartDuplicatesNothing ./test/k8s
+```
