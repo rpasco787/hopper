@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +21,8 @@ func TestConfigDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "postgres://unused", c.dsn)
 	require.Equal(t, "127.0.0.1:9090", c.listen, "loopback unless the operator opts out")
+	require.Equal(t, "127.0.0.1:9091", c.metricsListen)
+	require.Empty(t, c.metricsQueues)
 	require.Equal(t, "info", c.logLevel)
 	require.Equal(t, 30*time.Second, c.leaseDuration)
 	require.Equal(t, time.Second, c.reaperInterval)
@@ -36,6 +42,8 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 	for k, v := range map[string]string{
 		"HOPPER_DSN":                "postgres://env",
 		"HOPPER_LISTEN":             "127.0.0.1:1234",
+		"HOPPER_METRICS_LISTEN":     "127.0.0.1:1235",
+		"HOPPER_METRICS_QUEUES":     "alpha, beta",
 		"HOPPER_LOG_LEVEL":          "debug",
 		"HOPPER_LEASE_DURATION":     "45s",
 		"HOPPER_REAPER_INTERVAL":    "2s",
@@ -51,12 +59,94 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 	c, err := parseConfig(nil)
 	require.NoError(t, err)
 	require.Equal(t, config{
-		dsn: "postgres://env", listen: "127.0.0.1:1234", logLevel: "debug",
+		dsn: "postgres://env", listen: "127.0.0.1:1234", metricsListen: "127.0.0.1:1235",
+		metricsQueues: []string{"alpha", "beta"}, logLevel: "debug",
 		leaseDuration: 45 * time.Second, reaperInterval: 2 * time.Second,
 		pollInterval: 75 * time.Millisecond, retention: 72 * time.Hour,
 		shutdownTimeout: 9 * time.Second, maxLeaseBatch: 7,
 		scheduler: false, schedulerInterval: 3 * time.Second,
 	}, c)
+}
+
+func TestConfigMetricsListen(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	t.Setenv("HOPPER_METRICS_LISTEN", "127.0.0.1:9191")
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:9191", c.metricsListen)
+
+	c, err = parseConfig([]string{"-metrics-listen", "127.0.0.1:9292"})
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:9292", c.metricsListen, "the flag wins over the environment")
+
+	c, err = parseConfig([]string{"-metrics-listen="})
+	require.NoError(t, err)
+	require.Empty(t, c.metricsListen, "empty disables metrics")
+
+	_, err = parseConfig([]string{"-metrics-listen", "nohost"})
+	require.EqualError(t, err, "invalid metrics-listen address")
+	require.NotContains(t, err.Error(), "nohost")
+}
+
+func TestConfigMetricsQueues(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	c, err := parseConfig([]string{"-metrics-queues", "a, b"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, c.metricsQueues)
+
+	tooMany := make([]string, MaxMetricsQueues+1)
+	for i := range tooMany {
+		tooMany[i] = strings.Repeat("q", i+1)
+	}
+	for _, tc := range []struct {
+		name, raw, want string
+	}{
+		{"empty entry", "a,,b", "metrics-queues contains an empty entry"},
+		{"duplicate", "secret,secret", "metrics-queues contains a duplicate"},
+		{"reserved", "_other", "metrics-queues contains the reserved queue"},
+		{"too many", strings.Join(tooMany, ","), "metrics-queues exceeds the maximum"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseConfig([]string{"-metrics-queues", tc.raw})
+			require.ErrorContains(t, err, tc.want)
+			require.NotContains(t, err.Error(), tc.raw)
+		})
+	}
+}
+
+func TestAwaitServing(t *testing.T) {
+	t.Parallel()
+	t.Run("metrics error", func(t *testing.T) {
+		want := errors.New("metrics stopped")
+		metricsErr := make(chan error, 1)
+		metricsErr <- want
+		err, served := awaitServing(context.Background(), make(chan error), metricsErr)
+		require.ErrorIs(t, err, want)
+		require.False(t, served)
+	})
+	t.Run("clean metrics close is ignored", func(t *testing.T) {
+		serveErr := make(chan error, 1)
+		metricsErr := make(chan error, 1)
+		metricsErr <- http.ErrServerClosed
+		serveErr <- nil
+		err, served := awaitServing(context.Background(), serveErr, metricsErr)
+		require.NoError(t, err)
+		require.True(t, served)
+	})
+	t.Run("nil metrics channel never fires", func(t *testing.T) {
+		serveErr := make(chan error, 1)
+		serveErr <- nil
+		err, served := awaitServing(context.Background(), serveErr, nil)
+		require.NoError(t, err)
+		require.True(t, served)
+	})
+	t.Run("cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err, served := awaitServing(ctx, make(chan error), make(chan error))
+		require.NoError(t, err)
+		require.False(t, served)
+	})
 }
 
 func TestConfigRejectsNonPositiveKnobs(t *testing.T) {

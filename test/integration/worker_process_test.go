@@ -24,7 +24,10 @@ import (
 
 type processLog struct {
 	Message          string `json:"msg"`
+	Addr             string `json:"addr"`
 	JobID            string `json:"job_id"`
+	LeaseID          string `json:"lease_id"`
+	Queue            string `json:"queue"`
 	ActiveDeliveries int    `json:"active_deliveries"`
 	RunningHandlers  int    `json:"running_handlers"`
 }

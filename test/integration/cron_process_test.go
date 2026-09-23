@@ -54,12 +54,16 @@ const processSchedulerInterval = 50 * time.Millisecond
 // startBrokerProcess runs the broker binary with the scheduler on a fast
 // interval against cronFile. startWorkerProcess is a generic harness for a
 // process that logs JSON to stdout, so the broker reuses it.
-func startBrokerProcess(t *testing.T, binary, appName, cronFile string) *workerProcess {
+func startBrokerProcess(t *testing.T, binary, appName, cronFile string, extraArgs ...string) *workerProcess {
 	t.Helper()
-	p := startWorkerProcess(t, binary,
+	args := []string{
 		"-dsn", dsnWithApplicationName(t, appName), "-listen", "127.0.0.1:0",
+		"-metrics-listen", "127.0.0.1:0",
 		"-cron-file", cronFile, "-scheduler-interval", processSchedulerInterval.String(),
-		"-shutdown-timeout", "2s", "-log-level", "info")
+		"-shutdown-timeout", "2s", "-log-level", "info",
+	}
+	args = append(args, extraArgs...)
+	p := startWorkerProcess(t, binary, args...)
 	p.waitForLog(t, 30*time.Second, func(e processLog) bool { return e.Message == "broker listening" })
 	return p
 }

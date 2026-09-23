@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,16 +30,21 @@ import (
 	// database costs about 450 KB in the binary.
 	_ "time/tzdata"
 
+	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc"
 
 	"github.com/rpasco787/hopper/internal/broker"
+	"github.com/rpasco787/hopper/internal/metrics"
 	"github.com/rpasco787/hopper/internal/scheduler"
 	"github.com/rpasco787/hopper/internal/store/postgres"
 	"github.com/rpasco787/hopper/internal/sweep"
 )
 
 type config struct {
-	dsn, listen, logLevel                                                   string
+	dsn, listen, metricsListen, logLevel                                    string
+	metricsQueues                                                           []string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
 	maxLeaseBatch                                                           int
 
@@ -53,6 +60,7 @@ type config struct {
 // given on the command line wins over its variable.
 var envVars = [][2]string{
 	{"dsn", "HOPPER_DSN"}, {"listen", "HOPPER_LISTEN"}, {"log-level", "HOPPER_LOG_LEVEL"},
+	{"metrics-listen", "HOPPER_METRICS_LISTEN"}, {"metrics-queues", "HOPPER_METRICS_QUEUES"},
 	{"lease-duration", "HOPPER_LEASE_DURATION"}, {"reaper-interval", "HOPPER_REAPER_INTERVAL"},
 	{"poll-interval", "HOPPER_POLL_INTERVAL"}, {"retention", "HOPPER_RETENTION"},
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"}, {"max-lease-batch", "HOPPER_MAX_LEASE_BATCH"},
@@ -60,14 +68,19 @@ var envVars = [][2]string{
 	{"cron-file", "HOPPER_CRON_FILE"},
 }
 
+const MaxMetricsQueues = 100
+
 // parseConfig resolves flags and environment into a validated config. Every
 // rejection happens here, before the process has opened a pool or a listener,
 // so a bad value can never leave a half-started broker behind.
 func parseConfig(args []string) (config, error) {
 	var c config
+	var metricsQueues string
 	fs := flag.NewFlagSet("broker", flag.ContinueOnError)
 	fs.StringVar(&c.dsn, "dsn", "", "PostgreSQL connection string (HOPPER_DSN)")
 	fs.StringVar(&c.listen, "listen", "127.0.0.1:9090", "trusted-network gRPC address (HOPPER_LISTEN)")
+	fs.StringVar(&c.metricsListen, "metrics-listen", "127.0.0.1:9091", "Prometheus HTTP address; empty disables metrics (HOPPER_METRICS_LISTEN)")
+	fs.StringVar(&metricsQueues, "metrics-queues", "", "comma-separated queue metric allowlist (HOPPER_METRICS_QUEUES)")
 	fs.StringVar(&c.logLevel, "log-level", "info", "debug/info/warn/error (HOPPER_LOG_LEVEL)")
 	fs.DurationVar(&c.leaseDuration, "lease-duration", broker.DefaultLeaseDuration, "default visibility timeout (HOPPER_LEASE_DURATION)")
 	fs.DurationVar(&c.reaperInterval, "reaper-interval", time.Second, "reaper tick (HOPPER_REAPER_INTERVAL)")
@@ -100,6 +113,31 @@ func parseConfig(args []string) (config, error) {
 	if c.listen == "" {
 		return c, errors.New("listen address is required")
 	}
+	if c.metricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.metricsListen); err != nil {
+			return c, errors.New("invalid metrics-listen address")
+		}
+	}
+	if metricsQueues != "" {
+		seen := make(map[string]struct{})
+		for _, raw := range strings.Split(metricsQueues, ",") {
+			queue := strings.TrimSpace(raw)
+			if queue == "" {
+				return c, errors.New("metrics-queues contains an empty entry")
+			}
+			if queue == "_other" {
+				return c, errors.New("metrics-queues contains the reserved queue")
+			}
+			if _, duplicate := seen[queue]; duplicate {
+				return c, errors.New("metrics-queues contains a duplicate")
+			}
+			seen[queue] = struct{}{}
+			c.metricsQueues = append(c.metricsQueues, queue)
+			if len(c.metricsQueues) > MaxMetricsQueues {
+				return c, fmt.Errorf("metrics-queues exceeds the maximum of %d", MaxMetricsQueues)
+			}
+		}
+	}
 	if _, err := parseLevel(c.logLevel); err != nil {
 		return c, err
 	}
@@ -126,6 +164,26 @@ func parseConfig(args []string) (config, error) {
 		c.schedules = defs
 	}
 	return c, nil
+}
+
+// awaitServing waits until gRPC serving ends, metrics serving fails, or the
+// process context is cancelled. A clean metrics shutdown is ignored because
+// it may race the ordinary shutdown path.
+func awaitServing(ctx context.Context, serveErr, metricsErr <-chan error) (err error, served bool) {
+	for {
+		select {
+		case err = <-serveErr:
+			return err, true
+		case err = <-metricsErr:
+			if errors.Is(err, http.ErrServerClosed) {
+				metricsErr = nil
+				continue
+			}
+			return err, false
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
 }
 
 func parseLevel(level string) (slog.Level, error) {
@@ -190,11 +248,42 @@ func run(args []string) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	st := postgres.New(pool)
+	var (
+		reg      *prometheus.Registry
+		bm       *metrics.Broker
+		grpcOpts []grpc.ServerOption
+		grpcMet  *grpcprom.ServerMetrics
+	)
+	if cfg.metricsListen != "" {
+		reg = metrics.NewRegistry()
+		bm, err = metrics.NewBroker(reg, cfg.metricsQueues)
+		if err != nil {
+			return err
+		}
+		st = st.WithObserver(bm)
+		grpcMet, err = metrics.NewGRPCServerMetrics(reg)
+		if err != nil {
+			return err
+		}
+		grpcOpts = append(grpcOpts,
+			grpc.ChainUnaryInterceptor(grpcMet.UnaryServerInterceptor()),
+			grpc.ChainStreamInterceptor(grpcMet.StreamServerInterceptor()))
+		logger.Info("metrics queues", "count", len(cfg.metricsQueues))
+	}
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 	defer lis.Close()
+	var metricsLis net.Listener
+	if cfg.metricsListen != "" {
+		metricsLis, err = net.Listen("tcp", cfg.metricsListen)
+		if err != nil {
+			_ = lis.Close()
+			return fmt.Errorf("metrics listen: %w", err)
+		}
+		defer metricsLis.Close()
+	}
 	if !isLoopback(cfg.listen) {
 		logger.Warn("listening beyond loopback: the API is plaintext and unauthenticated, "+
 			"so anyone who can connect can read and mutate every job, including lease tokens",
@@ -203,7 +292,10 @@ func run(args []string) error {
 	srv := broker.NewServer(st, broker.Config{
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
 		PollInterval: cfg.pollInterval, Logger: logger,
-	})
+	}, grpcOpts...)
+	if grpcMet != nil {
+		grpcMet.InitializeMetrics(srv)
+	}
 
 	sweepCtx, stopSweeps := context.WithCancel(context.Background())
 	var sweeps sync.WaitGroup
@@ -234,21 +326,41 @@ func run(args []string) error {
 			}
 		}()
 	}
+	if bm != nil {
+		sampler := &metrics.DepthSampler{Source: st, Metrics: bm, Logger: logger}
+		sweeps.Add(1)
+		go func() {
+			defer sweeps.Done()
+			if err := sampler.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("queue depth sampler stopped", "err", err)
+			}
+		}()
+	}
 	logger.Info("scheduler configured", "enabled", cfg.scheduler,
 		"interval", cfg.schedulerInterval.String(), "definitions", len(cfg.schedules))
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
+	var (
+		httpSrv    *http.Server
+		metricsErr chan error
+	)
+	if metricsLis != nil {
+		httpSrv = metrics.NewHTTPServer(reg)
+		metricsErr = make(chan error, 1)
+		go func() {
+			if err := httpSrv.Serve(metricsLis); err != nil {
+				metricsErr <- fmt.Errorf("metrics: serve: %w", err)
+				return
+			}
+			metricsErr <- nil
+		}()
+		logger.Info("metrics listening", "addr", metricsLis.Addr().String())
+	}
 	logger.Info("broker listening", "addr", lis.Addr().String(),
 		"lease_duration", cfg.leaseDuration.String(), "reaper_interval", cfg.reaperInterval.String(),
 		"retention", cfg.retention.String())
 
-	var servingErr error
-	served := false
-	select {
-	case servingErr = <-serveErr:
-		served = true
-	case <-ctx.Done():
-	}
+	servingErr, served := awaitServing(ctx, serveErr, metricsErr)
 	stop() // restore default handling before draining; a second signal can exit
 	logger.Info("shutting down", "timeout", cfg.shutdownTimeout.String())
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.shutdownTimeout)
@@ -256,10 +368,19 @@ func run(args []string) error {
 	shutdownErr := srv.Shutdown(shutdownCtx)
 	stopSweeps()
 	sweeps.Wait()
+	var metricsShutdownErr error
+	if httpSrv != nil {
+		metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), 2*time.Second)
+		metricsShutdownErr = httpSrv.Shutdown(metricsCtx)
+		cancelMetrics()
+		if metricsShutdownErr != nil {
+			metricsShutdownErr = errors.Join(metricsShutdownErr, httpSrv.Close())
+		}
+	}
 	if !served {
 		servingErr = <-serveErr
 	}
-	if err := errors.Join(servingErr, shutdownErr); err != nil {
+	if err := errors.Join(servingErr, shutdownErr, metricsShutdownErr); err != nil {
 		return err
 	}
 	logger.Info("shutdown complete")

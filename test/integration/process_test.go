@@ -63,11 +63,13 @@ func TestBrokerLifecycle(t *testing.T) {
 
 	cmd := exec.Command(binary, "-dsn", pool.Config().ConnConfig.ConnString(),
 		"-listen", "127.0.0.1:0", "-reaper-interval", "25ms", "-poll-interval", "10ms",
+		"-metrics-listen", "127.0.0.1:0",
 		"-retention", "24h", "-shutdown-timeout", "2s", "-log-level", "info")
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	addr := make(chan string, 1)
+	metricsAddr := make(chan string, 1)
 	scanned := make(chan struct{})
 	require.NoError(t, cmd.Start())
 	go func() {
@@ -78,10 +80,18 @@ func TestBrokerLifecycle(t *testing.T) {
 				Message string `json:"msg"`
 				Addr    string `json:"addr"`
 			}
-			if json.Unmarshal(scan.Bytes(), &entry) == nil && entry.Message == "broker listening" {
-				select {
-				case addr <- entry.Addr:
-				default:
+			if json.Unmarshal(scan.Bytes(), &entry) == nil {
+				switch entry.Message {
+				case "broker listening":
+					select {
+					case addr <- entry.Addr:
+					default:
+					}
+				case "metrics listening":
+					select {
+					case metricsAddr <- entry.Addr:
+					default:
+					}
 				}
 			}
 		}
@@ -149,6 +159,21 @@ func TestBrokerLifecycle(t *testing.T) {
 	after, err := client.GetJob(ctx, &hopperv1.GetJobRequest{Id: got.GetJob().GetId()})
 	require.NoError(t, err)
 	require.Equal(t, hopperv1.JobState_JOB_STATE_COMPLETED, after.GetJob().GetState())
+
+	var metricsTarget string
+	select {
+	case metricsTarget = <-metricsAddr:
+	case <-ctx.Done():
+		t.Fatal("broker never announced its metrics listener")
+	}
+	require.Eventually(t, func() bool {
+		families := scrape(t, metricsTarget)
+		_, sampled := families["hopper_queue_depth_last_sample_timestamp_seconds"]
+		return sampled && metricHasLabels(families["grpc_server_handled_total"], map[string]string{
+			"grpc_method": "Enqueue", "grpc_type": "unary",
+		})
+	}, 5*time.Second, 20*time.Millisecond,
+		"depth sampling and pre-created gRPC metrics must both be exposed")
 
 	watch, err := grpc_health_v1.NewHealthClient(conn).Watch(ctx,
 		&grpc_health_v1.HealthCheckRequest{Service: "hopper.v1.HopperService"})
