@@ -518,3 +518,18 @@ func TestSmokeTestHook(t *testing.T) {
 		"smoke", "-broker=hopper-broker:9090", "-queue=sleep", `-payload={"ms":10}`, "-timeout=60s",
 	}, container(t, spec, "smoke")["args"])
 }
+
+// deploy/k8s/hopper.yaml is generated. This fails when the chart changed and
+// the file was not re-rendered (Decision 1).
+func TestRenderedManifestsAreCurrent(t *testing.T) {
+	want, err := exec.Command("bash", "../../scripts/render-k8s.sh", "-").Output()
+	require.NoError(t, err)
+	got, err := os.ReadFile("../../deploy/k8s/hopper.yaml")
+	require.NoError(t, err, "run scripts/render-k8s.sh")
+	msg := "deploy/k8s/hopper.yaml is stale: run scripts/render-k8s.sh"
+	if !strings.HasPrefix(helmVersion, canonicalHelm+"+") {
+		msg += fmt.Sprintf(". This is Helm %s but the file is rendered with %s, so the difference may be Helm's rather than the chart's",
+			helmVersion, canonicalHelm)
+	}
+	require.Equal(t, string(want), string(got), msg)
+}
