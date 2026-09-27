@@ -361,6 +361,12 @@ func TestAutoscalingRedeliversNothing(t *testing.T) {
 	// scale-down stabilization window, and settled as at the start: the
 	// removed pods gone, the depth known to be 0, no fallback.
 	a.settle(t)
+	// settle's read and the timeline's 2-second sampling are independent. Wait
+	// until the evidence itself has captured the settled state before using its
+	// final row as the proof's record.
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		assertSettled(ct, tl.summary().last, a.min)
+	}, 10*time.Second, 200*time.Millisecond, "the timeline never recorded the settled state")
 	atMin := time.Since(enqueued)
 
 	survivors := c.livePods(a.selector)
