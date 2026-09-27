@@ -1,0 +1,52 @@
+# kube-prometheus-stack 91.7.0 for the hopper kind cluster, installed by
+# scripts/kind-addons.sh. Lean on purpose: the whole cluster shares a Docker
+# VM of about 4 GiB. It keeps the Prometheus Operator, one Prometheus,
+# kube-state-metrics, the kubelet's container metrics and Grafana. It drops
+# what a one-node development cluster does not use: Alertmanager,
+# node-exporter (it needs the host's namespaces), the default rules and
+# dashboards, and the control-plane scrape jobs, which kind binds to localhost
+# or which would cost more memory than anything here reads.
+defaultRules:
+  create: false
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeApiServer:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+coreDns:
+  enabled: false
+
+grafana:
+  defaultDashboardsEnabled: false
+  sidecar:
+    datasources:
+      # Alertmanager is off, so its datasource would point at nothing.
+      alertmanager:
+        enabled: false
+  # Read-only without a login, as in Compose. The sidecar loads the hopper
+  # dashboard, which scripts/kind-addons.sh stores in a ConfigMap. The
+  # Prometheus datasource's uid is "prometheus", the uid the dashboard names.
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+
+prometheus:
+  prometheusSpec:
+    # Select every ServiceMonitor and PodMonitor in every namespace, not only
+    # those labelled with this release: the hopper chart's live in hopper.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    retention: 1d
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 1Gi}
