@@ -10,3 +10,9 @@ Check it end to end (enqueues one job and waits for a worker to complete it):
 Enqueue from your machine:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "hopper.fullname" . }}-broker 9090:9090
   go run ./cmd/hopperctl enqueue -queue sleep -n 100 -key-prefix demo-$(date +%s)
+{{- if .Values.worker.autoscaling.enabled }}
+
+KEDA scales the workers between {{ .Values.worker.autoscaling.minReplicas }} and {{ .Values.worker.autoscaling.maxReplicas }} on queue depth:
+  kubectl -n {{ .Release.Namespace }} get scaledobject,hpa
+The HPA owns the worker count: turning autoscaling off needs helm upgrade --force-conflicts.
+{{- end }}

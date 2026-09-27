@@ -4,6 +4,28 @@
 {{- .Release.Name | trunc 50 | trimSuffix "-" -}}
 {{- end }}
 
+{{- define "hopper.workerQueues" -}}
+sleep fail_n_times cpu_burn
+{{- end }}
+
+{{- define "hopper.depthQuery" -}}
+{{- $brokers := printf "namespace=%q, job=%q" .Release.Namespace (printf "%s-broker" (include "hopper.fullname" .)) -}}
+{{- printf "sum(max by (queue) (hopper_queue_depth{%s, state=\"available\", queue=~%q} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{%s} < 15)))" $brokers (include "hopper.workerQueues" . | splitList " " | join "|") $brokers -}}
+{{- end }}
+
+{{- define "hopper.checkAutoscaling" -}}
+{{- $a := .Values.worker.autoscaling -}}
+{{- if not .Values.broker.serviceMonitor.enabled }}{{ fail "worker.autoscaling needs broker.serviceMonitor.enabled" }}{{- end -}}
+{{- range include "hopper.workerQueues" . | splitList " " }}{{- if not (has . $.Values.broker.metricsQueues) }}{{ fail (printf "worker.autoscaling needs %q in broker.metricsQueues" .) }}{{- end }}{{- end -}}
+{{- $min := $a.minReplicas | int -}}{{- $max := $a.maxReplicas | int -}}{{- $floor := $a.fallbackReplicas | int -}}
+{{- if lt $min 1 }}{{ fail (printf "worker.autoscaling.minReplicas (%d) must be at least 1" $min) }}{{- end -}}
+{{- if lt $max $min }}{{ fail (printf "worker.autoscaling.maxReplicas (%d) must be at least minReplicas (%d)" $max $min) }}{{- end -}}
+{{- if or (lt $floor $min) (gt $floor $max) }}{{ fail (printf "worker.autoscaling.fallbackReplicas (%d) must be between minReplicas (%d) and maxReplicas (%d)" $floor $min $max) }}{{- end -}}
+{{- if le ($a.availablePerWorker | float64) 0.0 }}{{ fail (printf "worker.autoscaling.availablePerWorker (%v) must be greater than 0" $a.availablePerWorker) }}{{- end -}}
+{{- $window := $a.scaleDownStabilizationSeconds | int -}}{{- if or (lt $window 0) (gt $window 3600) }}{{ fail (printf "worker.autoscaling.scaleDownStabilizationSeconds (%d) must be between 0 and 3600" $window) }}{{- end -}}
+{{- if not (regexMatch "^https?://[^/:\\s]+:[0-9]+$" (toString $a.prometheusAddress)) }}{{ fail (printf "worker.autoscaling.prometheusAddress (%q) must be http(s)://<host>:<port>" (toString $a.prometheusAddress)) }}{{- end -}}
+{{- end }}
+
 {{/* Selector labels never include a version. Deployment and StatefulSet
      selectors are immutable, so a label that changed per release would make
      every upgrade fail. Takes (dict "root" . "component" "broker"). */}}

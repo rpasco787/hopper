@@ -57,6 +57,7 @@ broker:
     limits: {memory: 256Mi}
 worker:
   image: ghcr.io/rpasco787/hopper-worker
+  # Ignored while autoscaling is enabled: the HPA owns the count then.
   replicas: 1
   concurrency: 8
   logLevel: info
@@ -70,6 +71,14 @@ worker:
   # Needs the same CRDs as broker.serviceMonitor.
   podMonitor:
     enabled: false
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    availablePerWorker: 50
+    prometheusAddress: http://prometheus-operated.monitoring.svc:9090
+    scaleDownStabilizationSeconds: 60
+    fallbackReplicas: 4
 
 # `helm test`: enqueue one job and wait for a worker to complete it.
 smoke:

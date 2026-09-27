@@ -6,7 +6,9 @@ metadata:
   labels:
     {{- include "hopper.labels" (dict "root" . "component" "worker") | nindent 4 }}
 spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicas }}
+  {{- end }}
   # Surge first, so a replacement pod exists before an old one is deleted.
   # With no readiness probe, "ready" means only that the container started,
   # so this orders the pods; it does not promise the new worker is leasing.

@@ -1,0 +1,34 @@
+{{- if .Values.worker.autoscaling.enabled }}
+{{- include "hopper.checkAutoscaling" . }}
+{{- $a := .Values.worker.autoscaling }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "hopper.fullname" . }}-worker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "hopper.fullname" . }}-worker
+  minReplicaCount: {{ $a.minReplicas }}
+  maxReplicaCount: {{ $a.maxReplicas }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ $a.scaleDownStabilizationSeconds }}
+  fallback:
+    failureThreshold: 3
+    replicas: {{ $a.fallbackReplicas }}
+    behavior: currentReplicasIfHigher
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ $a.prometheusAddress | quote }}
+        query: {{ include "hopper.depthQuery" . | quote }}
+        threshold: {{ $a.availablePerWorker | quote }}
+        ignoreNullValues: "false"
+{{- end }}

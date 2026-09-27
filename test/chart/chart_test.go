@@ -32,6 +32,8 @@ const chartDir = "../../deploy/helm/hopper"
 // objects and KEDA on kind.
 const kindAutoscaling = "../../deploy/kind/autoscaling.yaml"
 
+const depthQuery = `sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))`
+
 // canonicalHelm is the Helm that renders the committed deploy/k8s/hopper.yaml.
 // Any Helm 4 runs these tests, but another version may render the same chart
 // differently, and the drift test then says so.
@@ -330,6 +332,40 @@ func TestMonitorsScrapeEveryFiveSeconds(t *testing.T) {
 	interval, err := time.ParseDuration(dig(sm, "spec", "endpoints", 0, "interval").(string))
 	require.NoError(t, err)
 	require.Less(t, interval+5*time.Second, metrics.DepthFreshness)
+}
+
+func TestScaledObjectScalesWorkersOnFreshDepth(t *testing.T) {
+	objects := autoscaled(t)
+	so := object(t, objects, "ScaledObject/hopper-worker")
+	require.Equal(t, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "hopper-worker"}, dig(so, "spec", "scaleTargetRef"))
+	require.Equal(t, 1, dig(so, "spec", "minReplicaCount"))
+	require.Equal(t, 20, dig(so, "spec", "maxReplicaCount"))
+	require.Equal(t, 60, dig(so, "spec", "advanced", "horizontalPodAutoscalerConfig", "behavior", "scaleDown", "stabilizationWindowSeconds"))
+	require.Equal(t, map[string]any{"failureThreshold": 3, "replicas": 4, "behavior": "currentReplicasIfHigher"}, dig(so, "spec", "fallback"))
+	trigger := dig(so, "spec", "triggers", 0)
+	require.Equal(t, "prometheus", dig(trigger, "type"))
+	require.Equal(t, "AverageValue", dig(trigger, "metricType"))
+	require.Equal(t, depthQuery, dig(trigger, "metadata", "query"))
+	require.Equal(t, "false", dig(trigger, "metadata", "ignoreNullValues"))
+	deploy := object(t, objects, "Deployment/hopper-worker")
+	_, hasReplicas := dig(deploy, "spec").(map[string]any)["replicas"]
+	require.False(t, hasReplicas)
+}
+
+func TestChartRejectsUnsafeAutoscaling(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--set", "broker.serviceMonitor.enabled=false"}, "worker.autoscaling needs broker.serviceMonitor.enabled"},
+		{[]string{"--set", "worker.autoscaling.minReplicas=0"}, "worker.autoscaling.minReplicas (0) must be at least 1"},
+		{[]string{"--set", "worker.autoscaling.availablePerWorker=0"}, "worker.autoscaling.availablePerWorker (0) must be greater than 0"},
+		{[]string{"--set", "worker.autoscaling.prometheusAddress="}, "must be http(s)://<host>:<port>"},
+	} {
+		_, stderr, err := helmTemplate(append([]string{"--namespace", "hopper", "-f", kindAutoscaling}, tc.args...)...)
+		require.Error(t, err)
+		require.Contains(t, stderr, tc.want)
+	}
 }
 
 func TestBrokerConfig(t *testing.T) {

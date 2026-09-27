@@ -12,3 +12,5 @@ broker:
 worker:
   podMonitor:
     enabled: true
+  autoscaling:
+    enabled: true
