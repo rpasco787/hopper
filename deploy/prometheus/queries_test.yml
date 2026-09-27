@@ -1,13 +1,17 @@
-# Semantics of the dashboard's depth, age and quantile queries, evaluated over
-# synthetic series with no live stack:
+# Semantics of the dashboard's depth, age and quantile queries, and of the
+# worker ScaledObject's depth query, evaluated over synthetic series with no
+# live stack:
 #
 #   docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/p:ro" \
 #     prom/prometheus:v3.14.0 test rules /p/queries_test.yml
 #
-# The expressions are copied verbatim from deploy/grafana/dashboards/queue.json,
-# except that $__rate_interval (a Grafana variable) is written as 1m.
-# TestDashboardQueryShape enforces the dashboard's shape, so keep these copies
-# in sync with it. The 15 is metrics.DepthFreshness in seconds.
+# The dashboard's expressions are copied verbatim from
+# deploy/grafana/dashboards/queue.json, except that $__rate_interval (a
+# Grafana variable) is written as 1m. TestDashboardQueryShape enforces the
+# dashboard's shape, so keep these copies in sync with it. The ScaledObject's
+# query is the chart's render for release hopper in namespace hopper;
+# test/chart fails if this copy drifts from it. The 15 is
+# metrics.DepthFreshness in seconds.
 #
 # Each broker's sample timestamp is its own series; "advancing" means it equals
 # the evaluation time, "frozen" means it stopped at 40s.
@@ -137,3 +141,78 @@ tests:
             value: 0.099
           - labels: '{queue="slow"}'
             value: 9.91
+
+  # The worker ScaledObject's query, exactly as the chart renders it for
+  # release hopper in namespace hopper; test/chart fails if this copy drifts.
+  # Two fresh brokers agree: each job counts once. Only available jobs in the
+  # queues the workers serve count: not leased jobs, not _other, and not a
+  # broker of another release.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+        values: '300x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+        values: '300x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="cpu_burn",state="available"}'
+        values: '100x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="cpu_burn",state="available"}'
+        values: '100x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="leased"}'
+        values: '160x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="_other",state="available"}'
+        values: '5000x20'
+      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",state="available"}'
+        values: '999x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091"}'
+        values: '0+5x20'
+    promql_expr_test:
+      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{}'
+            value: 400
+
+  # A broker that froze right after it saw a 10k backlog cannot hold the
+  # workers up once a fresh broker sees the drain.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+        values: '0x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+        values: '10000x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+        values: '0+5x8 40x12'
+    promql_expr_test:
+      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  # Every broker of this release is stale: the result is empty, which KEDA
+  # (ignoreNullValues false) treats as an error, never as 0. A fresh broker of
+  # another release with its own backlog changes nothing.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",state="available"}'
+        values: '999x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+        values: '0+5x8 40x12'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+        values: '0+5x8 40x12'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091"}'
+        values: '0+5x20'
+    promql_expr_test:
+      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+        eval_time: 100s
+        exp_samples: []

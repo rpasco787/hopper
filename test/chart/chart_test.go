@@ -8,12 +8,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +36,8 @@ const chartDir = "../../deploy/helm/hopper"
 // objects and KEDA on kind.
 const kindAutoscaling = "../../deploy/kind/autoscaling.yaml"
 
+// depthQuery is the worker ScaledObject's query for release hopper in
+// namespace hopper. deploy/prometheus/queries_test.yml tests its semantics.
 const depthQuery = `sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))`
 
 // canonicalHelm is the Helm that renders the committed deploy/k8s/hopper.yaml.
@@ -337,19 +343,55 @@ func TestMonitorsScrapeEveryFiveSeconds(t *testing.T) {
 func TestScaledObjectScalesWorkersOnFreshDepth(t *testing.T) {
 	objects := autoscaled(t)
 	so := object(t, objects, "ScaledObject/hopper-worker")
-	require.Equal(t, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "hopper-worker"}, dig(so, "spec", "scaleTargetRef"))
+	require.Equal(t, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "hopper-worker"},
+		dig(so, "spec", "scaleTargetRef"))
 	require.Equal(t, 1, dig(so, "spec", "minReplicaCount"))
 	require.Equal(t, 20, dig(so, "spec", "maxReplicaCount"))
+	require.Nil(t, dig(so, "spec", "cooldownPeriod"), "KEDA applies cooldownPeriod only when scaling to zero")
 	require.Equal(t, 60, dig(so, "spec", "advanced", "horizontalPodAutoscalerConfig", "behavior", "scaleDown", "stabilizationWindowSeconds"))
-	require.Equal(t, map[string]any{"failureThreshold": 3, "replicas": 4, "behavior": "currentReplicasIfHigher"}, dig(so, "spec", "fallback"))
+	require.Equal(t, map[string]any{"failureThreshold": 3, "replicas": 4, "behavior": "currentReplicasIfHigher"},
+		dig(so, "spec", "fallback"))
+	require.Len(t, dig(so, "spec", "triggers"), 1)
 	trigger := dig(so, "spec", "triggers", 0)
 	require.Equal(t, "prometheus", dig(trigger, "type"))
 	require.Equal(t, "AverageValue", dig(trigger, "metricType"))
-	require.Equal(t, depthQuery, dig(trigger, "metadata", "query"))
-	require.Equal(t, "false", dig(trigger, "metadata", "ignoreNullValues"))
+	require.Equal(t, map[string]any{
+		"serverAddress":    "http://prometheus-operated.monitoring.svc:9090",
+		"query":            depthQuery,
+		"threshold":        "50",
+		"ignoreNullValues": "false",
+	}, dig(trigger, "metadata"))
+	require.Contains(t, depthQuery, fmt.Sprintf("< %g)", metrics.DepthFreshness.Seconds()),
+		"the freshness literal must be metrics.DepthFreshness")
+
 	deploy := object(t, objects, "Deployment/hopper-worker")
 	_, hasReplicas := dig(deploy, "spec").(map[string]any)["replicas"]
-	require.False(t, hasReplicas)
+	require.False(t, hasReplicas, "Deployment/hopper-worker: the HPA owns replicas while KEDA scales the workers")
+}
+
+// The query's semantics are tested by promtool over synthetic series in
+// deploy/prometheus/queries_test.yml. This keeps that copy the rendered one.
+func TestPromtoolTestsTheRenderedQuery(t *testing.T) {
+	query := dig(object(t, autoscaled(t), "ScaledObject/hopper-worker"), "spec", "triggers", 0, "metadata", "query")
+	raw, err := os.ReadFile("../../deploy/prometheus/queries_test.yml")
+	require.NoError(t, err)
+	var file struct {
+		Tests []struct {
+			PromQLExprTest []struct {
+				Expr string `yaml:"expr"`
+			} `yaml:"promql_expr_test"`
+		} `yaml:"tests"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &file))
+	tested := 0
+	for _, group := range file.Tests {
+		for _, e := range group.PromQLExprTest {
+			if e.Expr == query {
+				tested++
+			}
+		}
+	}
+	require.Equal(t, 3, tested, "deploy/prometheus/queries_test.yml must test the rendered query three ways: agreeing brokers, a stale broker, all stale")
 }
 
 func TestChartRejectsUnsafeAutoscaling(t *testing.T) {
@@ -359,13 +401,55 @@ func TestChartRejectsUnsafeAutoscaling(t *testing.T) {
 	}{
 		{[]string{"--set", "broker.serviceMonitor.enabled=false"}, "worker.autoscaling needs broker.serviceMonitor.enabled"},
 		{[]string{"--set", "worker.autoscaling.minReplicas=0"}, "worker.autoscaling.minReplicas (0) must be at least 1"},
+		{[]string{"--set", "worker.autoscaling.maxReplicas=0"}, "worker.autoscaling.maxReplicas (0) must be at least minReplicas (1)"},
+		{[]string{"--set", "worker.autoscaling.fallbackReplicas=21"}, "worker.autoscaling.fallbackReplicas (21) must be between minReplicas (1) and maxReplicas (20)"},
+		// A metrics allowlist that misses a served queue: the scaler could
+		// never see that queue's backlog. The second case is the review's
+		// scenario; worker.autoscaling.queues is no longer a value, so Helm
+		// ignores it and the render still fails.
+		{[]string{"--set-json", `broker.metricsQueues=["sleep","fail_n_times"]`}, `worker.autoscaling needs "cpu_burn" in broker.metricsQueues`},
+		{[]string{"--set-json", `broker.metricsQueues=["email"]`, "--set-json", `worker.autoscaling.queues=["email"]`}, `worker.autoscaling needs "sleep" in broker.metricsQueues`},
 		{[]string{"--set", "worker.autoscaling.availablePerWorker=0"}, "worker.autoscaling.availablePerWorker (0) must be greater than 0"},
-		{[]string{"--set", "worker.autoscaling.prometheusAddress="}, "must be http(s)://<host>:<port>"},
+		{[]string{"--set", "worker.autoscaling.scaleDownStabilizationSeconds=-1"}, "worker.autoscaling.scaleDownStabilizationSeconds (-1) must be between 0 and 3600"},
+		{[]string{"--set", "worker.autoscaling.scaleDownStabilizationSeconds=3601"}, "worker.autoscaling.scaleDownStabilizationSeconds (3601) must be between 0 and 3600"},
+		{[]string{"--set", "worker.autoscaling.prometheusAddress="}, `worker.autoscaling.prometheusAddress ("") must be http(s)://<host>:<port>`},
+		{[]string{"--set", "worker.autoscaling.prometheusAddress=http://prometheus-operated.monitoring.svc/api"}, "must be http(s)://<host>:<port>"},
 	} {
 		_, stderr, err := helmTemplate(append([]string{"--namespace", "hopper", "-f", kindAutoscaling}, tc.args...)...)
-		require.Error(t, err)
-		require.Contains(t, stderr, tc.want)
+		require.Error(t, err, "%v rendered", tc.args)
+		require.Contains(t, stderr, tc.want, "%v", tc.args)
 	}
+}
+
+// The chart keeps its own copy of the queues the worker serves, because a
+// chart cannot read the binary. This keeps the copy the worker's list.
+func TestAutoscalerCountsTheWorkersQueues(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "../../cmd/worker/main.go", nil, 0)
+	require.NoError(t, err)
+	var served []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "workerHandlers" {
+			return true
+		}
+		ast.Inspect(spec, func(n ast.Node) bool {
+			if kv, ok := n.(*ast.KeyValueExpr); ok {
+				if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "queue" {
+					lit, ok := kv.Value.(*ast.BasicLit)
+					require.True(t, ok, "cmd/worker/main.go: a workerHandlers queue is not a string literal")
+					q, err := strconv.Unquote(lit.Value)
+					require.NoError(t, err)
+					served = append(served, q)
+				}
+			}
+			return true
+		})
+		return false
+	})
+	require.NotEmpty(t, served, "cmd/worker/main.go: workerHandlers not found")
+	query := dig(object(t, autoscaled(t), "ScaledObject/hopper-worker"), "spec", "triggers", 0, "metadata", "query")
+	require.Contains(t, query, fmt.Sprintf("queue=~%q}", strings.Join(served, "|")),
+		"hopper.workerQueues must list workerHandlers' queues, in order")
 }
 
 func TestBrokerConfig(t *testing.T) {
