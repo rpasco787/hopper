@@ -205,3 +205,29 @@ func TestProblemsAreSorted(t *testing.T) {
 		require.Equal(t, first, rep.Problems())
 	}
 }
+
+func TestExecutionProblemsAllowIdleShutdowns(t *testing.T) {
+	j1, j2 := uuid.New(), uuid.New()
+	rep := accounting.Reconcile([]accounting.Row{completed(j1, 1), completed(j2, 1)},
+		[]accounting.Log{
+			logOf(t, "a", started(j1), started(j2)),
+			logOf(t, "b", shutdown(0), stopped),
+			logOf(t, "c", shutdown(0), stopped),
+		})
+	require.Empty(t, rep.ExecutionProblems())
+	require.Equal(t, []string{"no worker was shut down while a handler ran; the run says nothing about graceful shutdown"},
+		rep.Problems(), "Problems keeps demanding a mid-handler shutdown")
+}
+
+func TestExecutionProblemsKeepEveryOtherCheck(t *testing.T) {
+	id := uuid.New()
+	rep := accounting.Reconcile([]accounting.Row{completed(id, 1)},
+		[]accounting.Log{
+			logOf(t, "a", started(id), shutdown(0)),
+			logOf(t, "b", started(id), shutdown(0), stopped),
+		})
+	require.Equal(t, []string{
+		fmt.Sprintf("job %s: handler started 2 times", id),
+		"pod a: shutdown started but the worker never logged a clean stop",
+	}, rep.ExecutionProblems())
+}

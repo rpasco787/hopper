@@ -183,6 +183,20 @@ func Reconcile(rows []Row, logs []Log) Report {
 // Problems lists every reason the run fails to show each job executing
 // exactly once under graceful shutdown. Empty means the claim holds.
 func (r Report) Problems() []string {
+	p := r.ExecutionProblems()
+	if !r.shutDownMidHandler() {
+		p = append(p, "no worker was shut down while a handler ran; the run says nothing about graceful shutdown")
+		slices.Sort(p)
+	}
+	return p
+}
+
+// ExecutionProblems is Problems without its demand that some worker was shut
+// down while a handler ran. It judges runs whose shutdowns may all find their
+// workers idle, such as an autoscaler removing workers after a drain: every
+// job must still execute exactly once, and every worker that shut down must
+// stop cleanly.
+func (r Report) ExecutionProblems() []string {
 	var p []string
 	for id, n := range r.Duplicated {
 		p = append(p, fmt.Sprintf("job %s: handler started %d times", id, n))
@@ -202,7 +216,6 @@ func (r Report) Problems() []string {
 	for pod, n := range r.Unparsed {
 		p = append(p, fmt.Sprintf("pod %s: %d non-JSON lines; cmd/worker prints those only when it exits with an error", pod, n))
 	}
-	midJob := 0
 	for _, s := range r.Shutdowns {
 		if s.DeadlineReached {
 			p = append(p, fmt.Sprintf("pod %s: shutdown deadline reached; work was abandoned", s.Pod))
@@ -210,13 +223,18 @@ func (r Report) Problems() []string {
 		if !s.Stopped {
 			p = append(p, fmt.Sprintf("pod %s: shutdown started but the worker never logged a clean stop", s.Pod))
 		}
-		if s.RunningHandlers > 0 {
-			midJob++
-		}
-	}
-	if midJob == 0 {
-		p = append(p, "no worker was shut down while a handler ran; the run says nothing about graceful shutdown")
 	}
 	slices.Sort(p)
 	return p
+}
+
+// shutDownMidHandler reports whether some worker began its drain with a
+// handler running, which is what makes a run evidence of graceful shutdown.
+func (r Report) shutDownMidHandler() bool {
+	for _, s := range r.Shutdowns {
+		if s.RunningHandlers > 0 {
+			return true
+		}
+	}
+	return false
 }
