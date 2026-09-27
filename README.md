@@ -5,13 +5,14 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 8 build includes the broker, producer client, worker SDK,
+The current Session 9 build includes the broker, producer client, worker SDK,
 example worker, bulk enqueue and smoke-check CLI, a leader-elected cron
 scheduler inside the broker, Prometheus metrics with a provisioned Grafana
 dashboard, structured job logs that join broker and worker on `lease_id`, a
-local Compose stack, and a Helm chart (with rendered plain manifests) that runs
-on a local kind cluster. Image publishing, KEDA, chaos automation, and load
-testing remain later-session work.
+local Compose stack, a Helm chart (with rendered plain manifests) that runs on
+a local kind cluster, and KEDA autoscaling of the workers on queue depth.
+Chaos automation, load testing, and image publishing remain later-session
+work.
 
 ## Quick start
 
@@ -333,6 +334,84 @@ default values and no test hook. Its header gives the commands to apply it into
 a namespace of your choosing. Regenerate it with `scripts/render-k8s.sh`; a
 test fails if it drifts from the chart.
 
+### Autoscaling
+
+![Workers scaling 1 → 20 → 1 on queue depth](docs/img/session9-autoscale.gif)
+
+*20,000 two-second `sleep` jobs take KEDA from 1 worker to 20 and back to 1,
+recorded with `scripts/autoscale-watch.sh` during a passing run of
+`TestAutoscalingRedeliversNothing`. The left bar is the backlog the
+ScaledObject reads; the right bar is running (green) and terminating (red)
+workers.*
+
+KEDA scales the workers on the available jobs in their queues, read
+fresh-only, one worker per 50 of them, between 1 and 20, and removes workers
+only after 60 s of low backlog.
+
+```bash
+scripts/kind-addons.sh                                # kube-prometheus-stack and KEDA
+scripts/kind-up.sh -f deploy/kind/autoscaling.yaml    # hopper with monitors and a ScaledObject
+scripts/autoscale-watch.sh                            # in a second terminal: backlog and workers, live
+
+kubectl --context kind-hopper -n hopper port-forward svc/hopper-broker 9090:9090 &
+go run ./cmd/hopperctl enqueue -queue sleep -n 20000 -batch 500 -payload '{"ms":2000}' -key-prefix demo-$(date +%s)
+```
+
+`scripts/kind-addons.sh` installs kube-prometheus-stack 91.7.0 (namespace
+`monitoring`) and KEDA 2.20.2 (namespace `keda`) as their own releases, not as
+dependencies of the hopper chart, because both own cluster-wide CRDs. For
+Grafana, run
+`kubectl --context kind-hopper -n monitoring port-forward svc/monitoring-grafana 3000:80`
+and open http://127.0.0.1:3000 (anonymous viewer). It serves the same queue
+dashboard as Compose. `kind-up.sh` does not reuse values, so pass
+`-f deploy/kind/autoscaling.yaml` on every run while autoscaling is wanted.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `broker.serviceMonitor.enabled` | `false` | A ServiceMonitor scraping the brokers every 5 s; needs the Prometheus Operator CRDs |
+| `worker.podMonitor.enabled` | `false` | A PodMonitor scraping the workers every 5 s; same CRDs |
+| `worker.autoscaling.enabled` | `false` | A KEDA ScaledObject for the workers; needs KEDA and `broker.serviceMonitor.enabled`. The Deployment then has no `replicas` |
+| `worker.autoscaling.minReplicas` | `1` | Fewest workers; at least 1 |
+| `worker.autoscaling.maxReplicas` | `20` | Most workers |
+| `worker.autoscaling.availablePerWorker` | `50` | Available jobs per worker (`AverageValue`) |
+| `worker.autoscaling.scaleDownStabilizationSeconds` | `60` | The HPA removes workers only after this long of lower recommendations; 0–3600 |
+| `worker.autoscaling.fallbackReplicas` | `4` | Held while depth is unknown (below); between the minimum and maximum |
+| `worker.autoscaling.prometheusAddress` | `http://prometheus-operated.monitoring.svc:9090` | Where KEDA queries depth; `http(s)://<host>:<port>` |
+
+The three objects are off by default, so `deploy/k8s/hopper.yaml` and a
+cluster without the CRDs are unaffected. `deploy/kind/autoscaling.yaml` turns
+all three on.
+
+**Unknown depth.** When every broker's depth sample is stale, for example
+because the database refuses them, the query returns nothing rather than 0.
+The ScaledObject sets `ignoreNullValues: "false"`, so KEDA treats that as an
+error instead of an empty queue. After three failed reads it applies the
+fallback: it keeps the current count, or raises it to 4 if it is lower, so
+it never removes a worker while it cannot see the backlog. On a fresh install
+the fallback can raise the workers to 4 until Prometheus first scrapes the
+brokers.
+
+**Scale-down and in-flight work.** Kubernetes deletes pods without knowing
+which workers are busy, so safety comes from two things. A deleted worker
+drains: it stops leasing, finishes its handlers and confirms them inside its
+shutdown budget, as in a rollout. And the 60 s window means the HPA removes
+workers only well after the backlog is gone. In the verified cycle the backlog read 0 at 4m50s and the first worker was
+removed 38 s later; all 19 removed workers had no handler running at SIGTERM,
+and no job was redelivered.
+A scale-down that did catch a busy worker would still drain it, but a delivery
+in flight at SIGTERM could be redelivered.
+
+**Switching it off.** Run
+`scripts/kind-up.sh --set worker.replicas=N --force-conflicts`. The flag is
+needed because the HPA owns the worker count while autoscaling is on. Then
+confirm the count with
+`kubectl --context kind-hopper -n hopper get deploy hopper-worker -o jsonpath='{.spec.replicas}'`.
+If the HPA synced before KEDA removed it, the count is the HPA's: run the same
+upgrade once more. Never `kubectl scale` the workers while autoscaling is on.
+
+The query, the fallback, the scale-down argument and the ownership rule are in
+[docs/semantics.md §14](docs/semantics.md#14-observability).
+
 **Limits.**
 
 - The PostgreSQL is for development: one replica, no backups, and a PVC that
@@ -346,6 +425,8 @@ test fails if it drifts from the chart.
   concentrated on the surviving broker until they reconnect.
 - A worker rollout keeps the pod count, not leasing capacity: with no
   readiness probe, a new worker counts as ready before it is leasing.
+- The kind add-ons are for development: one Prometheus with a day of
+  retention and no persistence, and no Alertmanager.
 
 Tear down with `kind delete cluster --name hopper`.
 
@@ -356,6 +437,7 @@ gofmt -l .
 go vet ./...
 buf lint
 helm lint --strict deploy/helm/hopper
+helm lint --strict deploy/helm/hopper -f deploy/kind/autoscaling.yaml
 go test -race -count=2 ./...
 docker compose -p hopper-session7 config
 go vet -tags k8s ./test/k8s
@@ -363,7 +445,7 @@ go vet -tags k8s ./test/k8s
 # The worker SDK must not depend on Prometheus.
 ! go list -deps ./worker | grep -q prometheus
 
-# Dashboard query semantics, over synthetic series.
+# Dashboard and autoscaler query semantics, over synthetic series.
 docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/p:ro" \
   prom/prometheus:v3.14.0 test rules /p/queries_test.yml
 
@@ -378,11 +460,22 @@ needs Helm 4 on PATH; it fails, rather than skips, without it. Run
 `test/chart`), or the drift test will report Helm's differences as the
 chart's.
 
-The rollout proof needs the kind cluster with three workers. It restarts them
+The `k8s` proofs run against the kind cluster, one at a time, and each needs
+its release set up its own way. The rollout proof restarts three workers
 mid-run under 1,200 three-second jobs and fails if any job's handler started
-twice:
+twice. The autoscaling proof runs a 20,000-job scale cycle and fails on any
+duplicate start or redelivery. The fallback proof refuses the brokers at the
+database and fails unless KEDA holds the fallback:
 
 ```bash
-scripts/kind-up.sh --set worker.replicas=3
-go test -tags k8s -count=3 -timeout 45m -v -run TestRolloutRestartDuplicatesNothing ./test/k8s
+# A fixed worker count; --force-conflicts takes it back from the HPA if
+# autoscaling was on.
+scripts/kind-up.sh --set worker.replicas=3 --force-conflicts
+go test -tags k8s -count=1 -timeout 20m -v -run TestRolloutRestartDuplicatesNothing ./test/k8s
+
+# KEDA and the monitors.
+scripts/kind-addons.sh
+scripts/kind-up.sh -f deploy/kind/autoscaling.yaml
+go test -tags k8s -count=1 -timeout 30m -v -run TestAutoscalingRedeliversNothing ./test/k8s
+go test -tags k8s -count=1 -timeout 15m -v -run TestUnknownDepthHoldsTheFallback ./test/k8s
 ```

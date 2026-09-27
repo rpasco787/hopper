@@ -398,7 +398,11 @@ rollout restart` of workers, as long as the shutdown budget holds (item 4 and
 §15). A rollout can still cause **redeliveries**, which consume attempts
 without a second execution: a delivery received during shutdown is nacked
 unstarted (item 5), and one the worker never received is reaped when its lease
-expires.
+expires. Nor is an autoscaler's scale-down, which deletes a worker pod exactly
+as a rollout does, so the worker drains (item 4). In the verified scale cycle
+scale-down found every worker idle and nothing was redelivered, because the 60s
+stabilization window outlasts the drain's tail (§14, §15). A scale-down that
+does catch a busy worker can still redeliver a delivery in flight (item 5).
 
 ## 12. Non-goals
 
@@ -456,6 +460,15 @@ expires.
 - **Request-level gRPC load balancing.** The broker Service balances per
   connection, and each worker holds one long-lived connection, so after a
   broker restart workers can stay concentrated on the surviving broker.
+- **Scaling workers to zero.** `minReplicas` is at least 1. Scale-to-zero
+  needs KEDA's activation threshold and accepts a cold start for the first
+  job, and neither is designed here.
+- **Choosing which workers to remove.** The replica set deletes pods without
+  knowing which are busy; the drain (§11.4) is what makes that safe.
+- **Autoscaling brokers, or several worker pools.** The chart scales one
+  worker Deployment serving a fixed list of queues; brokers run a fixed count.
+- **Production monitoring in the kind add-ons.** One Prometheus with a day of
+  retention, no Alertmanager, no persistence.
 
 ## 13. Cron schedules and leader election
 
@@ -714,10 +727,9 @@ would show the freshest broker and hide a stale one.
 
 **When every broker is stale, the query returns nothing, not 0.** That is
 accurate: no one knows the depth. An autoscaler must treat it as an error, not
-as an empty queue. For KEDA's Prometheus scaler (Session 9), that means
-`ignoreNullValues: false`, so an empty result is a scaler error, plus a
-`fallback` replica count, so a database outage holds workers at the fallback
-instead of scaling them to the minimum.
+as an empty queue. For KEDA's Prometheus scaler, that means
+`ignoreNullValues: false`, so an empty result is an error rather than zero
+depth; see **Autoscaling** below for what the error does.
 
 **Depth cost.** N brokers each run the grouped count every 5s, and each branch
 reads every row in its state, so the cost grows with the non-terminal backlog.
@@ -838,6 +850,85 @@ scrapeable during the drain. It gets its own 2s budget, then a hard close.
 the API (§12). They expose allowlisted queue names, counts and timings. They
 never expose payloads, job ids or lease tokens.
 
+**Autoscaling reads depth the same way.** With `worker.autoscaling.enabled`,
+the chart renders a KEDA `ScaledObject` for the worker Deployment. It asks for
+one worker per 50 of this query (`AverageValue`), between 1 and 20. For
+release `hopper` in namespace `hopper` the query is:
+
+```promql
+sum(max by (queue) (
+  hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available",
+                     queue=~"sleep|fail_n_times|cpu_burn"}
+  and on (job, instance)
+  (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)
+))
+```
+
+- **Fresh-only, `max by (queue)`, then one `sum`**, as above. KEDA's
+  Prometheus scaler rejects a result with more than one series.
+- **Scoped to this release's brokers.** The Prometheus Operator labels a
+  ServiceMonitor's targets with the Service's `namespace` and `job`. Without
+  the scope, another release scraped by the same Prometheus would add its
+  backlog, and while every one of this release's brokers is stale, another
+  release's fresh broker would keep the result non-empty and hide the outage.
+- **Only the queues the workers serve.** A backlog no worker can take,
+  including everything folded into `_other`, would otherwise hold every worker
+  at the maximum. The list is not a value: the example worker registers a
+  fixed set of handlers, and the chart keeps a copy that a test checks against
+  `cmd/worker`. The chart refuses to render autoscaling when
+  `broker.metricsQueues` omits a served queue, because that queue's depth would
+  be reported as `_other`.
+- **Available jobs only.** Leased jobs already have a worker, and scheduled
+  jobs are not due.
+- **Scraped every 5s.** A sample can be one scrape interval plus one 5s sample
+  interval old at query time, and the query drops a broker whose sample is 15s
+  old. kube-prometheus-stack's default 30s interval would drop healthy brokers
+  most of the time, so the ServiceMonitor and PodMonitor fix `interval: 5s`.
+
+The spec's form without the three matchers reads 6,099 instead of 400 on the
+promtool series, and 999 instead of empty when this release's brokers are all
+stale.
+
+**Unknown depth is an error, and an error never removes workers.** With
+`ignoreNullValues: "false"`, KEDA's scaler reports an empty result as an error.
+Without a fallback, KEDA then gives the HPA no metric, and the HPA keeps its
+current count; that alone prevents a scale to the minimum mid-outage. The
+fallback (`failureThreshold: 3`, `replicas: 4`,
+`behavior: currentReplicasIfHigher`) makes the blind period a policy: after
+three consecutive failures KEDA reports enough to keep the current count, or to
+raise it to 4 if it is lower. So the scaler never removes a worker while it
+cannot see the backlog, and a backlog building where it cannot see it still has
+four workers. The chart requires `minReplicas ≤ fallbackReplicas ≤
+maxReplicas`. On a fresh install the depth is unknown until Prometheus first
+scrapes the brokers, so the fallback can briefly raise the workers to 4. §15
+records the chain, observed with the database refusing every broker.
+
+**Scale-down waits for 60s of low backlog.** KEDA's `cooldownPeriod` applies
+only when scaling to zero, so the chart sets none. The 60s is the HPA's
+scale-down stabilization window
+(`worker.autoscaling.scaleDownStabilizationSeconds`): the HPA removes workers
+only when every recommendation in the last 60s was below the current count.
+Scale-up keeps the HPA defaults. The replica set cannot know which workers are
+busy, and the drain (§11, item 4) is what makes deleting any of them safe. In
+the verified runs the window also outlasted the drain's tail. The last 950
+available jobs, the backlog below which 20 workers are no longer wanted, drain
+in about 12s at the measured 78 jobs a second, and the HPA removed the first
+worker 38s after the available depth read 0, so every removed worker was idle
+at SIGTERM (19 removed, 0 busy; §15). A shorter window or longer jobs would
+let scale-down catch busy workers. They would drain as in a rollout, but a
+delivery in flight at SIGTERM can still be redelivered (§11, item 5).
+
+**The HPA owns the worker count.** The HPA writes `spec.replicas` through the
+Deployment's scale subresource, which makes it the field's owner under
+server-side apply, so while autoscaling is enabled the chart renders no
+`replicas` for the workers and `worker.replicas` is ignored. Helm upgrades
+then leave the count alone. Switching autoscaling off needs
+`helm upgrade --force-conflicts` (`scripts/kind-up.sh --set worker.replicas=N
+--force-conflicts`), because Helm must take the field back. Helm applies the
+Deployment before it deletes the ScaledObject, so if the HPA's 15s sync falls
+between the two, the count ends at the HPA's value: check the count after the
+upgrade, and repeat it once if it is wrong. The second run has no HPA to race.
+
 ## 15. Verified behavior
 
 Only completed, dated runs appear here. Each row names the test or scoped demo
@@ -900,3 +991,9 @@ not in this table.
 | Execution accounting reports duplicates, incomplete capture, unfinished jobs, unclean or idle shutdowns, and nacks the rows cannot explain; it counts redeliveries per lost lease | `accounting: Test*` (13 tests, `-race`) | 3 (`-count=3`, 2026-09-23) | pass |
 | `kubectl rollout restart` of three workers mid-run: every job's handler started exactly once; every replaced pod had handlers running at SIGTERM and stopped cleanly | `k8s: TestRolloutRestartDuplicatesNothing` (1,200 × 3 s `sleep`, 3 × 8 concurrency, restart after 50 completions) | 6 (`-count=3` twice, the second on a cluster rebuilt from nothing, 2026-09-23) | pass, each run: 1,200/1,200 completed, 0 duplicate starts; every replaced pod `running_handlers=8`, clean stop; 0 redelivered jobs, 0 redeliveries (0 unstarted nacks, 0 never received); ~148 s per run |
 | The rollout proof fails when the drain budget is too short | the proof with `worker.shutdownTimeoutSeconds=1`, `preStopSleepSeconds=0`, grace 6 s | 1 (2026-09-23) | fails as intended: 2 of 3 replaced pods reached the shutdown deadline with 8 running handlers and exited with an error; 16 jobs' handlers started twice. The third pod's batch had started 2.1 s before SIGTERM and finished inside the 1 s budget |
+| Accounting judges a run whose shutdowns all found workers idle, and still reports every other problem | `accounting: TestExecutionProblemsAllowIdleShutdowns`, `TestExecutionProblemsKeepEveryOtherCheck` (`-race`) | 3 (`-count=3`) + 2 full-suite (2026-09-27) | pass |
+| The broker ServiceMonitor and worker PodMonitor scrape every 5s, inside the depth freshness window; they and the ScaledObject are off by default, so the plain manifests are unchanged | `chart: TestMonitorsScrapeEveryFiveSeconds`, `TestMonitoringAndAutoscalingAreOffByDefault`, `TestRenderedManifestsAreCurrent` (`-race`, Helm 4.3.0) | 3 (`-count=3`, 2026-09-27) | pass: 5 s scrape + 5 s sample < 15 s; `deploy/k8s/hopper.yaml` byte-identical to Session 8 |
+| The worker ScaledObject scales on this release's fresh available depth for the queues its workers serve, with `ignoreNullValues: false`, a `currentReplicasIfHigher` fallback of 4 and a 60s scale-down window; the Deployment leaves `replicas` to the HPA; the chart's queue list matches `cmd/worker`; unsafe settings refuse to render | `chart: TestScaledObjectScalesWorkersOnFreshDepth`, `TestAutoscalerCountsTheWorkersQueues`, `TestChartRejectsUnsafeAutoscaling` (`-race`) | 3 (`-count=3`, 2026-09-27) | pass: 11 unsafe settings refused; reordering the chart's queue list fails the queue test |
+| The scaler's query counts each job once across brokers, ignores a stale broker, another release, leased jobs and unserved queues, and is empty, not 0, when every broker is stale | `promtool test rules deploy/prometheus/queries_test.yml` (3 groups, `prom/prometheus:v3.14.0`); `chart: TestPromtoolTestsTheRenderedQuery` | 2 and 3 (2026-09-27) | pass: 400, 0 and empty. The spec's unscoped query fails two groups, reading 6,099 instead of 400 and 999 instead of empty |
+| A scale cycle on kind: 20,000 × 2 s `sleep` jobs take the workers 1 → 20 → 1; every job's handler started once and every job completed on its first lease; every removed worker stopped cleanly | `k8s: TestAutoscalingRedeliversNothing` (KEDA 2.20.2, kube-prometheus-stack 91.7.0, cluster rebuilt from nothing; run `s9-1790489039308325000`) | 1 (2026-09-27) | pass: 20,000/20,000 completed, 0 duplicate starts; 20 running at +40 s (1 → 5 → 10 → 20); drained at +4m40s, about 78 jobs/s at 20 workers; the first worker removed 38 s after the available depth read 0; back to 1 at +5m46s; 19 removed, each `running_handlers=0` with a clean stop; 0 redelivered jobs, 0 redeliveries (0 unstarted nacks, 0 unexplained); cluster memory peaked at 2.63 GiB of 3.83 GiB, no evictions |
+| When the database refuses every broker, depth becomes unknown (not 0), KEDA reports the fallback and holds idle workers at 4; allowed again, they return to 1 and a job completes | `k8s: TestUnknownDepthHoldsTheFallback` (`ALTER DATABASE hopper ALLOW_CONNECTIONS false` + `pg_terminate_backend`) | 1 (2026-09-27) | pass: depth unknown after 12 s, with both brokers alive, unrestarted and frozen (logging `queue depth sample failed … not currently accepting connections`); the fallback held 4 workers after 50 s; allowed again, both brokers fresh after 14 s and back to 1 idle worker after 1m4s; `datallowconn` restored |
