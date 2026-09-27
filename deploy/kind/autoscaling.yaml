@@ -1,0 +1,14 @@
+# Session 9's autoscaling on the kind cluster. Needs scripts/kind-addons.sh
+# (kube-prometheus-stack and KEDA) first:
+#
+#   scripts/kind-up.sh -f deploy/kind/autoscaling.yaml
+#
+# kind-up.sh does not reuse values, so pass this file on every run while
+# autoscaling is wanted. To go back to a fixed worker count, run kind-up.sh
+# without it and with --force-conflicts: the HPA owns the count until then.
+broker:
+  serviceMonitor:
+    enabled: true
+worker:
+  podMonitor:
+    enabled: true

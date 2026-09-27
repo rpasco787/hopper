@@ -1,0 +1,20 @@
+{{- if .Values.broker.serviceMonitor.enabled }}
+# Prometheus Operator scrape of the broker Service's metrics port. The job
+# label is the Service name, which the worker ScaledObject's query selects.
+# Every 5s: a broker's depth counts only while its last sample is under 15s
+# old, and a scraped sample can be one scrape plus one 5s sample interval old
+# (docs/semantics.md §14).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hopper.selectorLabels" (dict "root" . "component" "broker") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: 5s
+{{- end }}

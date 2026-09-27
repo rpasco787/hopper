@@ -22,10 +22,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/rpasco787/hopper/internal/metrics"
 	"github.com/rpasco787/hopper/internal/scheduler"
 )
 
 const chartDir = "../../deploy/helm/hopper"
+
+// kindAutoscaling is the values file that turns on the Prometheus Operator
+// objects and KEDA on kind.
+const kindAutoscaling = "../../deploy/kind/autoscaling.yaml"
 
 // canonicalHelm is the Helm that renders the committed deploy/k8s/hopper.yaml.
 // Any Helm 4 runs these tests, but another version may render the same chart
@@ -75,6 +80,13 @@ func render(t *testing.T, args ...string) map[string]map[string]any {
 		objects[key] = obj
 	}
 	return objects
+}
+
+// autoscaled renders the chart as kind runs it with autoscaling: in namespace
+// hopper, with deploy/kind/autoscaling.yaml.
+func autoscaled(t *testing.T, args ...string) map[string]map[string]any {
+	t.Helper()
+	return render(t, append([]string{"--namespace", "hopper", "-f", kindAutoscaling}, args...)...)
 }
 
 // dig walks maps by string key and slices by int index, returning nil for a missing step.
@@ -277,17 +289,47 @@ func TestSelectorsNeverIncludeChangingLabels(t *testing.T) {
 
 func TestPasswordLivesOnlyInTheSecret(t *testing.T) {
 	const canary = "canary-7f3a"
-	objects := render(t, "--set", "postgres.password="+canary)
-	secret := object(t, objects, "Secret/hopper-postgres")
-	require.Equal(t, canary, dig(secret, "stringData", "password"))
-	for key, obj := range objects {
-		if key == "Secret/hopper-postgres" {
-			continue
+	for _, extra := range [][]string{nil, {"--namespace", "hopper", "-f", kindAutoscaling}} {
+		objects := render(t, append([]string{"--set", "postgres.password=" + canary}, extra...)...)
+		secret := object(t, objects, "Secret/hopper-postgres")
+		require.Equal(t, canary, dig(secret, "stringData", "password"))
+		for key, obj := range objects {
+			if key == "Secret/hopper-postgres" {
+				continue
+			}
+			out, err := yaml.Marshal(obj)
+			require.NoError(t, err)
+			require.NotContains(t, string(out), canary, "%s contains the PostgreSQL password", key)
 		}
-		out, err := yaml.Marshal(obj)
-		require.NoError(t, err)
-		require.NotContains(t, string(out), canary, "%s contains the PostgreSQL password", key)
 	}
+}
+
+func TestMonitoringAndAutoscalingAreOffByDefault(t *testing.T) {
+	objects := render(t)
+	for _, key := range []string{"ServiceMonitor/hopper-broker", "PodMonitor/hopper-worker", "ScaledObject/hopper-worker"} {
+		require.NotContains(t, objects, key, "a cluster without the operators' CRDs would refuse it")
+	}
+	require.Equal(t, 1, dig(object(t, objects, "Deployment/hopper-worker"), "spec", "replicas"))
+}
+
+func TestMonitorsScrapeEveryFiveSeconds(t *testing.T) {
+	objects := autoscaled(t)
+	sm := object(t, objects, "ServiceMonitor/hopper-broker")
+	svc := object(t, objects, "Service/hopper-broker")
+	for k, v := range dig(sm, "spec", "selector", "matchLabels").(map[string]any) {
+		require.Equal(t, v, dig(svc, "metadata", "labels", k), "ServiceMonitor/hopper-broker must select Service/hopper-broker by %s", k)
+	}
+	require.Equal(t, "broker", dig(sm, "spec", "selector", "matchLabels", "app.kubernetes.io/component"))
+	require.Equal(t, []any{map[string]any{"port": "metrics", "interval": "5s"}}, dig(sm, "spec", "endpoints"))
+
+	pm := object(t, objects, "PodMonitor/hopper-worker")
+	require.Equal(t, dig(object(t, objects, "Deployment/hopper-worker"), "spec", "selector", "matchLabels"),
+		dig(pm, "spec", "selector", "matchLabels"))
+	require.Equal(t, []any{map[string]any{"port": "metrics", "interval": "5s"}}, dig(pm, "spec", "podMetricsEndpoints"))
+
+	interval, err := time.ParseDuration(dig(sm, "spec", "endpoints", 0, "interval").(string))
+	require.NoError(t, err)
+	require.Less(t, interval+5*time.Second, metrics.DepthFreshness)
 }
 
 func TestBrokerConfig(t *testing.T) {
