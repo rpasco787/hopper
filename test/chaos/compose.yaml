@@ -1,0 +1,23 @@
+# The chaos suite's changes to docker-compose.yml (test/chaos). The suite
+# merges this file over the base one:
+#
+#   docker compose -p hopper-chaos -f docker-compose.yml -f test/chaos/compose.yaml ...
+#
+# It publishes PostgreSQL and both brokers on loopback ports the suite picks,
+# replacing the base file's fixed ones, so the suite can run beside a
+# development stack and a restarted container comes back on the port the
+# suite's connections expect. Cron is off, so every job is the suite's.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${HOPPER_CHAOS_PG_PORT:?set by the chaos suite}:5432"
+  broker:
+    ports: !override
+      - "127.0.0.1:${HOPPER_CHAOS_BROKER_PORT:?set by the chaos suite}:9090"
+    environment:
+      HOPPER_SCHEDULER: "false"
+  broker-standby:
+    ports:
+      - "127.0.0.1:${HOPPER_CHAOS_STANDBY_PORT:?set by the chaos suite}:9090"
+    environment:
+      HOPPER_SCHEDULER: "false"
