@@ -397,3 +397,17 @@ func TestLinesBeforeTheFirstStartBelongToProcessZero(t *testing.T) {
 	require.Empty(t, rep.AttemptProblems())
 	require.Equal(t, []accounting.Process{{Pod: "w1", N: 0, Starts: 1, Cut: true}, {Pod: "w1", N: 1}}, rep.Processes)
 }
+
+func TestDiagnosticsBeforeWorkerStartingDoNotCreateAProcess(t *testing.T) {
+	id, lease := uuid.New(), uuid.New()
+	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	metrics := `{"level":"INFO","msg":"metrics listening"}`
+	lines := []string{at(t0, metrics), at(t0.Add(time.Second), workerStarting)}
+	for _, line := range ran(id, lease) {
+		lines = append(lines, at(t0.Add(2*time.Second), line))
+	}
+	rep := accounting.Reconcile([]accounting.Row{completedUnder(id, 1, lease)},
+		[]accounting.Log{logOf(t, "w1", lines...)})
+	require.Empty(t, rep.AttemptProblems())
+	require.Equal(t, []accounting.Process{{Pod: "w1", N: 1, Starts: 1, Last: t0.Add(2 * time.Second)}}, rep.Processes)
+}

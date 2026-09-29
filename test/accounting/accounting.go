@@ -231,8 +231,8 @@ func Reconcile(rows []Row, logs []Log) Report {
 			return proc
 		}
 		for _, line := range l.Lines {
-			if line.Msg != msgWorkerStarting && !line.Time.IsZero() {
-				rep.Processes[current()].Last = line.Time
+			if line.Msg != msgWorkerStarting && proc >= 0 && !line.Time.IsZero() {
+				rep.Processes[proc].Last = line.Time
 			}
 			if line.Msg == msgWorkerStarting {
 				n := 1
@@ -248,15 +248,19 @@ func Reconcile(rows []Row, logs []Log) Report {
 			key := leaseKey{id, line.LeaseID}
 			switch {
 			case line.Msg == msgJobStarted && ours:
+				process := current()
+				if !line.Time.IsZero() {
+					rep.Processes[process].Last = line.Time
+				}
 				starts[id]++
 				ls := leases[key]
 				if ls == nil {
-					ls = &leaseSeen{process: current(), startedAt: line.Time}
+					ls = &leaseSeen{process: process, startedAt: line.Time}
 					leases[key] = ls
 					jobLeases[id] = append(jobLeases[id], line.LeaseID)
 				}
 				ls.starts++
-				rep.Processes[current()].Starts++
+				rep.Processes[process].Starts++
 			case line.Msg == msgUnstartedNack && ours:
 				nacks[id]++
 			case line.Msg == msgHandlerFinished && ours && leases[key] != nil:
