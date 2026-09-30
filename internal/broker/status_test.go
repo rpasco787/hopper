@@ -35,7 +35,11 @@ func TestToStatus(t *testing.T) {
 		{"terminal", &store.TerminalStateError{State: store.StateDead}, codes.FailedPrecondition},
 		{"context cancelled", context.Canceled, codes.Canceled},
 		{"deadline", context.DeadlineExceeded, codes.DeadlineExceeded},
+		// Unavailable only when the store says so: the store knows the
+		// driver, and a bare string that merely looks like a network error
+		// could be anything.
 		{"unknown", errors.New("connection refused"), codes.Internal},
+		{"database unavailable", fmt.Errorf("store: ack: %w: %w", store.ErrUnavailable, errors.New("dial tcp: connection refused")), codes.Unavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := toStatus(tc.err)

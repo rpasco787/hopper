@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -95,6 +96,7 @@ func TestFailureLogsCarryJobAndLease(t *testing.T) {
 		}{
 			{"internal", "rpc failed", "ERROR", "", errors.New("boom")},
 			{"rejected", "rpc rejected", "DEBUG", "Aborted", store.ErrLeaseLost},
+			{"unavailable", "rpc unavailable", "WARN", "", fmt.Errorf("store: %w: %w", store.ErrUnavailable, errors.New("dial tcp: connection refused"))},
 		} {
 			t.Run(tc.name+"/"+failure.name, func(t *testing.T) {
 				logger, buf := captureJSONLogs(slog.LevelDebug)

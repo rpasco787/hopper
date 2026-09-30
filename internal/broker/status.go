@@ -16,6 +16,7 @@ import (
 //	NotFound            no such job; a retry will not conjure one.
 //	Aborted             the lease token lost a race. Stop working on the job.
 //	FailedPrecondition  the job is in a state this call cannot act on.
+//	Unavailable         the database could not be reached; retry what is idempotent.
 //	Internal            store failure; may be permanent input rejection or ambiguous commit.
 //
 // Aborted for ErrLeaseLost rather than FailedPrecondition because it is
@@ -47,6 +48,13 @@ func toStatus(err error) error {
 		// (google.rpc.ErrorInfo) would need genproto; not worth a dependency
 		// until something parses it.
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, store.ErrUnavailable):
+		// The database, not the request, is the problem. The worker SDK
+		// retries UNAVAILABLE within the lease, which is what lets a short
+		// database restart pass without any handler running twice. The call
+		// may have taken effect; Ack, Nack and Heartbeat are idempotent under
+		// their lease token, so retrying them is safe (docs/semantics.md §5).
+		return status.Error(codes.Unavailable, "database unavailable")
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "cancelled")
 	case errors.Is(err, context.DeadlineExceeded):

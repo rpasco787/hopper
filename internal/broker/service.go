@@ -97,10 +97,16 @@ func (s *Service) Drain() {
 // drift apart.
 func (s *Service) fail(ctx context.Context, op string, err error, attrs ...any) error {
 	out := toStatus(err)
-	if status.Code(out) == codes.Internal {
+	switch status.Code(out) {
+	case codes.Internal:
 		s.cfg.Logger.ErrorContext(ctx, "rpc failed",
 			append([]any{"rpc", op, "err", err}, attrs...)...)
-	} else {
+	case codes.Unavailable:
+		// Warn, not debug: an operator needs to see a database outage, and
+		// the driver's error says which kind.
+		s.cfg.Logger.WarnContext(ctx, "rpc unavailable",
+			append([]any{"rpc", op, "err", err}, attrs...)...)
+	default:
 		s.cfg.Logger.DebugContext(ctx, "rpc rejected",
 			append([]any{"rpc", op, "code", status.Code(out).String()}, attrs...)...)
 	}
