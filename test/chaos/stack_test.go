@@ -453,9 +453,10 @@ func (s *stack) waitDatabase() {
 // It measures unreachability from the host's published port, which is close
 // to, but not the same as, what the brokers see on the Compose network.
 type probe struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	w      probeWindow // written by the probing goroutine; read after done
+	recovered chan struct{} // closed after the first successful post-outage sample
+	cancel    context.CancelFunc
+	done      chan struct{}
+	w         probeWindow // written by the probing goroutine; read after done
 }
 
 // probeWindow brackets how long new sessions failed. The true interval lies
@@ -476,9 +477,10 @@ func (w probeWindow) String() string {
 
 func (s *stack) startProbe() *probe {
 	ctx, cancel := context.WithCancel(s.ctx)
-	p := &probe{cancel: cancel, done: make(chan struct{})}
+	p := &probe{cancel: cancel, done: make(chan struct{}), recovered: make(chan struct{})}
 	go func() {
 		defer close(p.done)
+		signalled := false
 		for {
 			actx, acancel := context.WithTimeout(ctx, time.Second)
 			conn, err := pgx.Connect(actx, s.dsn)
@@ -502,6 +504,10 @@ func (s *stack) startProbe() *probe {
 			case p.w.Recovered.IsZero():
 				p.w.Recovered = now
 			}
+			if !p.w.Recovered.IsZero() && !signalled {
+				signalled = true
+				close(p.recovered)
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -512,7 +518,15 @@ func (s *stack) startProbe() *probe {
 	return p
 }
 
+// stop ends the probe. A probe that saw the outage is given a few seconds to
+// take its first successful sample first, since the suite's own pool can
+// reconnect before the probe's next tick; one that saw nothing waits the same.
 func (p *probe) stop() probeWindow {
+	select {
+	case <-p.recovered:
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+	}
 	p.cancel()
 	<-p.done
 	return p.w
