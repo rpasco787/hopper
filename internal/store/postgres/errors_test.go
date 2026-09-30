@@ -31,6 +31,15 @@ func TestUnavailableClassifiesConnectionFailures(t *testing.T) {
 	cfg.AfterConnect = func(context.Context, *pgconn.PgConn) error { return errors.New("after connect failed") }
 	_, afterConnectErr := pgconn.ConnectConfig(context.Background(), cfg)
 	require.Error(t, afterConnectErr)
+	timeoutCfg, err := pgconn.ParseConfig(dsn)
+	require.NoError(t, err)
+	timeoutCfg.ConnectTimeout = 10 * time.Millisecond
+	timeoutCfg.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	_, connectTimeoutErr := pgconn.ConnectConfig(context.Background(), timeoutCfg)
+	require.Error(t, connectTimeoutErr)
 
 	for _, tc := range []struct {
 		name string
@@ -39,6 +48,7 @@ func TestUnavailableClassifiesConnectionFailures(t *testing.T) {
 	}{
 		{"connection refused", connectErr, true},
 		{"connection setup failed", afterConnectErr, true},
+		{"connection timeout with live caller", connectTimeoutErr, true},
 		{"session terminated by an administrator", &pgconn.PgError{Code: "57P01"}, true},
 		{"server crashing", &pgconn.PgError{Code: "57P02"}, true},
 		{"server starting up", &pgconn.PgError{Code: "57P03"}, true},

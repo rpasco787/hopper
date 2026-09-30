@@ -41,12 +41,15 @@ func wrap(op string, err error) error {
 // invalid input, a serialization failure — is the database answering, and
 // stays an internal error.
 func unavailable(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil {
 		return false
 	}
 	var connect *pgconn.ConnectError
 	if errors.As(err, &connect) {
 		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

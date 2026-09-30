@@ -28,9 +28,15 @@ type outageDB struct {
 	pool *pgxpool.Pool // the broker's pool; its sessions are named hopper-outage
 }
 
+func outageContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
 func newOutageDB(t *testing.T) *outageDB {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := outageContext(t)
+	defer cancel()
 	db := &outageDB{name: "hopper_outage"}
 	_, err := pool.Exec(ctx, "drop database if exists "+db.name+" with (force)")
 	require.NoError(t, err)
@@ -42,10 +48,17 @@ func newOutageDB(t *testing.T) *outageDB {
 	db.pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
+		restoreCtx, restoreCancel := outageContext(t)
+		if _, err := pool.Exec(restoreCtx, "alter database "+db.name+" allow_connections true"); err != nil {
+			t.Errorf("restore %s during cleanup: %v", db.name, err)
+		}
+		restoreCancel()
 		db.pool.Close()
-		// Runs even when the test failed mid-outage.
-		_, _ = pool.Exec(context.Background(), "alter database "+db.name+" allow_connections true")
-		_, _ = pool.Exec(context.Background(), "drop database if exists "+db.name+" with (force)")
+		dropCtx, dropCancel := outageContext(t)
+		defer dropCancel()
+		if _, err := pool.Exec(dropCtx, "drop database if exists "+db.name+" with (force)"); err != nil {
+			t.Errorf("drop %s during cleanup: %v", db.name, err)
+		}
 	})
 	require.NoError(t, postgres.Migrate(ctx, db.pool))
 	return db
@@ -55,7 +68,8 @@ func newOutageDB(t *testing.T) *outageDB {
 // connections are refused and every open one is terminated.
 func (db *outageDB) refuse(t *testing.T) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := outageContext(t)
+	defer cancel()
 	_, err := pool.Exec(ctx, "alter database "+db.name+" allow_connections false")
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, "select pg_terminate_backend(pid, 5000) from pg_stat_activity where datname = $1", db.name)
@@ -64,7 +78,9 @@ func (db *outageDB) refuse(t *testing.T) {
 
 func (db *outageDB) restore(t *testing.T) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(), "alter database "+db.name+" allow_connections true")
+	ctx, cancel := outageContext(t)
+	defer cancel()
+	_, err := pool.Exec(ctx, "alter database "+db.name+" allow_connections true")
 	require.NoError(t, err)
 }
 
@@ -98,10 +114,14 @@ func (h *gatedHandler) handle(ctx context.Context, _ workersdk.Job) error {
 func completedOnce(t *testing.T, st store.Store, id uuid.UUID, h *gatedHandler) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		row, err := st.GetJob(context.Background(), id)
+		ctx, cancel := outageContext(t)
+		defer cancel()
+		row, err := st.GetJob(ctx, id)
 		return err == nil && row.State == store.StateCompleted
 	}, 20*time.Second, 50*time.Millisecond, "the job never completed")
-	row, err := st.GetJob(context.Background(), id)
+	ctx, cancel := outageContext(t)
+	defer cancel()
+	row, err := st.GetJob(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), row.Attempts, "the job was redelivered")
 	require.Equal(t, int32(1), h.runs.Load(), "the handler started more than once")
