@@ -80,7 +80,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 		// new row rather than a retry of an id the first pass already used.
 		id, err := uuid.NewV7()
 		if err != nil {
-			return store.Job{}, false, fmt.Errorf("store: enqueue: generate id: %w", err)
+			return store.Job{}, false, wrap("enqueue: generate id", err)
 		}
 
 		// The ::timestamptz cast on $6 is needed because Postgres cannot infer
@@ -98,7 +98,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 			id, p.Queue, payload, p.Priority, maxAttempts, runAt, p.IdempotencyKey,
 		)
 		if err != nil {
-			return store.Job{}, false, fmt.Errorf("store: enqueue: %w", err)
+			return store.Job{}, false, wrap("enqueue", err)
 		}
 		job, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
 		switch {
@@ -106,7 +106,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 			s.obs.Enqueued(job.Queue)
 			return job, true, nil
 		case !errors.Is(err, pgx.ErrNoRows):
-			return store.Job{}, false, fmt.Errorf("store: enqueue: %w", err)
+			return store.Job{}, false, wrap("enqueue", err)
 		}
 
 		// Zero rows means DO NOTHING fired, so a row with this (queue, key) is
@@ -115,14 +115,14 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 			`select `+jobColumns+` from jobs where queue = $1 and idempotency_key = $2`,
 			p.Queue, p.IdempotencyKey)
 		if err != nil {
-			return store.Job{}, false, fmt.Errorf("store: enqueue: lookup: %w", err)
+			return store.Job{}, false, wrap("enqueue: lookup", err)
 		}
 		existing, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
 		switch {
 		case err == nil:
 			return existing, false, nil
 		case !errors.Is(err, pgx.ErrNoRows):
-			return store.Job{}, false, fmt.Errorf("store: enqueue: lookup: %w", err)
+			return store.Job{}, false, wrap("enqueue: lookup", err)
 		}
 		// Deleted under us. Go round again.
 	}

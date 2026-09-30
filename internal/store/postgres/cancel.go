@@ -36,14 +36,14 @@ func (s *Store) Cancel(ctx context.Context, id uuid.UUID) (store.Job, error) {
 		returning `+jobColumns,
 		id)
 	if err != nil {
-		return store.Job{}, fmt.Errorf("store: cancel: %w", err)
+		return store.Job{}, wrap("cancel", err)
 	}
 	job, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
 	switch {
 	case err == nil:
 		return job, nil
 	case !errors.Is(err, pgx.ErrNoRows):
-		return store.Job{}, fmt.Errorf("store: cancel: %w", err)
+		return store.Job{}, wrap("cancel", err)
 	}
 
 	var state store.State
@@ -52,7 +52,7 @@ func (s *Store) Cancel(ctx context.Context, id uuid.UUID) (store.Job, error) {
 	case errors.Is(err, pgx.ErrNoRows):
 		return store.Job{}, store.ErrNotFound
 	case err != nil:
-		return store.Job{}, fmt.Errorf("store: cancel: classify: %w", err)
+		return store.Job{}, wrap("cancel: classify", err)
 	}
 	if !store.Terminal(state) {
 		return store.Job{}, fmt.Errorf("store: cancel: job %s changed state concurrently (now %s); retry", id, state)

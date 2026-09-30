@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
@@ -61,11 +60,11 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 		queues, n, workerID, leaseDur,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: lease: %w", err)
+		return nil, wrap("lease", err)
 	}
 	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.Job])
 	if err != nil {
-		return nil, fmt.Errorf("store: lease: %w", err)
+		return nil, wrap("lease", err)
 	}
 
 	// UPDATE ... RETURNING emits rows in whatever order the executor touched

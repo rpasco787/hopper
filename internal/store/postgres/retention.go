@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -37,7 +36,7 @@ func (s *Store) DeleteFinished(ctx context.Context, cutoff time.Time, limit int)
 		delete from jobs j using old where j.id = old.id`,
 		cutoff, limit)
 	if err != nil {
-		return 0, fmt.Errorf("store: delete finished: %w", err)
+		return 0, wrap("delete finished", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

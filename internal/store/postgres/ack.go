@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,7 +41,7 @@ func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
 	case errors.Is(err, pgx.ErrNoRows):
 		return s.classifyMiss(ctx, id, leaseID, store.StateCompleted)
 	case err != nil:
-		return fmt.Errorf("store: ack: %w", err)
+		return wrap("ack", err)
 	}
 	var la time.Time
 	if leasedAt != nil {
@@ -79,7 +78,7 @@ func (s *Store) classifyMiss(ctx context.Context, id, leaseID uuid.UUID, done ..
 	case errors.Is(err, pgx.ErrNoRows):
 		return store.ErrNotFound
 	case err != nil:
-		return fmt.Errorf("store: classify miss: %w", err)
+		return wrap("classify miss", err)
 	}
 
 	sameLease := curLease != nil && *curLease == leaseID

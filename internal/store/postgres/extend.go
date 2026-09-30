@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +27,7 @@ func (s *Store) ExtendLease(ctx context.Context, id, leaseID uuid.UUID, dur time
 		where id = $1 and lease_id = $2 and state = 'leased'`,
 		id, leaseID, dur)
 	if err != nil {
-		return fmt.Errorf("store: extend lease: %w", err)
+		return wrap("extend lease", err)
 	}
 	if tag.RowsAffected() == 1 {
 		return nil

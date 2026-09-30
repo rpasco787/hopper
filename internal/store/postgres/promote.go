@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 )
 
 // PromoteDue is the promoter's statement from docs/semantics.md §4.
@@ -41,7 +40,7 @@ func (s *Store) PromoteDue(ctx context.Context, limit int) (int, error) {
 		where j.id = due.id`,
 		limit)
 	if err != nil {
-		return 0, fmt.Errorf("store: promote due: %w", err)
+		return 0, wrap("promote due", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

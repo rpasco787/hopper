@@ -32,7 +32,7 @@ import (
 func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("store: nack: begin: %w", err)
+		return wrap("nack: begin", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit has succeeded
 
@@ -55,15 +55,15 @@ func (s *Store) Nack(ctx context.Context, id, leaseID uuid.UUID, errMsg string) 
 		_ = tx.Rollback(ctx)
 		return s.classifyMiss(ctx, id, leaseID, store.StateScheduled, store.StateDead)
 	case err != nil:
-		return fmt.Errorf("store: nack: select: %w", err)
+		return wrap("nack: select", err)
 	}
 
 	dead, err := s.failLeased(ctx, tx, id, attempts, maxAttempts, errMsg)
 	if err != nil {
-		return fmt.Errorf("store: nack: %w", err)
+		return wrap("nack", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("store: nack: commit: %w", err)
+		return wrap("nack: commit", err)
 	}
 	s.obs.Nacked(queue, dead)
 	return nil

@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,11 +59,11 @@ func (s *Store) UpsertSchedule(ctx context.Context, spec store.CronScheduleSpec)
 		spec.Priority, maxAttempts, spec.NextRunAt,
 	)
 	if err != nil {
-		return store.CronSchedule{}, fmt.Errorf("store: upsert schedule: %w", err)
+		return store.CronSchedule{}, wrap("upsert schedule", err)
 	}
 	cs, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.CronSchedule])
 	if err != nil {
-		return store.CronSchedule{}, fmt.Errorf("store: upsert schedule: %w", err)
+		return store.CronSchedule{}, wrap("upsert schedule", err)
 	}
 	return cs, nil
 }
@@ -90,11 +89,11 @@ func (s *Store) DueSchedules(ctx context.Context, limit int) ([]store.CronSchedu
 		limit $1`,
 		limit)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("store: due schedules: %w", err)
+		return nil, time.Time{}, wrap("due schedules", err)
 	}
 	due, err := pgx.CollectRows(rows, pgx.RowToStructByName[dueRow])
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("store: due schedules: %w", err)
+		return nil, time.Time{}, wrap("due schedules", err)
 	}
 	if len(due) == 0 {
 		return nil, time.Time{}, nil
@@ -118,7 +117,7 @@ func (s *Store) AdvanceSchedule(ctx context.Context, name string, from, to time.
 		where name = $1 and next_run_at = $2`,
 		name, from, to)
 	if err != nil {
-		return false, fmt.Errorf("store: advance schedule: %w", err)
+		return false, wrap("advance schedule", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
@@ -127,11 +126,11 @@ func (s *Store) AdvanceSchedule(ctx context.Context, name string, from, to time.
 func (s *Store) ListSchedules(ctx context.Context) ([]store.CronSchedule, error) {
 	rows, err := s.pool.Query(ctx, `select `+cronColumns+` from cron_schedules order by name`)
 	if err != nil {
-		return nil, fmt.Errorf("store: list schedules: %w", err)
+		return nil, wrap("list schedules", err)
 	}
 	got, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.CronSchedule])
 	if err != nil {
-		return nil, fmt.Errorf("store: list schedules: %w", err)
+		return nil, wrap("list schedules", err)
 	}
 	return got, nil
 }
@@ -143,7 +142,7 @@ func (s *Store) ListSchedules(ctx context.Context) ([]store.CronSchedule, error)
 func (s *Store) Now(ctx context.Context) (time.Time, error) {
 	var now time.Time
 	if err := s.pool.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
-		return time.Time{}, fmt.Errorf("store: now: %w", err)
+		return time.Time{}, wrap("now", err)
 	}
 	return now, nil
 }
@@ -158,7 +157,7 @@ func (s *Store) DeleteSchedulesExcept(ctx context.Context, keep []string) (int, 
 	}
 	tag, err := s.pool.Exec(ctx, `delete from cron_schedules where not (name = any($1))`, keep)
 	if err != nil {
-		return 0, fmt.Errorf("store: delete schedules except: %w", err)
+		return 0, wrap("delete schedules except", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

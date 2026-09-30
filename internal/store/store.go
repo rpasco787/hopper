@@ -58,6 +58,15 @@ var (
 	ErrTerminal error = errors.New("store: job already terminal")
 )
 
+// ErrUnavailable marks a failure to reach the database, as opposed to the
+// database refusing the call: no connection could be made, or the one in use
+// was lost. Any Store method can return it, wrapped with the driver's error.
+// The call may or may not have taken effect, so it is safe to retry only where
+// a retry is idempotent: Ack, Nack and ExtendLease under their lease token,
+// Enqueue with an idempotency key. The broker reports it as UNAVAILABLE
+// (docs/semantics.md §5).
+var ErrUnavailable = errors.New("store: database unavailable")
+
 // Terminal reports whether s is a state that no automatic process ever leaves.
 // Dead is terminal in this sense even though Redrive can move it, because
 // Redrive is an operator action, not part of the job lifecycle.

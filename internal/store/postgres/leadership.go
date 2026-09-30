@@ -40,14 +40,14 @@ func discard(conn *pgxpool.Conn) {
 func (s *Store) TryLeadership(ctx context.Context) (store.Leadership, error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store: leadership: acquire connection: %w", err)
+		return nil, wrap("leadership: acquire connection", err)
 	}
 	var won bool
 	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, schedulerLockKey).Scan(&won); err != nil {
 		// The server may have taken the lock even though we failed to read
 		// the answer, so this session cannot go back in the pool.
 		discard(conn)
-		return nil, fmt.Errorf("store: leadership: %w", err)
+		return nil, wrap("leadership", err)
 	}
 	if !won {
 		conn.Release() // no lock was taken; the session is clean
@@ -80,7 +80,7 @@ func (l *leadership) Check(ctx context.Context) error {
 	}
 	var one int
 	if err := l.conn.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
-		return fmt.Errorf("store: leadership check: %w", err)
+		return wrap("leadership check", err)
 	}
 	return nil
 }
@@ -103,7 +103,7 @@ func (l *leadership) Release(ctx context.Context) error {
 	switch {
 	case err != nil:
 		discard(l.conn)
-		return fmt.Errorf("store: leadership release: %w", err)
+		return wrap("leadership release", err)
 	case !unlocked:
 		// This session did not hold the lock, which should be impossible;
 		// destroy it rather than trust its state any further.

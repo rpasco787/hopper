@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -27,11 +26,11 @@ func (s *Store) QueueDepths(ctx context.Context) ([]store.QueueDepth, error) {
 		union all
 		select queue, 'dead', count(*) from jobs where state = 'dead' group by queue`)
 	if err != nil {
-		return nil, fmt.Errorf("store: queue depths: %w", err)
+		return nil, wrap("queue depths", err)
 	}
 	depths, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.QueueDepth])
 	if err != nil {
-		return nil, fmt.Errorf("store: queue depths: %w", err)
+		return nil, wrap("queue depths", err)
 	}
 	return depths, nil
 }

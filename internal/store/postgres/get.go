@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -22,14 +21,14 @@ func (s *Store) GetJob(ctx context.Context, id uuid.UUID) (store.Job, error) {
 	rows, err := s.pool.Query(ctx,
 		`select `+jobColumns+` from jobs where id = $1`, id)
 	if err != nil {
-		return store.Job{}, fmt.Errorf("store: get job: %w", err)
+		return store.Job{}, wrap("get job", err)
 	}
 	job, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[store.Job])
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return store.Job{}, store.ErrNotFound
 	case err != nil:
-		return store.Job{}, fmt.Errorf("store: get job: %w", err)
+		return store.Job{}, wrap("get job", err)
 	}
 	return job, nil
 }

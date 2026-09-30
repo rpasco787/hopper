@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,11 +43,11 @@ func (s *Store) ListDead(ctx context.Context, queue string, limit int, after *st
 		limit $4`,
 		queue, afterAt, afterID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("store: list dead: %w", err)
+		return nil, wrap("list dead", err)
 	}
 	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.Job])
 	if err != nil {
-		return nil, fmt.Errorf("store: list dead: %w", err)
+		return nil, wrap("list dead", err)
 	}
 	if len(jobs) == 0 {
 		return nil, nil
@@ -73,7 +72,7 @@ func (s *Store) Redrive(ctx context.Context, ids []uuid.UUID) (int, error) {
 		where id = any($1) and state = 'dead'`,
 		ids)
 	if err != nil {
-		return 0, fmt.Errorf("store: redrive: %w", err)
+		return 0, wrap("redrive", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
@@ -91,7 +90,7 @@ func (s *Store) Purge(ctx context.Context, ids []uuid.UUID) (int, error) {
 		delete from jobs where id = any($1) and state = 'dead'`,
 		ids)
 	if err != nil {
-		return 0, fmt.Errorf("store: purge: %w", err)
+		return 0, wrap("purge", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

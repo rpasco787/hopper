@@ -41,7 +41,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("store: reap: begin: %w", err)
+		return 0, wrap("reap: begin", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit has succeeded
 
@@ -53,7 +53,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 		for update skip locked`,
 		limit)
 	if err != nil {
-		return 0, fmt.Errorf("store: reap: select: %w", err)
+		return 0, wrap("reap: select", err)
 	}
 	type expired struct {
 		ID          uuid.UUID
@@ -63,7 +63,7 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 	}
 	batch, err := pgx.CollectRows(rows, pgx.RowToStructByPos[expired])
 	if err != nil {
-		return 0, fmt.Errorf("store: reap: collect: %w", err)
+		return 0, wrap("reap: collect", err)
 	}
 	if len(batch) == 0 {
 		return 0, nil
@@ -77,12 +77,12 @@ func (s *Store) ReapExpiredLeases(ctx context.Context, limit int) (int, error) {
 	for _, e := range batch {
 		dead, err := s.failLeased(ctx, tx, e.ID, e.Attempts, e.MaxAttempts, leaseExpiredError)
 		if err != nil {
-			return 0, fmt.Errorf("store: reap: row %s: %w", e.ID, err)
+			return 0, wrap(fmt.Sprintf("reap: row %s", e.ID), err)
 		}
 		outcomes = append(outcomes, outcome{queue: e.Queue, dead: dead})
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("store: reap: commit: %w", err)
+		return 0, wrap("reap: commit", err)
 	}
 	for _, result := range outcomes {
 		s.obs.LeaseExpired(result.queue, result.dead)

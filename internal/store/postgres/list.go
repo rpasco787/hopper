@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -45,11 +44,11 @@ func (s *Store) ListJobs(ctx context.Context, queue string, states []store.State
 		limit $4`,
 		queue, filter, after, limit)
 	if err != nil {
-		return nil, fmt.Errorf("store: list jobs: %w", err)
+		return nil, wrap("list jobs", err)
 	}
 	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.Job])
 	if err != nil {
-		return nil, fmt.Errorf("store: list jobs: %w", err)
+		return nil, wrap("list jobs", err)
 	}
 	return jobs, nil
 }
