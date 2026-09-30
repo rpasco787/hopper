@@ -5,13 +5,14 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 9 build includes the broker, producer client, worker SDK,
+The current Session 10 build includes the broker, producer client, worker SDK,
 example worker, bulk enqueue and smoke-check CLI, a leader-elected cron
 scheduler inside the broker, Prometheus metrics with a provisioned Grafana
 dashboard, structured job logs that join broker and worker on `lease_id`, a
 local Compose stack, a Helm chart (with rendered plain manifests) that runs on
-a local kind cluster, and KEDA autoscaling of the workers on queue depth.
-Chaos automation, load testing, and image publishing remain later-session
+a local kind cluster, KEDA autoscaling of the workers on queue depth, and a
+chaos suite (`test/chaos`) that kills workers and restarts the broker and
+PostgreSQL mid-run. Load testing and image publishing remain later-session
 work.
 
 ## Quick start
@@ -202,7 +203,7 @@ batch for future attempts if message size was the problem.
 `hopperctl smoke` enqueues one job (default queue `sleep`, payload
 `{"ms":10}`) and polls `GetJob` every `-poll` (250ms) until it completes. It
 exits 0 on `completed`, and nonzero on `dead`, `cancelled`, any error other than
-`UNAVAILABLE` (which it rides out, so a broker restart is tolerated), or no
+`UNAVAILABLE` (which it rides out, so a broker restart or a short database outage is tolerated), or no
 completion within `-timeout` (1m). Each run is a new unkeyed job. It is the
 check behind the Helm chart's `helm test`.
 
@@ -219,10 +220,13 @@ Confirmation retries are deliberately narrow. The SDK retries only transient
 `UNAVAILABLE` and `DEADLINE_EXCEEDED` failures while its conservative local
 lease deadline remains live. Generic `INTERNAL` errors are not retried blindly:
 a database mutation may already have committed, or the failure may be permanent.
-This means Hopper tolerates broker restarts and selected transient transport
-failures, but Session 5 does not promise transparent recovery from every
-PostgreSQL outage. Handlers must remain idempotent because side effects can
-duplicate across the Ack-loss window.
+Brokers answer `UNAVAILABLE` when PostgreSQL cannot be reached, so a worker
+keeps retrying and rides out a database outage that its leases outlast. How
+long that is follows one rule, set by the last successful renewal, in
+[§11.3](docs/semantics.md) with worked examples and their assumptions. With the
+default 30s lease and prompt failures, an outage under 10s is always ridden
+out. [§15](docs/semantics.md) has the runs. Handlers must remain idempotent
+because side effects can duplicate across the Ack-loss window.
 
 For the complete ownership, retry, cancellation, and trust model, see
 [docs/semantics.md](docs/semantics.md).
@@ -441,6 +445,7 @@ helm lint --strict deploy/helm/hopper -f deploy/kind/autoscaling.yaml
 go test -race -count=2 ./...
 docker compose -p hopper-session7 config
 go vet -tags k8s ./test/k8s
+go vet -tags chaos ./test/chaos
 
 # The worker SDK must not depend on Prometheus.
 ! go list -deps ./worker | grep -q prometheus
@@ -451,6 +456,14 @@ docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/p:ro" \
 
 # With the Compose stack up: every dashboard query runs against live Prometheus.
 scripts/check-dashboard-queries.sh
+```
+
+The chaos suite needs Docker and takes about 12 minutes a pass:
+
+```bash
+# Chaos: kill workers, restart the broker and PostgreSQL, storm duplicate
+# enqueues, each against a fresh Compose project hopper-chaos.
+go test -tags chaos -count=1 -timeout 60m -v ./test/chaos
 ```
 
 The integration suite starts PostgreSQL with Testcontainers and therefore needs

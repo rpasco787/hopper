@@ -187,11 +187,21 @@ Over gRPC these become status codes:
 | broker checks reject request | `INVALID_ARGUMENT` | Correct the request. |
 | message or credit limit exceeded | `RESOURCE_EXHAUSTED` | Reduce size/credit; a response failure does not imply rollback. |
 | broker draining | `UNAVAILABLE` | Reconnect with backoff; preserve existing handler capacity. |
+| `ErrUnavailable` (database unreachable or connection lost) | `UNAVAILABLE` | Retry with backoff. The call may have taken effect: `Ack`, `Nack` and `Heartbeat` are idempotent under their lease token, and `Enqueue` is idempotent only with an idempotency key. The worker SDK retries it within the lease. |
 | other store error | `INTERNAL` | Detail is logged. Do not retry blindly: invalid database input is permanent, and mutations may already have committed. |
 
 `ErrCancelled` is deliberately **not** `CANCELLED`: that code means the caller
 cancelled the RPC, and conflating the two would make a job outcome
 indistinguishable from a context deadline to any generic retry interceptor.
+
+Classifying a store failure as `ErrUnavailable` is the store's job, because it
+knows the driver. Any failure to connect counts (refused, DNS, a server that is
+starting up or shutting down, even bad credentials: nothing was sent), as does
+a connection-class or shutdown error from the server (SQLSTATE class `08`,
+`57P01`–`57P03`, `53300`) and a network error or unexpected EOF mid-call. The
+caller's own `context.Canceled` or `DeadlineExceeded` does not count, and
+neither does any other server error (constraints, invalid input,
+serialization). Those stay `INTERNAL` and are not retried.
 
 `Cancel` is idempotent at the gRPC boundary although `Cancel` in the store is
 not: cancelling an already-cancelled job returns OK with `already_cancelled`,
@@ -341,14 +351,69 @@ lease is granted and not acked:
    stop, but a handler that ignores its context keeps going.
 3. **The ack-loss window.** Handler finishes → worker sends `Ack` → the
    broker or Postgres is unavailable before the `UPDATE` commits. The work is
-   done but the store does not know. The SDK retries `Ack`/`Nack` only for the
-   two transient transport codes, ending at the earlier of its conservative
-   local lease deadline and forced shutdown. If it cannot get through, the
-   lease expires and the job is redelivered. A handler's side effects can
-   therefore duplicate after failures even when its own call returned once.
-   There is no way to close this window without a transactional handoff between
-   the handler's side effects and the queue; that is what idempotent handlers
-   are for.
+   done but the store does not know. The SDK retries `Ack`/`Nack` only for
+   `UNAVAILABLE` and `DEADLINE_EXCEEDED`, and a broker answers `UNAVAILABLE`
+   whenever PostgreSQL cannot be reached (§5), so both a broker outage and a
+   database outage are retried. How long a worker can keep retrying follows one
+   rule. For a delivery granted a lease of G (Compose: 30s), with
+   I = G/3 and a safety margin of min(0.5s, G/10):
+
+   - **The local deadline** D is the send time of the last *successful*
+     ownership check or renewal, plus G, less the margin. A failed call never
+     moves it. Once D passes, the worker gives the delivery up, whatever it was
+     doing.
+   - **While the handler runs,** renewals are one interval I apart, counted
+     from when the previous renewal *returned*, not when it was sent. A renewal
+     that fails with `UNAVAILABLE` or `DEADLINE_EXCEEDED` is retried at the next
+     slot, each attempt's deadline being the earlier of I and D. The handler
+     keeps its lease only if some renewal is sent after the outage ends, before
+     D, and succeeds.
+   - **After the handler returns,** the `Ack` or `Nack` is retried with backoff
+     (100ms doubling to a 5s cap, each step ×0.75–1.25) until D. It gets
+     through only if an attempt lands after the outage ends and before D. The
+     time it has is D minus the moment the handler returned: at most G less the
+     margin, and close to nothing when the last renewal failed, because D is
+     still where the last success put it.
+   - **Before the handler starts,** the ownership check is retried with the
+     same backoff until receipt + G − margin. Running out means a redelivery,
+     not a re-execution.
+
+   At G = 30s (I = 10s, D = last success + 29.5s), each row holding only under
+   its assumption:
+
+   | Delivery at the outage | Assumption | Survives an outage shorter than |
+   |---|---|---|
+   | Handler running | every renewal returns within milliseconds, and the last one before the outage succeeded | **I = 10s**: it fails at most one slot, and the next slot, about 20s after the last success, is before D |
+   | Handler running | a failing renewal takes d to return | the next slot moves out by d. If d exceeds about I − 0.5s less the last success's round trip, the next slot falls after D and the lease is lost, even to an outage shorter than I |
+   | Handler returned, short job | its ownership check was its last successful call, moments before | about 29s, less up to one backoff step (≤ 6.25s) before the next attempt |
+   | Handler returned just before its next renewal | the last renewal succeeded; RPCs return within milliseconds | about 19.5s, less up to one backoff step |
+   | Handler returned after a failed renewal | none | whatever is left of D, possibly nothing |
+
+   Two things can make a short outage fatal: a renewal that is slow to fail,
+   and a handler that returns after a failed renewal. The rule is pinned by
+   `worker: TestAFastFailedRenewalCostsOneInterval`,
+   `TestASlowFailedRenewalCanSpendTheLease`,
+   `TestAConfirmationHasOnlyWhatIsLeftOfTheLease` and
+   `TestALateConfirmationStillLandsBeforeTheDeadline`;
+   `integration: TestAckRidesOutADatabaseOutage` and
+   `TestHeartbeatRidesOutADatabaseOutage`; and the chaos runs below (§15).
+
+   Measured on Compose (2026-09-30): PostgreSQL outages after which new
+   sessions failed for between 2.95s and 3.41s, with six three-second handlers
+   returning into the outage, re-executed nothing, by fast shutdown and by
+   SIGKILL with crash recovery (eight runs: the brokers answered 34 to 51 `Ack`
+   calls `UNAVAILABLE` and none `INTERNAL`). A stop of 40s (new sessions failed
+   for between 40.09s and 40.4s), which outlasts any lease, re-executed 12
+   handlers in each of four runs, every one logged by its worker as given up
+   (`job left unconfirmed; its lease ran out…`), and lost no job. Until
+   Session 10 the brokers answered these calls `INTERNAL`, which the SDK never
+   retries, and the same gated outage (new sessions failed for between 3.06s
+   and 3.28s) re-executed 7 handlers after a fast shutdown and 12 after a
+   SIGKILL.
+
+   There is no way to close this window entirely without a transactional
+   handoff between the handler's side effects and the queue; that is what
+   idempotent handlers are for.
 4. **Graceful shutdown deadline exceeded.** On `SIGTERM` the worker stops
    accepting deliveries and drains acquisition, handlers, and confirmation
    under one SDK deadline. That deadline must fit inside the deployment's
@@ -391,7 +456,8 @@ deduplicate their own effects with `Job.ID` or another stable business ID.
 
 What is **not** a source of duplicates: two workers receiving the same lease
 (prevented by `SKIP LOCKED`), a broker restart (brokers are stateless; workers
-reconnect and their leases keep ticking), or a scheduler failover (cron uses
+reconnect and their leases keep ticking) *(verified by SIGTERM and by SIGKILL, §15)*, a PostgreSQL outage that every
+in-flight delivery's lease outlasts, by the rule in item 3, or a scheduler failover (cron uses
 idempotency keys and a guarded advance; §13 lists the two configuration and
 retention windows in which a tick can still fire twice). Nor is a `kubectl
 rollout restart` of workers, as long as the shutdown budget holds (item 4 and
@@ -403,6 +469,9 @@ as a rollout does, so the worker drains (item 4). In the verified scale cycle
 scale-down found every worker idle and nothing was redelivered, because the 60s
 stabilization window outlasts the drain's tail (§14, §15). A scale-down that
 does catch a busy worker can still redeliver a delivery in flight (item 5).
+
+A worker killed with SIGKILL is item 1: its interrupted handlers run again, each
+under a new lease, and `attempts` accounts for every one (§15).
 
 ## 12. Non-goals
 
@@ -456,7 +525,8 @@ does catch a busy worker can still redeliver a delivery in flight (item 5).
   database outage every broker would go unready and workers would see
   connection-refused instead of a broker that can say `UNAVAILABLE`. Liveness
   never depends on the database, which would turn an outage into a restart
-  storm.
+  storm. Brokers do answer `UNAVAILABLE` during a database outage (§5), so a
+  worker rides it out within its lease (§11.3).
 - **Request-level gRPC load balancing.** The broker Service balances per
   connection, and each worker holds one long-lived connection, so after a
   broker restart workers can stay concentrated on the surviving broker.
@@ -815,7 +885,8 @@ scopes:
 
 A rejected `EnqueueBatch` entry has no job. It logs `enqueue batch rejected`
 with its `index`, and belongs to neither scope. `rpc failed` is an internal
-error, logged at error level. Every other rejection, such as a stale-lease
+error, logged at error level. `rpc unavailable` (warn) is a store call that could not reach the
+database; the caller got `UNAVAILABLE`, and `err` has the driver's detail. Every other rejection, such as a stale-lease
 Ack, is `rpc rejected` at debug level with its `code`. The broker's
 per-delivery lines (`job enqueued`, `job leased`, `job acked`, `job nacked`)
 are also at debug level, so they cost nothing by default and make the two logs
@@ -997,3 +1068,16 @@ not in this table.
 | The scaler's query counts each job once across brokers, ignores a stale broker, another release, leased jobs and unserved queues, and is empty, not 0, when every broker is stale | `promtool test rules deploy/prometheus/queries_test.yml` (3 groups, `prom/prometheus:v3.14.0`); `chart: TestPromtoolTestsTheRenderedQuery` | 2 and 3 (2026-09-27) | pass: 400, 0 and empty. The spec's unscoped query fails two groups, reading 6,099 instead of 400 and 999 instead of empty |
 | A scale cycle on kind: 20,000 × 2 s `sleep` jobs take the workers 1 → 20 → 1; every job's handler started once and every job completed on its first lease; every removed worker stopped cleanly | `k8s: TestAutoscalingRedeliversNothing` (KEDA 2.20.2, kube-prometheus-stack 91.7.0, cluster rebuilt from nothing; run `s9-1790489039308325000`) | 1 (2026-09-27) | pass: 20,000/20,000 completed, 0 duplicate starts; 20 running at +40 s (1 → 5 → 10 → 20); drained at +4m40s, about 78 jobs/s at 20 workers; the first worker removed 38 s after the available depth read 0; back to 1 at +5m46s; 19 removed, each `running_handlers=0` with a clean stop; 0 redelivered jobs, 0 redeliveries (0 unstarted nacks, 0 unexplained); cluster memory peaked at 2.63 GiB of 3.83 GiB, no evictions |
 | When the database refuses every broker, depth becomes unknown (not 0), KEDA reports the fallback and holds idle workers at 4; allowed again, they return to 1 and a job completes | `k8s: TestUnknownDepthHoldsTheFallback` (`ALTER DATABASE hopper ALLOW_CONNECTIONS false` + `pg_terminate_backend`) | 1 (2026-09-27) | pass: depth unknown after 12 s, with both brokers alive, unrestarted and frozen (logging `queue depth sample failed … not currently accepting connections`); the fallback held 4 workers after 50 s; allowed again, both brokers fresh after 14 s and back to 1 idle worker after 1m4s; `datallowconn` restored |
+| Accounting tells a repeat a nack, the worker's own loss record or an earlier kill explains from one nothing explains, and catches a lease with two handlers, more leases than attempts, an acked lease followed by another, and a kill that came after the job ran again | `accounting: TestAKillExplainsARepeat` and the rest of the per-lease tests (`-race`) | 3 (`-count=3`, 2026-09-30) | pass |
+| Connection-class failures are marked unavailable, rejected statements are not, and every store error goes through the classifier; a terminated session's call does not take effect and its retry succeeds | `postgres: TestUnavailableClassifiesConnectionFailures`, `TestEveryStoreErrorGoesThroughWrap`, `TestADroppedConnectionIsUnavailable`, `TestARejectedStatementIsNotUnavailable` (`-race`) | 5 (`-count=5`, 2026-09-30) | pass |
+| A broker answers an unreachable database `UNAVAILABLE` and logs it at warn | `broker: TestToStatus`, `TestFailureLogsCarryJobAndLease` (`-race`) | 3 (`-count=3`, 2026-09-30) | pass |
+| An Ack and a renewal that meet a database outage are retried and the job completes on its first lease, its handler never cancelled | `integration: TestAckRidesOutADatabaseOutage`, `TestHeartbeatRidesOutADatabaseOutage` (`-race`) | 5 (`-count=5`, 2026-09-30) | pass |
+| The local-deadline rule: a renewal that fails at once costs one interval, one slow to fail can spend the lease, and a confirmation has only what the last successful call left it | `worker: TestAFastFailedRenewalCostsOneInterval`, `TestASlowFailedRenewalCanSpendTheLease`, `TestAConfirmationHasOnlyWhatIsLeftOfTheLease`, `TestALateConfirmationStillLandsBeforeTheDeadline` (`-race`) | 3 (`-count=3`, 2026-09-30) | pass |
+| An undisturbed Compose run completes every job on its first lease | `chaos: TestUndisturbedRunIsClean` (1,000 jobs) | 3 (2026-09-30) | pass: 1,000 completed, 0 repeated |
+| Workers killed with SIGKILL mid-run lose no job, and every repeated handler start is one a kill interrupted before the job ran again | `chaos: TestKilledWorkersLoseNothing` (10,000 × 100 ms) | 3 (2026-09-30) | pass: 10 kills each; 39, 33 and 40 handlers interrupted; every repeat caused by a kill; 0, 7 and 0 redeliveries never received; 138–140 s |
+| A broker restarted by SIGTERM or SIGKILL mid-run loses no job and starts no handler twice; every worker reconnects and handlers running through it are confirmed | `chaos: TestBrokerRestartLosesNothing/graceful`, `/crash` (3,000 jobs) | 3 each (2026-09-30) | pass: 3,000 completed, 0 repeated starts, 35–36 s each |
+| **Before the fix,** a PostgreSQL outage re-executed handlers: brokers answered the gated Acks `INTERNAL` and workers gave them up | `chaos: TestPostgresRestartLosesNoAck` at `5d0a3bf` (the store change without the broker's) | 1 per subtest (2026-09-30) | fails as measured: new sessions failed for between 3.06s and 3.27s, 7 handlers started twice (graceful); between 3.07s and 3.28s, 12 (SIGKILL); Acks answered `INTERNAL` (7 and 12), every repeat `lost` |
+| A PostgreSQL outage (fast shutdown, or SIGKILL and crash recovery) that every delivery's lease outlasts loses no ack and starts no handler twice; brokers never restart, every gated Ack met it and was answered `UNAVAILABLE`, and nothing was answered `INTERNAL` | `chaos: TestPostgresRestartLosesNoAck/graceful`, `/crash` (3,000 jobs + 6 gated 3 s jobs) | 4 each (2026-09-30) | pass: new sessions failed for between 2.95s and 3.41s; brokers logged store failures for 3.06–3.15s; 34–51 Acks answered `UNAVAILABLE`; 0 repeated starts |
+| An outage longer than the lease re-executes handlers, each one its worker logged giving up, and loses no job | `chaos: TestAnOutageLongerThanTheLeaseReexecutes` (40 s) | 4 (2026-09-30) | pass: new sessions failed for between 40.09s and 40.4s; 12 handlers repeated, all `lost` (`its lease ran out`), the six gated jobs among them |
+| Sixteen retrying producers through a broker crash and a PostgreSQL restart, with new keys arriving throughout, get exactly one row per key counted in SQL, and every answer names it | `chaos: TestEnqueueStormDeduplicates` | 4 (2026-09-30) | pass: about 1,000 keys and rows each; 16,399–17,168 calls, 142–179 retried; 6–14 keys in doubt; fails when retries use fresh keys |
+| The chaos suite passes three times in a row | `go test -tags chaos -count=3 ./test/chaos` | 1 invocation (2026-09-30) | pass: 1,206 s |
