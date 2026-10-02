@@ -75,10 +75,11 @@ const MaxMetricsQueues = 100
 // DefaultDBMaxConns sizes each broker's PostgreSQL pool. pgxpool's own default
 // is the machine's CPU count (8 on the benchmark host), which starved a broker
 // serving 64 worker slots: every lease, heartbeat and ack queued for a
-// connection. 32 was the knee of the measured curve (docs/BENCHMARKS.md).
+// connection. 16 was the smallest size within 5% of the best measured drain
+// on both topologies (docs/BENCHMARKS.md).
 // Brokers times this must fit the server's max_connections, which is 100 by
-// default; two brokers use at most 64.
-const DefaultDBMaxConns = 32
+// default; two brokers use at most 32.
+const DefaultDBMaxConns = 16
 
 // minDBMaxConns is the smallest pool that still leaves a connection for
 // queries once the connections held for a whole term are taken: the scheduler
