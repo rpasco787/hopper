@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
 	"sync"
@@ -294,5 +295,133 @@ func TestPageLimitStaysUnderTheMessageCeiling(t *testing.T) {
 	require.GreaterOrEqual(t, pageLimit(maxPayloadBytes), int32(1))
 	for _, p := range []int{0, 1000, 4096, 65536, maxPayloadBytes} {
 		require.LessOrEqual(t, int(pageLimit(p))*(p+600), 3<<20, "payload %d", p)
+	}
+}
+
+// An interrupted run cannot be quoted as a completed offered load.
+func TestCanceledRunFailsWithoutWaiting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	err := runWithContext(ctx, []string{"-n", "5", "-wait=false", "-json"}, &stdout, &stderr, dialFake(&fakeBroker{}))
+	require.ErrorContains(t, err, "context canceled")
+	var rep Report
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &rep))
+	require.True(t, rep.Failed())
+	require.Positive(t, rep.Errors)
+}
+
+// A successful RPC must confirm exactly the submitted jobs, each with an ID.
+type responseBroker struct {
+	*fakeBroker
+	singleResponse *hopperv1.EnqueueResponse
+	batchResponse  *hopperv1.EnqueueBatchResponse
+}
+
+func (b *responseBroker) Enqueue(context.Context, *hopperv1.EnqueueRequest, ...grpc.CallOption) (*hopperv1.EnqueueResponse, error) {
+	return b.singleResponse, nil
+}
+func (b *responseBroker) EnqueueBatch(context.Context, *hopperv1.EnqueueBatchRequest, ...grpc.CallOption) (*hopperv1.EnqueueBatchResponse, error) {
+	return b.batchResponse, nil
+}
+
+func TestCallRejectsIncompleteOrDuplicateConfirmations(t *testing.T) {
+	job := func(id string) *hopperv1.EnqueueResponse {
+		return &hopperv1.EnqueueResponse{Job: &hopperv1.Job{Id: id}}
+	}
+	for _, tc := range []struct {
+		name   string
+		batch  int
+		broker *responseBroker
+	}{
+		{"nil single", 1, &responseBroker{}},
+		{"missing single id", 1, &responseBroker{singleResponse: job("")}},
+		{"nil batch", 2, &responseBroker{}},
+		{"short batch", 2, &responseBroker{batchResponse: &hopperv1.EnqueueBatchResponse{Results: []*hopperv1.EnqueueResponse{job("a")}}}},
+		{"empty batch id", 2, &responseBroker{batchResponse: &hopperv1.EnqueueBatchResponse{Results: []*hopperv1.EnqueueResponse{job("a"), job("")}}}},
+		{"duplicate batch id", 2, &responseBroker{batchResponse: &hopperv1.EnqueueBatchResponse{Results: []*hopperv1.EnqueueResponse{job("a"), job("a")}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := call(context.Background(), config{batch: tc.batch, rpcTimeout: time.Second}, tc.broker, payload(0, 0), 0, 0, tc.batch)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestProduceRejectsAnIDConfirmedBySeparateCalls(t *testing.T) {
+	b := &responseBroker{singleResponse: &hopperv1.EnqueueResponse{Job: &hopperv1.Job{Id: "same"}}}
+	rep := &Report{}
+	produce(context.Background(), config{n: 2, producers: 1, batch: 1, rpcTimeout: time.Second}, []api{b}, rep)
+	require.True(t, rep.Failed())
+	require.ErrorContains(t, fmt.Errorf("%s", rep.FirstError), "duplicate")
+}
+
+// Duplicate own-job rows must not stand in for a missing confirmed job.
+type readbackBroker struct {
+	*fakeBroker
+	pages [][]*hopperv1.Job
+}
+
+func (b *readbackBroker) ListJobs(_ context.Context, req *hopperv1.ListJobsRequest, _ ...grpc.CallOption) (*hopperv1.ListJobsResponse, error) {
+	if len(req.GetStates()) != 0 {
+		return &hopperv1.ListJobsResponse{}, nil
+	}
+	page := 0
+	if req.GetPageToken() != "" {
+		page, _ = strconv.Atoi(req.GetPageToken())
+	}
+	resp := &hopperv1.ListJobsResponse{Jobs: b.pages[page]}
+	if page+1 < len(b.pages) {
+		resp.NextPageToken = strconv.Itoa(page + 1)
+	}
+	return resp, nil
+}
+
+func completedJob(id string) *hopperv1.Job {
+	return &hopperv1.Job{Id: id, State: hopperv1.JobState_JOB_STATE_COMPLETED,
+		CreatedAt:  timestamppb.New(time.Unix(100, 0)),
+		LeasedAt:   timestamppb.New(time.Unix(100, 10_000_000)),
+		FinishedAt: timestamppb.New(time.Unix(100, 30_000_000))}
+}
+
+func TestAwaitRejectsDuplicateOwnJobRowsAcrossPages(t *testing.T) {
+	b := &readbackBroker{pages: [][]*hopperv1.Job{{completedJob("a")}, {completedJob("a")}}}
+	err := await(context.Background(), config{drainTimeout: time.Second, rpcTimeout: time.Second}, b,
+		map[string]struct{}{"a": {}, "b": {}}, &Report{})
+	require.ErrorContains(t, err, "duplicate")
+}
+
+func TestAwaitRejectsUnusableCompletedTimestamps(t *testing.T) {
+	for _, field := range []string{"created", "leased", "finished"} {
+		for _, invalid := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/invalid=%v", field, invalid), func(t *testing.T) {
+				j := completedJob("a")
+				var ts *timestamppb.Timestamp
+				if invalid {
+					ts = &timestamppb.Timestamp{Seconds: 253402300800}
+				}
+				switch field {
+				case "created":
+					j.CreatedAt = ts
+				case "leased":
+					j.LeasedAt = ts
+				case "finished":
+					j.FinishedAt = ts
+				}
+				b := &readbackBroker{pages: [][]*hopperv1.Job{{j}}}
+				err := await(context.Background(), config{drainTimeout: time.Second, rpcTimeout: time.Second}, b,
+					map[string]struct{}{"a": {}}, &Report{})
+				require.ErrorContains(t, err, "timestamp")
+			})
+		}
+	}
+}
+
+func TestConfigRejectsRatesThatCannotBePaced(t *testing.T) {
+	for _, rate := range []string{"NaN", "+Inf", "-Inf", "1e30", "1e-30"} {
+		t.Run(rate, func(t *testing.T) {
+			_, err := parseConfig([]string{"-n", "1", "-rate", rate})
+			require.ErrorContains(t, err, "rate")
+		})
 	}
 }

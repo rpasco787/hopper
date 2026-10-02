@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	hopperv1 "github.com/rpasco787/hopper/gen/hopper/v1"
 )
@@ -48,7 +49,7 @@ func await(ctx context.Context, cfg config, c api, ids map[string]struct{}, rep 
 
 	var pickup, e2e []time.Duration
 	var first, last time.Time
-	found := 0
+	seen := make(map[string]struct{}, len(ids))
 	req := &hopperv1.ListJobsRequest{Queue: cfg.queue, Limit: pageLimit(cfg.payloadBytes)}
 	for {
 		resp, err := listPage(ctx, cfg, c, req)
@@ -59,13 +60,21 @@ func await(ctx context.Context, cfg config, c api, ids map[string]struct{}, rep 
 			if _, ours := ids[j.GetId()]; !ours {
 				continue
 			}
-			found++
+			if _, duplicate := seen[j.GetId()]; duplicate {
+				return fmt.Errorf("reading back duplicate job ID %q", j.GetId())
+			}
+			seen[j.GetId()] = struct{}{}
 			if j.GetAttempts() > 1 {
 				rep.Retried++
 			}
 			if j.GetState() != hopperv1.JobState_JOB_STATE_COMPLETED {
 				rep.Unfinished++
 				continue
+			}
+			for _, ts := range []*timestamppb.Timestamp{j.GetCreatedAt(), j.GetLeasedAt(), j.GetFinishedAt()} {
+				if err := ts.CheckValid(); err != nil {
+					return fmt.Errorf("job %q has an invalid measurement timestamp: %w", j.GetId(), err)
+				}
 			}
 			rep.Finished++
 			created, leased, finished := j.GetCreatedAt().AsTime(), j.GetLeasedAt().AsTime(), j.GetFinishedAt().AsTime()
@@ -84,7 +93,7 @@ func await(ctx context.Context, cfg config, c api, ids map[string]struct{}, rep 
 	}
 	// A job the brokers confirmed but the queue no longer holds is not
 	// finished either; retention or a purge would have to have removed it.
-	rep.Unfinished += int64(len(ids) - found)
+	rep.Unfinished += int64(len(ids) - len(seen))
 	rep.Pickup = summarize(pickup)
 	rep.EndToEnd = summarize(e2e)
 	if span := last.Sub(first); span > 0 {

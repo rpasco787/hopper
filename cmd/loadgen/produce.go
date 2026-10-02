@@ -15,6 +15,7 @@ import (
 // with errors is not a result, and loadgen never retries, because a call
 // without idempotency keys may have committed before it failed.
 func produce(ctx context.Context, cfg config, clients []api, rep *Report) map[string]struct{} {
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -46,6 +47,7 @@ func produce(ctx context.Context, cfg config, clients []api, rep *Report) map[st
 		calls     int64
 		err       error
 	}
+	var confirmed sync.Map // job IDs must be unique across every producer and call
 	results := make([]result, cfg.producers)
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -90,6 +92,14 @@ func produce(ctx context.Context, cfg config, clients []api, rep *Report) map[st
 				r.maxLag = max(r.maxLag, sent.Sub(due))
 				ids, err := call(ctx, cfg, c, body, p, k, size)
 				r.calls++
+				if err == nil {
+					for _, id := range ids {
+						if _, duplicate := confirmed.LoadOrStore(id, struct{}{}); duplicate {
+							err = fmt.Errorf("broker confirmed duplicate job ID %q", id)
+							break
+						}
+					}
+				}
 				if err != nil {
 					if ctx.Err() == nil {
 						r.err = fmt.Errorf("producer %d call %d: %w", p, k, err)
@@ -121,6 +131,10 @@ func produce(ctx context.Context, cfg config, clients []api, rep *Report) map[st
 			}
 		}
 	}
+	if err := parent.Err(); err != nil && rep.Errors == 0 {
+		rep.Errors++
+		rep.FirstError = err.Error()
+	}
 	rep.Jobs = int64(len(ids))
 	rep.Enqueue = summarize(latencies)
 	rep.ProduceSeconds = elapsed.Seconds()
@@ -148,15 +162,30 @@ func call(ctx context.Context, cfg config, c api, body []byte, producer, k, size
 		if err != nil {
 			return nil, err
 		}
+		if resp.GetJob().GetId() == "" {
+			return nil, fmt.Errorf("enqueue response has no job ID")
+		}
 		return []string{resp.GetJob().GetId()}, nil
 	}
 	resp, err := c.EnqueueBatch(ctx, &hopperv1.EnqueueBatchRequest{Jobs: specs})
 	if err != nil {
 		return nil, err
 	}
+	if len(resp.GetResults()) != size {
+		return nil, fmt.Errorf("enqueue batch confirmed %d jobs, want %d", len(resp.GetResults()), size)
+	}
+	seen := make(map[string]struct{}, size)
 	ids := make([]string, 0, len(resp.GetResults()))
 	for _, r := range resp.GetResults() {
-		ids = append(ids, r.GetJob().GetId())
+		id := r.GetJob().GetId()
+		if id == "" {
+			return nil, fmt.Errorf("enqueue batch response has no job ID")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("enqueue batch confirmed duplicate job ID %q", id)
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
 	return ids, nil
 }

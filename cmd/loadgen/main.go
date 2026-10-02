@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -106,6 +107,8 @@ func parseConfig(args []string) (config, error) {
 		return c, fmt.Errorf("payload-bytes must be between 0 and %d", maxPayloadBytes)
 	case c.workMs < 0:
 		return c, errors.New("work-ms must not be negative")
+	case math.IsNaN(c.rate) || math.IsInf(c.rate, 0):
+		return c, errors.New("rate must be finite")
 	case c.rate < 0:
 		return c, errors.New("rate must not be negative")
 	case c.n < 0 || c.duration < 0:
@@ -116,6 +119,12 @@ func parseConfig(args []string) (config, error) {
 		return c, errors.New("max-attempts must not be negative")
 	case c.drainTimeout <= 0 || c.rpcTimeout <= 0:
 		return c, errors.New("drain-timeout and rpc-timeout must be positive")
+	}
+	if c.rate > 0 {
+		interval := float64(time.Second) * float64(c.producers*c.batch) / c.rate
+		if interval < 1 || interval >= float64(math.MaxInt64) {
+			return c, errors.New("rate cannot be represented by a positive pacing interval")
+		}
 	}
 	return c, nil
 }
