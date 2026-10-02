@@ -43,7 +43,7 @@ import (
 )
 
 type config struct {
-	dsn, listen, metricsListen, logLevel                                    string
+	dsn, listen, metricsListen, debugListen, logLevel                       string
 	metricsQueues                                                           []string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
 	maxLeaseBatch                                                           int
@@ -65,7 +65,7 @@ var envVars = [][2]string{
 	{"poll-interval", "HOPPER_POLL_INTERVAL"}, {"retention", "HOPPER_RETENTION"},
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"}, {"max-lease-batch", "HOPPER_MAX_LEASE_BATCH"},
 	{"scheduler", "HOPPER_SCHEDULER"}, {"scheduler-interval", "HOPPER_SCHEDULER_INTERVAL"},
-	{"cron-file", "HOPPER_CRON_FILE"},
+	{"cron-file", "HOPPER_CRON_FILE"}, {"debug-listen", "HOPPER_DEBUG_LISTEN"},
 }
 
 const MaxMetricsQueues = 100
@@ -80,6 +80,7 @@ func parseConfig(args []string) (config, error) {
 	fs.StringVar(&c.dsn, "dsn", "", "PostgreSQL connection string (HOPPER_DSN)")
 	fs.StringVar(&c.listen, "listen", "127.0.0.1:9090", "trusted-network gRPC address (HOPPER_LISTEN)")
 	fs.StringVar(&c.metricsListen, "metrics-listen", "127.0.0.1:9091", "Prometheus HTTP address; empty disables metrics (HOPPER_METRICS_LISTEN)")
+	fs.StringVar(&c.debugListen, "debug-listen", "", "pprof HTTP address; empty disables profiling (HOPPER_DEBUG_LISTEN)")
 	fs.StringVar(&metricsQueues, "metrics-queues", "", "comma-separated queue metric allowlist (HOPPER_METRICS_QUEUES)")
 	fs.StringVar(&c.logLevel, "log-level", "info", "debug/info/warn/error (HOPPER_LOG_LEVEL)")
 	fs.DurationVar(&c.leaseDuration, "lease-duration", broker.DefaultLeaseDuration, "default visibility timeout (HOPPER_LEASE_DURATION)")
@@ -116,6 +117,11 @@ func parseConfig(args []string) (config, error) {
 	if c.metricsListen != "" {
 		if _, _, err := net.SplitHostPort(c.metricsListen); err != nil {
 			return c, errors.New("invalid metrics-listen address")
+		}
+	}
+	if c.debugListen != "" {
+		if _, _, err := net.SplitHostPort(c.debugListen); err != nil {
+			return c, errors.New("invalid debug-listen address")
 		}
 	}
 	if metricsQueues != "" {
@@ -293,6 +299,14 @@ func run(args []string) error {
 		}
 		defer metricsLis.Close()
 	}
+	var debugLis net.Listener
+	if cfg.debugListen != "" {
+		debugLis, err = net.Listen("tcp", cfg.debugListen)
+		if err != nil {
+			return fmt.Errorf("debug listen: %w", err)
+		}
+		defer debugLis.Close()
+	}
 	if !isLoopback(cfg.listen) {
 		logger.Warn("listening beyond loopback: the API is plaintext and unauthenticated, "+
 			"so anyone who can connect can read and mutate every job, including lease tokens",
@@ -365,6 +379,19 @@ func run(args []string) error {
 		}()
 		logger.Info("metrics listening", "addr", metricsLis.Addr().String())
 	}
+	var debugSrv *http.Server
+	if debugLis != nil {
+		// Profiling is a diagnostic, not a dependency: if it fails, say so and
+		// keep serving the queue.
+		debugSrv = newDebugServer()
+		go func() {
+			if err := debugSrv.Serve(debugLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("debug server stopped", "err", err)
+			}
+		}()
+		logger.Warn("debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect",
+			"addr", debugLis.Addr().String())
+	}
 	logger.Info("broker listening", "addr", lis.Addr().String(),
 		"lease_duration", cfg.leaseDuration.String(), "reaper_interval", cfg.reaperInterval.String(),
 		"retention", cfg.retention.String())
@@ -377,6 +404,9 @@ func run(args []string) error {
 	shutdownErr := srv.Shutdown(shutdownCtx)
 	stopSweeps()
 	sweeps.Wait()
+	if debugSrv != nil {
+		_ = debugSrv.Close() // ends any profile in flight; nothing waits on it
+	}
 	var metricsShutdownErr error
 	if httpSrv != nil {
 		metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), 2*time.Second)

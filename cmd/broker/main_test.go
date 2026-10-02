@@ -22,6 +22,7 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, "postgres://unused", c.dsn)
 	require.Equal(t, "127.0.0.1:9090", c.listen, "loopback unless the operator opts out")
 	require.Equal(t, "127.0.0.1:9091", c.metricsListen)
+	require.Empty(t, c.debugListen, "profiling is opt-in")
 	require.Empty(t, c.metricsQueues)
 	require.Equal(t, "info", c.logLevel)
 	require.Equal(t, 30*time.Second, c.leaseDuration)
@@ -43,6 +44,7 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 		"HOPPER_DSN":                "postgres://env",
 		"HOPPER_LISTEN":             "127.0.0.1:1234",
 		"HOPPER_METRICS_LISTEN":     "127.0.0.1:1235",
+		"HOPPER_DEBUG_LISTEN":       "127.0.0.1:1236",
 		"HOPPER_METRICS_QUEUES":     "alpha, beta",
 		"HOPPER_LOG_LEVEL":          "debug",
 		"HOPPER_LEASE_DURATION":     "45s",
@@ -59,7 +61,7 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 	c, err := parseConfig(nil)
 	require.NoError(t, err)
 	require.Equal(t, config{
-		dsn: "postgres://env", listen: "127.0.0.1:1234", metricsListen: "127.0.0.1:1235",
+		dsn: "postgres://env", listen: "127.0.0.1:1234", metricsListen: "127.0.0.1:1235", debugListen: "127.0.0.1:1236",
 		metricsQueues: []string{"alpha", "beta"}, logLevel: "debug",
 		leaseDuration: 45 * time.Second, reaperInterval: 2 * time.Second,
 		pollInterval: 75 * time.Millisecond, retention: 72 * time.Hour,
@@ -86,6 +88,16 @@ func TestConfigMetricsListen(t *testing.T) {
 	_, err = parseConfig([]string{"-metrics-listen", "nohost"})
 	require.EqualError(t, err, "invalid metrics-listen address")
 	require.NotContains(t, err.Error(), "nohost")
+}
+
+func TestConfigDebugListen(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	c, err := parseConfig([]string{"-debug-listen", "127.0.0.1:6060"})
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:6060", c.debugListen)
+
+	_, err = parseConfig([]string{"-debug-listen", "nohost"})
+	require.EqualError(t, err, "invalid debug-listen address")
 }
 
 func TestConfigMetricsQueues(t *testing.T) {
