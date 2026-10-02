@@ -1,0 +1,64 @@
+# The benchmark stack (scripts/bench.sh, docs/BENCHMARKS.md), merged over
+# docker-compose.yml as project hopper-bench:
+#
+#   docker compose -p hopper-bench -f docker-compose.yml -f deploy/bench/compose.yaml ...
+#
+# scripts/bench.sh builds and tags every image and sets every variable below;
+# nothing is pulled. loadgen runs inside the Compose network, so the host's
+# port forwarding is in no measured path. Only the brokers' metrics and
+# profiling ports are published, on loopback ports no other stack uses.
+services:
+  postgres:
+    # pg_stat_statements attributes database time to statements.
+    # synchronous_commit stays on: "off" is a diagnostic, never a result.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements",
+              "-c", "synchronous_commit=${HOPPER_BENCH_SYNC_COMMIT:-on}"]
+
+  broker:
+    image: hopper-bench/broker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:16091:9091"
+      - "127.0.0.1:16060:6060"
+    environment: &bench-broker-env
+      HOPPER_SCHEDULER: "false"
+      HOPPER_DEBUG_LISTEN: 0.0.0.0:6060
+    # Knobs a run sets, such as HOPPER_DB_MAX_CONNS; empty unless asked for,
+    # so a binary keeps its own default.
+    env_file: ["${HOPPER_BENCH_BROKER_ENV:?set by scripts/bench.sh}"]
+
+  broker-standby:
+    image: hopper-bench/broker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    ports:
+      - "127.0.0.1:16092:9091"
+      - "127.0.0.1:16061:6060"
+    environment: *bench-broker-env
+    env_file: ["${HOPPER_BENCH_BROKER_ENV:?set by scripts/bench.sh}"]
+
+  # Workers on `worker` dial `broker`; those on `worker-b` dial
+  # `broker-standby`, so a two-broker run splits the load deterministically.
+  # Workers log at warn by default: their info lines are per job, and the
+  # benchmark measures the queue, not the logging pipeline.
+  worker:
+    image: hopper-bench/worker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    environment: &bench-worker-env
+      HOPPER_CONCURRENCY: "${HOPPER_BENCH_CONCURRENCY:-16}"
+      HOPPER_LOG_LEVEL: "${HOPPER_BENCH_WORKER_LOG_LEVEL:-warn}"
+
+  worker-b:
+    image: hopper-bench/worker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    depends_on: [broker-standby]
+    environment:
+      <<: *bench-worker-env
+      HOPPER_BROKER: broker-standby:9090
+      HOPPER_SHUTDOWN_TIMEOUT: 45s
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9092
+    stop_grace_period: 60s
+
+  loadgen:
+    image: hopper-bench/loadgen:wt
+    pull_policy: never
+    profiles: ["bench"]
