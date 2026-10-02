@@ -95,12 +95,14 @@ metrics_ports="16091"
 [ "$brokers" = 2 ] && metrics_ports="16091 16092"
 loadgen() { compose run --rm -T --no-deps loadgen "$@"; }
 
-# CPU per container, sampled from the start of the measured interval until the
-# workload finishes, and no longer: an idle tail would dilute the mean.
+# CPU per container, sampled through workload completion, with no idle tail.
+# Drain includes worker startup: collect a baseline before any worker can
+# consume, then sample throughout Compose startup as well as the drain.
+sample_once() {
+  docker stats --no-stream --format '{{.Name}},{{.CPUPerc}}' | grep '^hopper-bench-' >>"$dir/stats.csv" || true
+}
 sample() {
-  while :; do
-    docker stats --no-stream --format '{{.Name}},{{.CPUPerc}}' | grep '^hopper-bench-' >>"$dir/stats.csv" || true
-  done
+  while :; do sample_once; done
 }
 stop_sampler() {
   if [ -n "$sampler" ]; then { kill "$sampler" && wait "$sampler"; } 2>/dev/null || true; fi
@@ -127,8 +129,9 @@ drain)
   sql "vacuum analyze jobs" >/dev/null
   sql "select pg_stat_statements_reset()" >/dev/null
   pool_snapshot before
-  start_workers
+  sample_once
   sample & sampler=$!
+  start_workers
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
   deadline=$((SECONDS + 600))
   until [ "$(sql "select count(*) from jobs where state = 'completed'")" -ge "$jobs" ]; do
