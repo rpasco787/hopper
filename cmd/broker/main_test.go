@@ -119,16 +119,18 @@ func TestConfigRefusesAPoolSizeInTheDSN(t *testing.T) {
 
 // A pool no larger than the connections held for a whole term leaves none for
 // queries, and every lease, heartbeat and ack would wait forever. The
-// scheduler role holds one in whichever broker leads.
+// wakeup listener holds one in every broker, and the scheduler role one more
+// in whichever broker leads.
 func TestConfigLeavesAConnectionForQueries(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://unused")
 	for _, tc := range []struct {
 		args []string
 		err  string
 	}{
-		{args: []string{"-db-max-conns", "1"}, err: "db-max-conns must be at least 2 with -scheduler=true"},
-		{args: []string{"-db-max-conns", "2"}},
-		{args: []string{"-scheduler=false", "-db-max-conns", "1"}},
+		{args: []string{"-db-max-conns", "2"}, err: "db-max-conns must be at least 3 with -scheduler=true"},
+		{args: []string{"-db-max-conns", "3"}},
+		{args: []string{"-scheduler=false", "-db-max-conns", "1"}, err: "db-max-conns must be at least 2 with -scheduler=false"},
+		{args: []string{"-scheduler=false", "-db-max-conns", "2"}},
 	} {
 		c, err := parseConfig(tc.args)
 		if tc.err != "" {

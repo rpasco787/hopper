@@ -82,10 +82,10 @@ const MaxMetricsQueues = 100
 const DefaultDBMaxConns = 16
 
 // minDBMaxConns is the smallest pool that still leaves a connection for
-// queries once the connections held for a whole term are taken: the scheduler
-// role's, in whichever broker leads.
+// queries once the connections held for a whole term are taken: the wakeup
+// listener's in every broker, and the scheduler role's in whichever broker leads.
 func minDBMaxConns(scheduler bool) int {
-	n := 1
+	n := 2 // the wakeup listener’s, and one for queries
 	if scheduler {
 		n++
 	}
@@ -358,7 +358,7 @@ func run(args []string) error {
 	}
 	srv := broker.NewServer(st, broker.Config{
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
-		PollInterval: cfg.pollInterval, Logger: logger,
+		PollInterval: cfg.pollInterval, Wakeups: st, Logger: logger,
 	}, grpcOpts...)
 	if grpcMet != nil {
 		grpcMet.InitializeMetrics(srv)
@@ -381,6 +381,14 @@ func run(args []string) error {
 			}
 		}(loop)
 	}
+	// Wakeups hold one pooled connection for the listener.
+	sweeps.Add(1)
+	go func() {
+		defer sweeps.Done()
+		if err := srv.RunWakeups(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("wakeups stopped", "err", err)
+		}
+	}()
 	if cfg.scheduler {
 		sched := &scheduler.Scheduler{
 			Store: st, Interval: cfg.schedulerInterval, Logger: logger, Definitions: cfg.schedules,

@@ -136,7 +136,13 @@ func (s *Service) listenLoop(ctx context.Context) {
 	delay := listenRetryMin
 	for {
 		started := time.Now()
-		err := s.cfg.Wakeups.Listen(ctx, s.wakes.wake)
+		err := s.cfg.Wakeups.Listen(ctx, func(queue string) {
+			s.wakes.wake(queue)
+			if queue == "" {
+				// Report readiness after the reconnect wake has been delivered.
+				s.cfg.Logger.DebugContext(ctx, "wakeup listener ready")
+			}
+		})
 		if ctx.Err() != nil {
 			return
 		}
