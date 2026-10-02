@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, 24*time.Hour, c.retention)
 	require.Equal(t, 30*time.Second, c.shutdownTimeout)
 	require.Equal(t, 32, c.maxLeaseBatch)
+	require.Equal(t, 32, c.dbMaxConns)
 	require.True(t, c.scheduler, "every broker contends for the scheduler unless told not to")
 	require.Equal(t, 5*time.Second, c.schedulerInterval)
 	require.Empty(t, c.cronFile)
@@ -53,6 +55,7 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 		"HOPPER_RETENTION":          "72h",
 		"HOPPER_SHUTDOWN_TIMEOUT":   "9s",
 		"HOPPER_MAX_LEASE_BATCH":    "7",
+		"HOPPER_DB_MAX_CONNS":       "12",
 		"HOPPER_SCHEDULER":          "false",
 		"HOPPER_SCHEDULER_INTERVAL": "3s",
 	} {
@@ -65,7 +68,7 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 		metricsQueues: []string{"alpha", "beta"}, logLevel: "debug",
 		leaseDuration: 45 * time.Second, reaperInterval: 2 * time.Second,
 		pollInterval: 75 * time.Millisecond, retention: 72 * time.Hour,
-		shutdownTimeout: 9 * time.Second, maxLeaseBatch: 7,
+		shutdownTimeout: 9 * time.Second, maxLeaseBatch: 7, dbMaxConns: 12,
 		scheduler: false, schedulerInterval: 3 * time.Second,
 	}, c)
 }
@@ -98,6 +101,43 @@ func TestConfigDebugListen(t *testing.T) {
 
 	_, err = parseConfig([]string{"-debug-listen", "nohost"})
 	require.EqualError(t, err, "invalid debug-listen address")
+}
+
+// The pool has one knob. A DSN that sets it too is refused, without echoing
+// the DSN, which carries the password.
+func TestConfigRefusesAPoolSizeInTheDSN(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://u:hunter2@h/db?pool_max_conns=5")
+	_, err := parseConfig(nil)
+	require.EqualError(t, err, "set -db-max-conns rather than pool_max_conns in the DSN")
+	_, err = parseConfig([]string{"-db-max-conns", "3000000000"})
+	require.ErrorContains(t, err, "pool_max_conns", "the DSN is checked first")
+
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	_, err = parseConfig([]string{"-db-max-conns", "3000000000"})
+	require.EqualError(t, err, "db-max-conns exceeds 2147483647")
+}
+
+// A pool no larger than the connections held for a whole term leaves none for
+// queries, and every lease, heartbeat and ack would wait forever. The
+// scheduler role holds one in whichever broker leads.
+func TestConfigLeavesAConnectionForQueries(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	for _, tc := range []struct {
+		args []string
+		err  string
+	}{
+		{args: []string{"-db-max-conns", "1"}, err: "db-max-conns must be at least 2 with -scheduler=true"},
+		{args: []string{"-db-max-conns", "2"}},
+		{args: []string{"-scheduler=false", "-db-max-conns", "1"}},
+	} {
+		c, err := parseConfig(tc.args)
+		if tc.err != "" {
+			require.EqualError(t, err, tc.err, "%v", tc.args)
+			continue
+		}
+		require.NoError(t, err, "%v", tc.args)
+		require.Equal(t, tc.args[len(tc.args)-1], strconv.Itoa(c.dbMaxConns))
+	}
 }
 
 func TestConfigMetricsQueues(t *testing.T) {
@@ -174,9 +214,9 @@ func TestFinalServingErrorPreservesMetricsFailure(t *testing.T) {
 
 func TestConfigRejectsNonPositiveKnobs(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://unused")
-	for _, name := range []string{"lease-duration", "reaper-interval", "poll-interval", "retention", "shutdown-timeout", "scheduler-interval", "max-lease-batch"} {
+	for _, name := range []string{"lease-duration", "reaper-interval", "poll-interval", "retention", "shutdown-timeout", "scheduler-interval", "max-lease-batch", "db-max-conns"} {
 		for _, value := range []string{"0", "-1"} {
-			if name != "max-lease-batch" {
+			if name != "max-lease-batch" && name != "db-max-conns" {
 				value += "s"
 			}
 			_, err := parseConfig([]string{"-" + name, value})

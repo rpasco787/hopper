@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -46,7 +47,7 @@ type config struct {
 	dsn, listen, metricsListen, debugListen, logLevel                       string
 	metricsQueues                                                           []string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
-	maxLeaseBatch                                                           int
+	maxLeaseBatch, dbMaxConns                                               int
 
 	scheduler         bool
 	schedulerInterval time.Duration
@@ -66,9 +67,29 @@ var envVars = [][2]string{
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"}, {"max-lease-batch", "HOPPER_MAX_LEASE_BATCH"},
 	{"scheduler", "HOPPER_SCHEDULER"}, {"scheduler-interval", "HOPPER_SCHEDULER_INTERVAL"},
 	{"cron-file", "HOPPER_CRON_FILE"}, {"debug-listen", "HOPPER_DEBUG_LISTEN"},
+	{"db-max-conns", "HOPPER_DB_MAX_CONNS"},
 }
 
 const MaxMetricsQueues = 100
+
+// DefaultDBMaxConns sizes each broker's PostgreSQL pool. pgxpool's own default
+// is the machine's CPU count (8 on the benchmark host), which starved a broker
+// serving 64 worker slots: every lease, heartbeat and ack queued for a
+// connection. 32 was the knee of the measured curve (docs/BENCHMARKS.md).
+// Brokers times this must fit the server's max_connections, which is 100 by
+// default; two brokers use at most 64.
+const DefaultDBMaxConns = 32
+
+// minDBMaxConns is the smallest pool that still leaves a connection for
+// queries once the connections held for a whole term are taken: the scheduler
+// role's, in whichever broker leads.
+func minDBMaxConns(scheduler bool) int {
+	n := 1
+	if scheduler {
+		n++
+	}
+	return n
+}
 
 // parseConfig resolves flags and environment into a validated config. Every
 // rejection happens here, before the process has opened a pool or a listener,
@@ -89,6 +110,7 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.retention, "retention", 24*time.Hour, "positive finished-job retention window (HOPPER_RETENTION)")
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "RPC drain deadline (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
+	fs.IntVar(&c.dbMaxConns, "db-max-conns", DefaultDBMaxConns, "PostgreSQL connections per broker (HOPPER_DB_MAX_CONNS)")
 	fs.BoolVar(&c.scheduler, "scheduler", true, "run the cron scheduler in this process (HOPPER_SCHEDULER)")
 	fs.DurationVar(&c.schedulerInterval, "scheduler-interval", 5*time.Second, "leadership retry and tick period (HOPPER_SCHEDULER_INTERVAL)")
 	fs.StringVar(&c.cronFile, "cron-file", "", "JSON schedule declarations; empty leaves cron_schedules unmanaged (HOPPER_CRON_FILE)")
@@ -110,6 +132,10 @@ func parseConfig(args []string) (config, error) {
 	}
 	if c.dsn == "" {
 		return c, errors.New("-dsn or HOPPER_DSN is required")
+	}
+	// One knob for the pool size, so there is no precedence to remember.
+	if strings.Contains(c.dsn, "pool_max_conns") {
+		return c, errors.New("set -db-max-conns rather than pool_max_conns in the DSN")
 	}
 	if c.listen == "" {
 		return c, errors.New("listen address is required")
@@ -161,6 +187,15 @@ func parseConfig(args []string) (config, error) {
 	}
 	if c.maxLeaseBatch <= 0 {
 		return c, errors.New("max-lease-batch must be positive")
+	}
+	if c.dbMaxConns <= 0 {
+		return c, errors.New("db-max-conns must be positive")
+	}
+	if c.dbMaxConns > math.MaxInt32 {
+		return c, fmt.Errorf("db-max-conns exceeds %d", math.MaxInt32)
+	}
+	if floor := minDBMaxConns(c.scheduler); c.dbMaxConns < floor {
+		return c, fmt.Errorf("db-max-conns must be at least %d with -scheduler=%t", floor, c.scheduler)
 	}
 	if c.cronFile != "" {
 		defs, err := scheduler.LoadFile(c.cronFile)
@@ -254,7 +289,12 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.dsn)
+	poolCfg, err := pgxpool.ParseConfig(cfg.dsn)
+	if err != nil {
+		return fmt.Errorf("parse dsn: %w", err)
+	}
+	poolCfg.MaxConns = int32(cfg.dbMaxConns)
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("open pool: %w", err)
 	}
@@ -397,7 +437,7 @@ func run(args []string) error {
 	}
 	logger.Info("broker listening", "addr", lis.Addr().String(),
 		"lease_duration", cfg.leaseDuration.String(), "reaper_interval", cfg.reaperInterval.String(),
-		"retention", cfg.retention.String())
+		"retention", cfg.retention.String(), "db_max_conns", cfg.dbMaxConns)
 
 	servingErr, served := awaitServing(ctx, serveErr, metricsErr)
 	stop() // restore default handling before draining; a second signal can exit
