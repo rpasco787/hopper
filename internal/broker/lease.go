@@ -83,6 +83,9 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 	var credit atomic.Uint64
 	credit.Store(uint64(sub.GetCredit()))
 	wake := make(chan struct{}, 1)
+	// Registered before the first lease, so an enqueue that lands between an
+	// empty lease and the wait still ends the wait.
+	defer s.wakes.subscribe(wake, sub.GetQueues())()
 	go func() {
 		for {
 			if ctx.Err() != nil {

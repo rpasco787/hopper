@@ -34,10 +34,14 @@ type Config struct {
 	// or unacknowledged deliveries across a stream (docs/semantics.md §11).
 	MaxLeaseBatch int
 	// PollInterval is how long a lease stream waits after finding the queue
-	// empty. Session 11 replaces this with LISTEN/NOTIFY; until then it is the
-	// polling delay for an idle queue, plus scheduling and database latency.
+	// empty, unless a wakeup ends the wait first. It is the fallback for a
+	// lost wakeup and the only path for jobs that become available without an
+	// Enqueue: promoted delays and retries, and redrives (docs/semantics.md §9).
 	PollInterval time.Duration
-	Logger       *slog.Logger
+	// Wakeups carries enqueue announcements between brokers. Nil keeps them
+	// within this broker; RunWakeups does the rest.
+	Wakeups store.Wakeups
+	Logger  *slog.Logger
 }
 
 // Service implements hopperv1.HopperServiceServer over a store.Store.
@@ -65,6 +69,9 @@ type Service struct {
 	// handlers are abandoned, not joined, when a drain ends their RPC, so this
 	// is how a test proves they exit once gRPC cancels their context.
 	auxActive atomic.Int32
+
+	// wakes ends idle lease streams' waits when their queues get work.
+	wakes *wakeups
 }
 
 // NewService returns a Service. Zero values in cfg take the package defaults.
@@ -81,7 +88,7 @@ func NewService(st store.Store, cfg Config) *Service {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Service{store: st, cfg: cfg, shutdown: make(chan struct{})}
+	return &Service{store: st, cfg: cfg, shutdown: make(chan struct{}), wakes: newWakeups()}
 }
 
 // Drain tells every lease stream to finish. It is safe to call more than once,

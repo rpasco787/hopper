@@ -31,6 +31,7 @@ func (s *Service) Enqueue(ctx context.Context, req *hopperv1.EnqueueRequest) (*h
 	}
 	s.cfg.Logger.DebugContext(ctx, "job enqueued",
 		"job_id", job.ID.String(), "queue", job.Queue, "deduplicated", !inserted)
+	s.announceIfLeasable(job, inserted)
 	// inserted is inverted: the store reports what it did, the API reports the
 	// fact the caller acts on.
 	return &hopperv1.EnqueueResponse{Job: p, Deduplicated: !inserted}, nil
@@ -77,7 +78,22 @@ func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRe
 		}
 		s.cfg.Logger.DebugContext(ctx, "job enqueued",
 			"job_id", job.ID.String(), "queue", job.Queue, "deduplicated", !inserted)
+		s.announceIfLeasable(job, inserted)
 		results = append(results, &hopperv1.EnqueueResponse{Job: proto, Deduplicated: !inserted})
 	}
 	return &hopperv1.EnqueueBatchResponse{Results: results}, nil
+}
+
+// announceIfLeasable wakes the streams that serve a job's queue when this call
+// made the job leasable. A delayed job is not leasable until the promoter
+// moves it, and a deduplicated call added nothing.
+func (s *Service) announceIfLeasable(job store.Job, inserted bool) {
+	if inserted && job.State == store.StateAvailable {
+		if s.cfg.Wakeups == nil {
+			// Local-only services have no announcer to drain pending queues.
+			s.wakes.wake(job.Queue)
+		} else {
+			s.wakes.announce(job.Queue)
+		}
+	}
 }

@@ -61,6 +61,10 @@ func NewServer(st store.Store, cfg Config, opts ...grpc.ServerOption) *Server {
 	return &Server{grpc: g, service: svc, health: h}
 }
 
+// RunWakeups carries enqueue wakeups between this broker and the others until
+// ctx ends (Service.RunWakeups). Run it beside Serve.
+func (s *Server) RunWakeups(ctx context.Context) error { return s.service.RunWakeups(ctx) }
+
 // GetServiceInfo reports the registered services. It makes *Server a
 // reflection.ServiceInfoProvider, which is what an interceptor library needs
 // to pre-create per-method series before the first call.
