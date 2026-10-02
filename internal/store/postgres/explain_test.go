@@ -50,14 +50,14 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 		args      []any
 	}{
 		{
+			// The sort is over at most n candidates per queue;
+			// TestLeaseCostDoesNotGrowWithTheBacklog and
+			// TestLeaseCostSkipsLockedCandidates bound what it reads.
 			name:      "lease",
 			indexes:   []string{"jobs_lease_idx"},
 			allowSort: true,
-			sql: `select id from jobs
-			      where queue = any($1) and state = 'available'
-			      order by priority desc, run_at
-			      limit $2 for update skip locked`,
-			args: []any{[]string{"q"}, 10},
+			sql:       leaseSQL,
+			args:      []any{[]string{"q", "r"}, 10, "w", time.Minute},
 		},
 		{
 			name:    "promote",

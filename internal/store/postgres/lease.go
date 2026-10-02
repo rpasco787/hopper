@@ -35,6 +35,10 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 		return nil, errors.New("store: lease: duration must be positive")
 	}
 
+	// Each queue gets one subquery, and a transaction does not skip rows it has
+	// locked itself, so a queue named twice would offer its rows twice and the
+	// batch would come back short.
+	queues = slices.Compact(slices.Sorted(slices.Values(queues)))
 	rows, err := s.pool.Query(ctx, leaseSQL, queues, n, workerID, leaseDur)
 	if err != nil {
 		return nil, wrap("lease", err)
@@ -61,13 +65,36 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 
 // leaseSQL is Lease's statement: $1 queues, $2 n, $3 worker id, $4 lease
 // duration. It is a variable so tests can EXPLAIN the statement Lease runs.
+//
+// The candidates are chosen one queue at a time. For each queue, a LATERAL
+// subquery walks jobs_lease_idx (queue, priority desc, run_at) in order and
+// stops after n unlocked rows; the outer query sorts at most n rows per queue
+// and keeps the best n. The walk also steps over rows other lessors hold and
+// over index entries for rows leased since the last vacuum, so its work is
+// not strictly n per queue, but it no longer depends on the backlog. Written
+// as `queue = any($1)` instead, the index cannot
+// return the subscribed queues in one order, so PostgreSQL read every
+// available row in them and sorted the lot on every call: a lease cost
+// O(backlog), and a deep queue drained slowest exactly when it most needed to
+// drain fast (docs/BENCHMARKS.md). The per-queue LIMIT gives the same rows,
+// because the best n overall are among the best n of each queue.
+//
+// A queue's subquery can lock up to n rows the outer LIMIT then drops. They
+// stay locked only until this statement commits, and other lessors skip them
+// in the meantime, which SKIP LOCKED already permits.
 var leaseSQL = `
 	with next as (
-		select id from jobs
-		where queue = any($1) and state = 'available'
-		order by priority desc, run_at
+		select c.id
+		from unnest($1::text[]) as q(queue),
+		lateral (
+			select id, priority, run_at from jobs
+			where jobs.queue = q.queue and state = 'available'
+			order by priority desc, run_at
+			limit $2
+			for update skip locked
+		) c
+		order by c.priority desc, c.run_at
 		limit $2
-		for update skip locked
 	)
 	update jobs j
 	set state         = 'leased',

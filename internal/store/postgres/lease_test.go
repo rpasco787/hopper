@@ -2,12 +2,14 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rpasco787/hopper/internal/store"
@@ -229,4 +231,186 @@ func TestPriority(t *testing.T) {
 		require.False(t, rest[i].RunAt.Before(rest[i-1].RunAt),
 			"priority-0 jobs are handed out oldest-first")
 	}
+}
+
+// planNode is the part of EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) a cost test
+// reads.
+type planNode struct {
+	NodeType     string     `json:"Node Type"`
+	RelationName string     `json:"Relation Name"`
+	Alias        string     `json:"Alias"`
+	IndexName    string     `json:"Index Name"`
+	ActualRows   float64    `json:"Actual Rows"`
+	ActualLoops  float64    `json:"Actual Loops"`
+	SharedHit    float64    `json:"Shared Hit Blocks"`
+	SharedRead   float64    `json:"Shared Read Blocks"`
+	Plans        []planNode `json:"Plans"`
+}
+
+// scansOf returns the scans of jobs under alias. The lease's candidate scans
+// read jobs as "jobs"; the UPDATE's own lookups of the chosen rows read it as
+// "j".
+func scansOf(n planNode, alias string) []planNode {
+	var out []planNode
+	if n.RelationName == "jobs" && n.Alias == alias {
+		out = append(out, n)
+	}
+	for _, child := range n.Plans {
+		out = append(out, scansOf(child, alias)...)
+	}
+	return out
+}
+
+// explainLease runs the production lease statement under EXPLAIN ANALYZE in
+// tx, checks that it still leased n jobs, and returns its candidate scans
+// with the raw plan.
+//
+// A scan's actual rows are the rows it produced, over every loop: rows that
+// SKIP LOCKED then passed over are among them, but index entries whose rows
+// were leased since the last vacuum are not, since their heap visits find
+// nothing. Buffers count both, so they are logged beside the rows. Actual Rows
+// is a per-loop mean rounded to a whole row, so totals are good to half a row
+// per loop.
+func explainLease(t *testing.T, ctx context.Context, tx pgx.Tx, queues []string, n int) (scans []planNode, raw []byte) {
+	t.Helper()
+	require.NoError(t, tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+leaseSQL,
+		queues, n, "w", time.Minute).Scan(&raw))
+	var plans []struct {
+		Plan planNode `json:"Plan"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &plans))
+	require.Len(t, plans, 1)
+	require.Equal(t, float64(n), plans[0].Plan.ActualRows, "the lease still leases n jobs")
+	scans = scansOf(plans[0].Plan, "jobs")
+	require.NotEmpty(t, scans, "no candidate scan of jobs; plan:\n%s", raw)
+	var rows, blocks float64
+	for _, s := range scans {
+		rows += s.ActualRows * s.ActualLoops
+		blocks += s.SharedHit + s.SharedRead
+	}
+	t.Logf("candidate scans produced %v rows and touched %v shared blocks", rows, blocks)
+	return scans, raw
+}
+
+// rowsRead totals the rows the scans produced, over every loop.
+func rowsRead(scans []planNode) float64 {
+	total := 0.0
+	for _, s := range scans {
+		total += s.ActualRows * s.ActualLoops
+	}
+	return total
+}
+
+// requireLeaseIndex checks that every candidate scan walks jobs_lease_idx,
+// the plan the bound depends on, as the planner chose it with sequential
+// scans allowed.
+func requireLeaseIndex(t *testing.T, scans []planNode, raw []byte) {
+	t.Helper()
+	for _, s := range scans {
+		require.Equal(t, "Index Scan", s.NodeType, "plan:\n%s", raw)
+		require.Equal(t, "jobs_lease_idx", s.IndexName, "plan:\n%s", raw)
+	}
+}
+
+// seedBacklog adds 6,000 available jobs across queues a and b, analyzed so
+// the planner sees the backlog it would see in production.
+func seedBacklog(t *testing.T, ctx context.Context) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `
+		insert into jobs (id, queue, payload, state, run_at)
+		select gen_random_uuid(), case when i % 2 = 0 then 'a' else 'b' end, '{}', 'available',
+		       now() - make_interval(secs => i)
+		from generate_series(1, 6000) as i`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `analyze jobs`)
+	require.NoError(t, err)
+}
+
+// A lease's candidates are at most n unlocked rows from each subscribed queue,
+// however deep the backlog. Until Session 11 it read and sorted every
+// available row in the subscribed queues on every call, so its cost grew with
+// the backlog it was meant to drain (docs/BENCHMARKS.md).
+func TestLeaseCostDoesNotGrowWithTheBacklog(t *testing.T) {
+	ctx := ctxT(t)
+	newStore(t)
+	seedBacklog(t, ctx)
+
+	queues, n := []string{"a", "b", "c"}, 10
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) //nolint:errcheck // EXPLAIN ANALYZE ran the UPDATE; undo it
+	scans, raw := explainLease(t, ctx, tx, queues, n)
+
+	read := rowsRead(scans)
+	require.LessOrEqual(t, read, float64(len(queues)*n),
+		"a lease of %d read %v candidate rows; plan:\n%s", n, read, raw)
+	requireLeaseIndex(t, scans, raw)
+}
+
+// Rows another lessor holds are skipped, never waited for or leased twice. The
+// scan still produces them before SKIP LOCKED passes over them, so the bound
+// is n per queue plus the rows held, which is still not the backlog.
+func TestLeaseCostSkipsLockedCandidates(t *testing.T) {
+	ctx := ctxT(t)
+	newStore(t)
+	seedBacklog(t, ctx)
+
+	// Another lessor holds queue a's five best candidates until the test ends.
+	other, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer other.Rollback(ctx) //nolint:errcheck // releases the locks
+	rows, err := other.Query(ctx, `
+		select id from jobs where queue = 'a' and state = 'available'
+		order by priority desc, run_at limit 5 for update`)
+	require.NoError(t, err)
+	held, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	require.NoError(t, err)
+	require.Len(t, held, 5)
+
+	queues, n := []string{"a", "b", "c"}, 10
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) //nolint:errcheck // EXPLAIN ANALYZE ran the UPDATE; undo it
+	scans, raw := explainLease(t, ctx, tx, queues, n)
+
+	var taken int
+	require.NoError(t, tx.QueryRow(ctx,
+		`select count(*) from jobs where id = any($1) and state = 'leased'`, held).Scan(&taken))
+	require.Zero(t, taken, "the lease took rows another transaction holds")
+	read := rowsRead(scans)
+	require.LessOrEqual(t, read, float64(len(queues)*n+len(held)),
+		"a lease of %d past %d held rows read %v candidate rows; plan:\n%s", n, len(held), read, raw)
+	requireLeaseIndex(t, scans, raw)
+}
+
+// Subscribing to a queue twice must not lease fewer distinct jobs: a
+// transaction does not skip rows it has itself locked.
+func TestLeaseWithARepeatedQueueLeasesDistinctJobs(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	enqueueN(t, ctx, s, "a", 3, 0)
+
+	got, err := s.Lease(ctx, []string{"a", "a"}, 3, time.Minute, "w")
+	require.NoError(t, err)
+	ids := map[uuid.UUID]bool{}
+	for _, j := range got {
+		ids[j.ID] = true
+	}
+	require.Len(t, ids, 3)
+}
+
+// The batch is the best n across every subscribed queue, not n from the first.
+func TestLeaseOrdersAcrossQueues(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	a5 := enqueueN(t, ctx, s, "a", 1, 5)[0]
+	enqueueN(t, ctx, s, "a", 1, 1)
+	b3 := enqueueN(t, ctx, s, "b", 1, 3)[0]
+	enqueueN(t, ctx, s, "b", 1, 2)
+
+	got, err := s.Lease(ctx, []string{"a", "b"}, 2, time.Minute, "w")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, a5.ID, got[0].ID)
+	require.Equal(t, b3.ID, got[1].ID)
 }
