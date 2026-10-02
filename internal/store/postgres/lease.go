@@ -35,30 +35,7 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 		return nil, errors.New("store: lease: duration must be positive")
 	}
 
-	// The ORDER BY and WHERE here match jobs_lease_idx (queue, priority desc,
-	// run_at) where state = 'available' term for term, so the planner walks
-	// the index and stops after n rows instead of sorting the queue.
-	rows, err := s.pool.Query(ctx, `
-		with next as (
-			select id from jobs
-			where queue = any($1) and state = 'available'
-			order by priority desc, run_at
-			limit $2
-			for update skip locked
-		)
-		update jobs j
-		set state         = 'leased',
-		    lease_id      = gen_random_uuid(),
-		    leased_by     = $3,
-		    leased_at     = now(),
-		    lease_expires = now() + $4::interval,
-		    attempts      = attempts + 1,
-		    updated_at    = now()
-		from next
-		where j.id = next.id
-		returning `+qualify("j", jobColumns),
-		queues, n, workerID, leaseDur,
-	)
+	rows, err := s.pool.Query(ctx, leaseSQL, queues, n, workerID, leaseDur)
 	if err != nil {
 		return nil, wrap("lease", err)
 	}
@@ -81,3 +58,25 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 	s.obs.Leased(jobs)
 	return jobs, nil
 }
+
+// leaseSQL is Lease's statement: $1 queues, $2 n, $3 worker id, $4 lease
+// duration. It is a variable so tests can EXPLAIN the statement Lease runs.
+var leaseSQL = `
+	with next as (
+		select id from jobs
+		where queue = any($1) and state = 'available'
+		order by priority desc, run_at
+		limit $2
+		for update skip locked
+	)
+	update jobs j
+	set state         = 'leased',
+	    lease_id      = gen_random_uuid(),
+	    leased_by     = $3,
+	    leased_at     = now(),
+	    lease_expires = now() + $4::interval,
+	    attempts      = attempts + 1,
+	    updated_at    = now()
+	from next
+	where j.id = next.id
+	returning ` + qualify("j", jobColumns)
