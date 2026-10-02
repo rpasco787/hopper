@@ -132,6 +132,8 @@ func TestBrokerReplicasReportTheSameDepth(t *testing.T) {
 	}, 12*time.Second, 100*time.Millisecond)
 	require.Zero(t, scrapedValue(t, aMetrics.Addr, "hopper_jobs_dead_total", map[string]string{"queue": "m"}))
 	require.Zero(t, scrapedValue(t, bMetrics.Addr, "hopper_jobs_dead_total", map[string]string{"queue": "m"}))
+	require.Positive(t, scrapedValue(t, aMetrics.Addr, "hopper_db_pool_max_connections", nil),
+		"the broker exports its pool")
 	require.GreaterOrEqual(t, scrapedValue(t, aMetrics.Addr, "grpc_server_handled_total", map[string]string{
 		"grpc_method": "Enqueue", "grpc_code": "OK", "grpc_type": "unary",
 	}), float64(7))

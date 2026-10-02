@@ -276,6 +276,9 @@ func run(args []string) error {
 			return err
 		}
 		st = st.WithObserver(bm)
+		if err := metrics.RegisterPool(reg, func() metrics.PoolStat { return pool.Stat() }); err != nil {
+			return err
+		}
 		grpcMet, err = metrics.NewGRPCServerMetrics(reg)
 		if err != nil {
 			return err
