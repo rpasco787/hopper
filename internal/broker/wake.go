@@ -21,20 +21,25 @@ const (
 // they lease now instead of at their next poll (docs/semantics.md §9).
 //
 // A stream registers the channel its idle wait already selects on for credit;
-// a wakeup is one more non-blocking send to it. Enqueue announces a queue: a
-// stream on this broker is woken at once, and the queue is added to a
-// pending set that the announcer sends to every other broker through the
-// store. The announcer sends one Announce at a time and takes the whole set
-// each time, so under load announcements coalesce into one statement per
-// round trip instead of one per job.
+// a wakeup is one more non-blocking send to it.
 //
-// One announcement adds one job, so it wakes one stream: the others would
-// lease, find nothing, and park again, and with a stream per worker that cost
-// grew with the fleet. Streams say when they are parked in their idle wait;
-// only a parked stream is known to have credit and to be waiting for work.
+// One enqueue adds one job, so it wakes one stream: the others would lease,
+// find nothing, and park again, and with a stream per worker that cost grew
+// with the fleet. Streams say when they are parked in their idle wait; only a
+// parked stream is known to have credit and to be waiting for work. A wake no
+// parked stream can take is not lost: it moves a generation that every stream
+// reads before it leases and checks before it parks (generation, park).
+//
+// Enqueue announces a queue. A parked stream on this broker takes it at once,
+// and that is all. If none could, the queue joins a pending set that the
+// announcer sends to every other broker through the store. The announcer sends
+// one Announce at a time and takes the whole set each time, so under load
+// announcements coalesce into one statement per round trip instead of one per
+// job.
 type wakeups struct {
 	mu      sync.Mutex
 	streams map[chan<- struct{}]*wakeStream
+	gen     uint64              // moves when a wake found no parked stream to take it
 	pending map[string]struct{} // queues not yet announced to other brokers
 	kick    chan struct{}       // buffered 1: pending is non-empty
 }
@@ -65,46 +70,74 @@ func (w *wakeups) subscribe(ch chan<- struct{}, queues []string) func() {
 	}
 }
 
-// setParked records whether the stream behind ch is waiting for work after an
-// empty lease. A stream parks just before its idle wait and unparks when the
-// wait ends; one that was unsubscribed in between is ignored.
-func (w *wakeups) setParked(ch chan<- struct{}, parked bool) {
+// generation is read by a stream just before it leases. It hands the value to
+// park, which refuses if an unserved wake has moved it since.
+func (w *wakeups) generation() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.gen
+}
+
+// park records that the stream behind ch is about to wait for work after a
+// lease that began at generation gen. It reports false, and parks nothing, if
+// a wake has gone unserved since then: that lease may have read a snapshot
+// from before the job was committed, so the stream must lease again.
+func (w *wakeups) park(ch chan<- struct{}, gen uint64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if gen != w.gen {
+		return false
+	}
+	if st, ok := w.streams[ch]; ok {
+		st.parked = true
+	}
+	return true
+}
+
+// unpark records that the stream's wait is over, by a signal, its poll timer
+// or its context. One that was unsubscribed in the meantime is ignored.
+func (w *wakeups) unpark(ch chan<- struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if st, ok := w.streams[ch]; ok {
-		st.parked = parked
+		st.parked = false
 	}
 }
 
-// wake tells this broker's streams that queue may have work.
+// wake tells this broker's streams that queue may have work, and reports
+// whether a parked stream took it.
 //
 // It signals one parked stream that serves queue, and unparks it so the next
-// wake picks another. With none parked, every stream is busy: one may be
-// between an empty lease and its wait, and must find the signal when it gets
-// there. They are all signalled; each costs at most one extra lease when it
-// next comes up empty. The empty queue wakes every stream; the listener sends
-// it when it (re)connects, because announcements made while it was not
+// wake picks another. With none parked the streams are busy, and a wake nobody
+// takes could be missed by one that is between an empty lease and its wait, so
+// it moves the generation instead: any stream that began a lease before it will
+// lease again rather than park. No stream is signalled for nothing.
+//
+// The empty queue wakes every stream and moves the generation; the listener
+// sends it when it (re)connects, because announcements made while it was not
 // listening are lost.
 //
 // A stream whose channel already holds a signal has not looked yet, and will
 // lease after the commit that made this call, so it counts as woken.
-func (w *wakeups) wake(queue string) {
+func (w *wakeups) wake(queue string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if queue != "" {
-		for ch, st := range w.streams {
-			if st.parked && slices.Contains(st.queues, queue) {
-				st.parked = false
-				signal(ch)
-				return
-			}
-		}
-	}
-	for ch, st := range w.streams {
-		if queue == "" || slices.Contains(st.queues, queue) {
+	if queue == "" {
+		w.gen++
+		for ch := range w.streams {
 			signal(ch)
 		}
+		return len(w.streams) > 0
 	}
+	for ch, st := range w.streams {
+		if st.parked && slices.Contains(st.queues, queue) {
+			st.parked = false
+			signal(ch)
+			return true
+		}
+	}
+	w.gen++
+	return false
 }
 
 func signal(ch chan<- struct{}) {
@@ -114,10 +147,15 @@ func signal(ch chan<- struct{}) {
 	}
 }
 
-// announce wakes this broker's streams for queue and schedules the
-// announcement to the others.
+// announce wakes one of this broker's streams for queue. If none could take
+// it, the queue is scheduled for the other brokers: one of their idle streams
+// may. A job a local stream took needs no announcement, since that stream
+// leases it now, and the announcement would wake further streams, here and
+// there, to find it gone.
 func (w *wakeups) announce(queue string) {
-	w.wake(queue)
+	if w.wake(queue) {
+		return
+	}
 	w.mu.Lock()
 	w.pending[queue] = struct{}{}
 	w.mu.Unlock()

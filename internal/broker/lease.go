@@ -104,6 +104,7 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 			if c.Credit == 0 {
 				continue
 			}
+			var before uint64
 			for {
 				old := credit.Load()
 				if old+uint64(c.Credit) > math.MaxUint32 {
@@ -111,12 +112,18 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 					return
 				}
 				if credit.CompareAndSwap(old, old+uint64(c.Credit)) {
+					before = old
 					break
 				}
 			}
-			select {
-			case wake <- struct{}{}:
-			default:
+			// Only a stream that ran out of credit is waiting for more. One that
+			// still has some already took everything leasable at its last lease,
+			// and more credit does not change that.
+			if before == 0 {
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
@@ -146,6 +153,7 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 		if checkStop() != nil {
 			return stopped()
 		}
+		gen := s.wakes.generation() // before the lease, so park can tell if a wake slipped past it
 		n := min(credit.Load(), uint64(s.cfg.MaxLeaseBatch))
 		jobs, err := s.store.Lease(ctx, sub.GetQueues(), int(n), leaseDur, sub.GetWorkerId())
 		if ctx.Err() != nil {
@@ -153,17 +161,6 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 		}
 		if err != nil {
 			return s.fail(ctx, "LeaseJobs", err)
-		}
-		if len(jobs) == 0 {
-			s.wakes.setParked(wake, true)
-			select {
-			case <-time.After(s.cfg.PollInterval):
-			case <-wake:
-			case <-ctx.Done():
-				return stopped()
-			}
-			s.wakes.setParked(wake, false)
-			continue
 		}
 		for i, job := range jobs {
 			if checkStop() != nil {
@@ -193,5 +190,20 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 				return stopped()
 			}
 		}
+		if uint64(len(jobs)) == n {
+			continue // a full batch: the queue may hold more
+		}
+		// A short batch took everything leasable, so another lease right now
+		// could only hear "nothing". Wait for a wakeup or the next poll.
+		if !s.wakes.park(wake, gen) {
+			continue // an enqueue went unserved while the lease ran
+		}
+		select {
+		case <-time.After(s.cfg.PollInterval):
+		case <-wake:
+		case <-ctx.Done():
+			return stopped()
+		}
+		s.wakes.unpark(wake)
 	}
 }
