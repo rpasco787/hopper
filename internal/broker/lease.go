@@ -155,12 +155,14 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 			return s.fail(ctx, "LeaseJobs", err)
 		}
 		if len(jobs) == 0 {
+			s.wakes.setParked(wake, true)
 			select {
 			case <-time.After(s.cfg.PollInterval):
 			case <-wake:
 			case <-ctx.Done():
 				return stopped()
 			}
+			s.wakes.setParked(wake, false)
 			continue
 		}
 		for i, job := range jobs {

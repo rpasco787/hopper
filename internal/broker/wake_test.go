@@ -249,3 +249,205 @@ func TestLocalWakeupsDoNotRetainAnnouncementsWithoutAStore(t *testing.T) {
 	require.Empty(t, svc.wakes.take(), "local-only enqueues must not accumulate pending queues")
 	require.False(t, signalled(svc.wakes.kick), "there is no announcer to kick")
 }
+
+// One enqueue adds one job, so it should cost one idle stream a lease, not
+// every idle stream on the queue: the others would lease, find nothing, and
+// park again. The measured cost of waking them all was about seven leases per
+// job, most of them empty, on a broker with four streams.
+func TestAnEnqueueWakesOneIdleStreamNotEveryOne(t *testing.T) {
+	t.Parallel()
+	const streams = 4
+	var leases atomic.Int64
+	var ready atomic.Bool
+	st := &fakeStore{
+		leaseFn: func(_ context.Context, queues []string, _ int, _ time.Duration, _ string) ([]store.Job, error) {
+			leases.Add(1)
+			if ready.CompareAndSwap(true, false) {
+				return []store.Job{sampleJob(queues[0])}, nil
+			}
+			return nil, nil
+		},
+		enqueueFn: func(_ context.Context, p store.EnqueueParams) (store.Job, bool, error) {
+			ready.Store(true)
+			return sampleJob(p.Queue), true, nil
+		},
+	}
+	svc := NewService(st, Config{PollInterval: time.Hour})
+	client := newTestClient(t, svc)
+
+	delivered := make(chan struct{}, streams)
+	for range streams {
+		stream, err := client.LeaseJobs(ctxT(t))
+		require.NoError(t, err)
+		require.NoError(t, stream.Send(subscribeMsg(1)))
+		go func() {
+			if _, err := stream.Recv(); err == nil {
+				delivered <- struct{}{}
+			}
+		}()
+	}
+	require.Eventually(t, func() bool { return leases.Load() == streams }, 5*time.Second, 5*time.Millisecond,
+		"every stream makes its first lease")
+
+	_, err := client.Enqueue(ctxT(t), &hopperv1.EnqueueRequest{Job: &hopperv1.JobSpec{Queue: "q"}})
+	require.NoError(t, err)
+	waitFor(t, delivered, "the job to reach a stream")
+	require.Never(t, func() bool { return leases.Load() > streams+1 }, 300*time.Millisecond, 5*time.Millisecond,
+		"only the stream that was woken may lease again; the poll interval is an hour")
+	require.Len(t, delivered, 0, "one job reaches one stream")
+}
+
+// signalledSet drains every channel and returns the indexes that held a signal.
+func signalledSet(chans []chan struct{}) map[int]bool {
+	got := make(map[int]bool)
+	for i, ch := range chans {
+		if signalled(ch) {
+			got[i] = true
+		}
+	}
+	return got
+}
+
+func subscribeAll(w *wakeups, n int, queues ...string) []chan struct{} {
+	chans := make([]chan struct{}, n)
+	for i := range chans {
+		chans[i] = make(chan struct{}, 1)
+		w.subscribe(chans[i], queues)
+	}
+	return chans
+}
+
+// A wake picks one parked stream and takes it out of the pool, so a burst of
+// enqueues spreads across the idle streams instead of landing on one.
+func TestWakeChoosesOneParkedStreamPerCall(t *testing.T) {
+	t.Parallel()
+	w := newWakeups()
+	chans := subscribeAll(w, 3, "x")
+	for _, ch := range chans {
+		w.setParked(ch, true)
+	}
+
+	woken := make(map[int]bool)
+	for call := 1; call <= 3; call++ {
+		w.wake("x")
+		got := signalledSet(chans)
+		require.Len(t, got, 1, "call %d must signal exactly one stream", call)
+		for i := range got {
+			require.False(t, woken[i], "call %d signalled stream %d again", call, i)
+			woken[i] = true
+		}
+	}
+	require.Len(t, woken, 3)
+}
+
+// A stream that has not parked may be between an empty lease and its wait. It
+// has to see the signal when it gets there, or the enqueue would cost it a
+// poll. Streams that are all busy are therefore all signalled.
+func TestWakeSignalsEveryServingStreamWhenNoneIsParked(t *testing.T) {
+	t.Parallel()
+	w := newWakeups()
+	chans := subscribeAll(w, 3, "x")
+	other := make(chan struct{}, 1)
+	w.subscribe(other, []string{"z"})
+
+	w.wake("x")
+	require.Len(t, signalledSet(chans), 3)
+	require.False(t, signalled(other))
+}
+
+func TestWakeSkipsStreamsThatAreNotParkedOrNotOnTheQueue(t *testing.T) {
+	t.Parallel()
+	w := newWakeups()
+	chans := subscribeAll(w, 3, "x")
+	elsewhere := make(chan struct{}, 1)
+	w.subscribe(elsewhere, []string{"z"})
+	w.setParked(elsewhere, true)
+
+	w.setParked(chans[0], true)
+	w.setParked(chans[1], true)
+	w.setParked(chans[1], false) // woke by its timer, or by credit
+	w.setParked(chans[2], false)
+
+	w.wake("x")
+	require.Equal(t, map[int]bool{0: true}, signalledSet(chans), "only the parked stream on the queue")
+	require.False(t, signalled(elsewhere))
+}
+
+func TestParkingAnUnsubscribedStreamDoesNothing(t *testing.T) {
+	t.Parallel()
+	w := newWakeups()
+	ch := make(chan struct{}, 1)
+	unsubscribe := w.subscribe(ch, []string{"x"})
+	unsubscribe()
+
+	w.setParked(ch, true)
+	w.wake("x")
+	require.False(t, signalled(ch))
+}
+
+// The listener sends the empty queue when it reconnects, because announcements
+// made while it was down are lost. Every stream must hear it, parked or not.
+func TestTheEmptyQueueStillWakesEveryStream(t *testing.T) {
+	t.Parallel()
+	w := newWakeups()
+	chans := subscribeAll(w, 3, "x")
+	w.setParked(chans[0], true)
+
+	w.wake("")
+	require.Len(t, signalledSet(chans), 3)
+}
+
+// Waking one stream per enqueue must not strand a job: a burst of enqueues
+// reaches as many idle streams, each on its own wake, with no poll to fall
+// back on.
+func TestABurstOfEnqueuesReachesDistinctIdleStreams(t *testing.T) {
+	t.Parallel()
+	const streams = 4
+	var leases, available atomic.Int64
+	st := &fakeStore{
+		leaseFn: func(_ context.Context, queues []string, _ int, _ time.Duration, _ string) ([]store.Job, error) {
+			leases.Add(1)
+			for {
+				n := available.Load()
+				if n == 0 {
+					return nil, nil
+				}
+				if available.CompareAndSwap(n, n-1) {
+					return []store.Job{sampleJob(queues[0])}, nil
+				}
+			}
+		},
+		enqueueFn: func(_ context.Context, p store.EnqueueParams) (store.Job, bool, error) {
+			available.Add(1)
+			return sampleJob(p.Queue), true, nil
+		},
+	}
+	svc := NewService(st, Config{PollInterval: time.Hour})
+	client := newTestClient(t, svc)
+
+	delivered := make(chan struct{}, streams)
+	for range streams {
+		stream, err := client.LeaseJobs(ctxT(t))
+		require.NoError(t, err)
+		require.NoError(t, stream.Send(subscribeMsg(1)))
+		go func() {
+			if _, err := stream.Recv(); err == nil {
+				delivered <- struct{}{}
+			}
+		}()
+	}
+	require.Eventually(t, func() bool { return leases.Load() == streams }, 5*time.Second, 5*time.Millisecond,
+		"every stream makes its first lease")
+
+	for range streams {
+		_, err := client.Enqueue(ctxT(t), &hopperv1.EnqueueRequest{Job: &hopperv1.JobSpec{Queue: "q"}})
+		require.NoError(t, err)
+	}
+	for i := range streams {
+		select {
+		case <-delivered:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d of %d jobs reached a stream; the rest would wait out an hour-long poll", i, streams)
+		}
+	}
+}

@@ -21,22 +21,33 @@ const (
 // they lease now instead of at their next poll (docs/semantics.md §9).
 //
 // A stream registers the channel its idle wait already selects on for credit;
-// a wakeup is one more non-blocking send to it. Enqueue announces a queue: the
-// streams on this broker are woken at once, and the queue is added to a
+// a wakeup is one more non-blocking send to it. Enqueue announces a queue: a
+// stream on this broker is woken at once, and the queue is added to a
 // pending set that the announcer sends to every other broker through the
 // store. The announcer sends one Announce at a time and takes the whole set
 // each time, so under load announcements coalesce into one statement per
 // round trip instead of one per job.
+//
+// One announcement adds one job, so it wakes one stream: the others would
+// lease, find nothing, and park again, and with a stream per worker that cost
+// grew with the fleet. Streams say when they are parked in their idle wait;
+// only a parked stream is known to have credit and to be waiting for work.
 type wakeups struct {
 	mu      sync.Mutex
-	streams map[chan<- struct{}][]string // a stream's wake channel and its queues
-	pending map[string]struct{}          // queues not yet announced to other brokers
-	kick    chan struct{}                // buffered 1: pending is non-empty
+	streams map[chan<- struct{}]*wakeStream
+	pending map[string]struct{} // queues not yet announced to other brokers
+	kick    chan struct{}       // buffered 1: pending is non-empty
+}
+
+// wakeStream is what the registry knows about one lease stream.
+type wakeStream struct {
+	queues []string
+	parked bool // waiting for work after an empty lease, so a wake can use it
 }
 
 func newWakeups() *wakeups {
 	return &wakeups{
-		streams: make(map[chan<- struct{}][]string),
+		streams: make(map[chan<- struct{}]*wakeStream),
 		pending: make(map[string]struct{}),
 		kick:    make(chan struct{}, 1),
 	}
@@ -46,7 +57,7 @@ func newWakeups() *wakeups {
 func (w *wakeups) subscribe(ch chan<- struct{}, queues []string) func() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.streams[ch] = queues
+	w.streams[ch] = &wakeStream{queues: queues}
 	return func() {
 		w.mu.Lock()
 		defer w.mu.Unlock()
@@ -54,19 +65,52 @@ func (w *wakeups) subscribe(ch chan<- struct{}, queues []string) func() {
 	}
 }
 
-// wake signals every stream that serves queue. The empty queue wakes every
-// stream; the listener sends it when it (re)connects, because announcements
-// made while it was not listening are lost.
+// setParked records whether the stream behind ch is waiting for work after an
+// empty lease. A stream parks just before its idle wait and unparks when the
+// wait ends; one that was unsubscribed in between is ignored.
+func (w *wakeups) setParked(ch chan<- struct{}, parked bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if st, ok := w.streams[ch]; ok {
+		st.parked = parked
+	}
+}
+
+// wake tells this broker's streams that queue may have work.
+//
+// It signals one parked stream that serves queue, and unparks it so the next
+// wake picks another. With none parked, every stream is busy: one may be
+// between an empty lease and its wait, and must find the signal when it gets
+// there. They are all signalled; each costs at most one extra lease when it
+// next comes up empty. The empty queue wakes every stream; the listener sends
+// it when it (re)connects, because announcements made while it was not
+// listening are lost.
+//
+// A stream whose channel already holds a signal has not looked yet, and will
+// lease after the commit that made this call, so it counts as woken.
 func (w *wakeups) wake(queue string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for ch, queues := range w.streams {
-		if queue == "" || slices.Contains(queues, queue) {
-			select {
-			case ch <- struct{}{}:
-			default: // already signalled; the stream has not looked yet
+	if queue != "" {
+		for ch, st := range w.streams {
+			if st.parked && slices.Contains(st.queues, queue) {
+				st.parked = false
+				signal(ch)
+				return
 			}
 		}
+	}
+	for ch, st := range w.streams {
+		if queue == "" || slices.Contains(st.queues, queue) {
+			signal(ch)
+		}
+	}
+}
+
+func signal(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default: // already signalled; the stream has not looked yet
 	}
 }
 
