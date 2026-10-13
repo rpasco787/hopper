@@ -1168,4 +1168,4 @@ not in this table.
 | The load generator offers exactly its jobs and rate, charges late calls from their schedule, stops on the first error, and reads back only its own jobs | `loadgen: TestProduceOffersTheRate` and 19 more (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
 | The profiling endpoint serves profiles and never the command line | `broker: TestDebugServerServesProfilesButNotTheCommandLine` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
 | Drain, steady and idle numbers before and after the lease rewrite, the pool size and the wakeups | `scripts/bench.sh` | 70 runs (66 matrix, 4 diagnostic; 9 rerun after the host slept), 2026-10-13 | drain 2,131 → 6,191 jobs/s on one broker, 1,851 → 5,001 on two |
-| The chaos suite passes with Session 11's lease and wakeups | `go test -tags chaos -count=1 ./test/chaos` | *Task 13* | *Task 13* |
+| The chaos suite passes with Session 11's lease and wakeups | `go test -tags chaos -count=1 ./test/chaos` at `df3cde1` | 1 invocation (2026-10-13) | pass: 389 s; undisturbed run, killed workers, broker restart (graceful, crash), PostgreSQL restart (graceful, crash), outage longer than the lease, enqueue storm |
