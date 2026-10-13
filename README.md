@@ -5,15 +5,15 @@ SDK, and bounded streaming flow control. PostgreSQL owns durable state and lease
 transitions; stateless brokers can be replicated without moving job ownership
 into process memory.
 
-The current Session 10 build includes the broker, producer client, worker SDK,
+The current Session 11 build includes the broker, producer client, worker SDK,
 example worker, bulk enqueue and smoke-check CLI, a leader-elected cron
 scheduler inside the broker, Prometheus metrics with a provisioned Grafana
 dashboard, structured job logs that join broker and worker on `lease_id`, a
 local Compose stack, a Helm chart (with rendered plain manifests) that runs on
 a local kind cluster, KEDA autoscaling of the workers on queue depth, and a
 chaos suite (`test/chaos`) that kills workers and restarts the broker and
-PostgreSQL mid-run. Load testing and image publishing remain later-session
-work.
+PostgreSQL mid-run, and a load generator with a benchmark harness
+(`scripts/bench.sh`). Image publishing remains later-session work.
 
 ## Quick start
 
@@ -244,6 +244,7 @@ Brokers and workers serve Prometheus metrics on a separate HTTP listener,
 | `hopper_lease_expirations_total{queue}` | Leases the reaper took back |
 | `hopper_job_wait_seconds{queue}` | Due time to first lease |
 | `hopper_job_run_seconds{queue}` | Lease to ack, completions only |
+| `hopper_db_pool_*` | The PostgreSQL pool: size, connections by state, acquires and waits for a free connection |
 | `grpc_server_*` | Standard gRPC server metrics |
 
 | Worker metric | Meaning |
@@ -434,11 +435,39 @@ The query, the fallback, the scale-down argument and the ownership rule are in
 
 Tear down with `kind delete cluster --name hopper`.
 
+## Performance
+
+On one laptop (Apple M2, everything in one Docker VM), draining 40,000 jobs
+went from 2,131 to 6,191 jobs a second on one broker and from 1,851 to 5,001 on
+two, after the lease query was rewritten to read each queue through its index,
+the connection pool was sized, and idle streams were woken on enqueue. At
+3,000 jobs a second, the highest rate measured, every run kept up, with
+enqueue latency 1.00 ms p50 / 24.5 ms p99 on one broker and 1.22 / 121.5 ms on
+two. An idle queue's job is picked up in 1.5 ms (p50) instead of 85 ms.
+`scripts/bench.sh` documents every setting, and keeps each run's evidence:
+per-statement database time, pool counters, CPU and, with `PROFILE=1`, a
+broker CPU profile.
+
+| Flag | Environment | Default | Meaning |
+|---|---|---:|---|
+| `-db-max-conns` | `HOPPER_DB_MAX_CONNS` | `16` | PostgreSQL connections per broker; at least 2, or 3 with the scheduler. Brokers × this must fit `max_connections`. |
+| `-poll-interval` | `HOPPER_POLL_INTERVAL` | `250ms` | How long an idle lease stream waits without a wakeup. |
+| `-debug-listen` | `HOPPER_DEBUG_LISTEN` | empty | pprof profiles; never bind beyond loopback or a private network. |
+
+```bash
+scripts/bench.sh drain
+RATE=3000 scripts/bench.sh steady
+```
+
+Stop a running kind cluster first (`docker stop hopper-control-plane`), and
+keep the machine from sleeping: every benchmark shares the one Docker VM.
+
 ## Development
 
 ```bash
 gofmt -l .
 go vet ./...
+bash -n scripts/bench.sh
 buf lint
 helm lint --strict deploy/helm/hopper
 helm lint --strict deploy/helm/hopper -f deploy/kind/autoscaling.yaml

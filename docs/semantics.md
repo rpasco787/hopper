@@ -3,7 +3,8 @@
 This document is the contract between hopper and the code that uses it. If the
 implementation and this document disagree, one of them has a bug; fix whichever
 is wrong and keep this file authoritative. The "verified behavior" table at the
-end is filled in from the chaos suite (`test/chaos`), not from intent.
+end is filled in from the test suites, the chaos suite (`test/chaos`) and the
+benchmark harness (`scripts/bench.sh`), not from intent.
 
 ## 1. Guarantees in one paragraph
 
@@ -82,11 +83,17 @@ A lease is exclusive possession of a job for a bounded time.
 
 ```sql
 with next as (
-  select id from jobs
-  where queue = any($1) and state = 'available'
-  order by priority desc, run_at
+  select c.id
+  from unnest($1::text[]) as q(queue),
+  lateral (
+    select id, priority, run_at from jobs
+    where jobs.queue = q.queue and state = 'available'
+    order by priority desc, run_at
+    limit $2
+    for update skip locked
+  ) c
+  order by c.priority desc, c.run_at
   limit $2
-  for update skip locked
 )
 update jobs j
 set state = 'leased', lease_id = gen_random_uuid(), leased_by = $3, leased_at = now(),
@@ -98,6 +105,20 @@ returning j.*;
 - **Exclusivity.** `FOR UPDATE SKIP LOCKED` means concurrent `Lease` calls lock
   disjoint rows; a row another transaction has locked is skipped rather than
   waited on. Two workers can never receive the same `(id, lease_id)`.
+- **Cost.** Each subscribed queue, with repeats collapsed, is read through
+  `jobs_lease_idx` in order and stops after n unlocked rows. The outer sort sees
+  at most n rows per queue, so its input is bounded by n × queues, whatever the
+  backlog. The index walk also steps over rows other lessors hold and over
+  entries for rows leased since the last vacuum. Its work therefore grows with
+  concurrent lessors and vacuum lag, but not with the number of available jobs.
+  - Until Session 11 the statement was `queue = any($1) … order by … limit n`.
+    PostgreSQL answered it by reading and sorting every available row in the
+    subscribed queues: 9.2 ms per lease draining 40,000 jobs on one broker and
+    18.0 ms on two, about 80% of all database time, and a two-broker drain
+    slower than one broker's.
+  - A queue's subquery can lock up to n rows the outer limit drops. They are
+    released at commit, and other lessors skip them meanwhile, as SKIP LOCKED
+    already allows.
 - **Duration.** `lease_expires = now() + lease duration`. The default is set on
   the broker; a worker may request a different duration per stream. On the
   wire an absent or zero duration selects that default. Any other value must be
@@ -291,23 +312,45 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
 - **Priority can starve.** A steady stream of priority-10 jobs will keep
   priority-0 jobs waiting indefinitely. Use separate queues with separate
   workers if you need isolation.
-- `Lease` over several queues (`queue = any($1)`) orders across all of them
+- `Lease` over several queues orders across all of them
   by `priority desc, run_at`, so a busy queue can dominate a stream that
-  also subscribes to quiet ones. PostgreSQL uses `jobs_lease_idx` to find the
-  candidates but still sorts the combined stream; `ListDead` similarly uses
+  also subscribes to quiet ones. It reads each queue through `jobs_lease_idx`
+  in that order and sorts only the best n of each (§4); `ListDead` similarly uses
   `jobs_dead_idx` and incrementally sorts its `id` tiebreaker. The other hot
   sweeps use their indexes without an explicit sort.
-- **Idle queues are polled.** After an empty lease result, a stream waits up
-  to `-poll-interval` (default 250ms), unless a credit update wakes it earlier.
-  Normal additional polling delay is between zero and one interval, plus
-  scheduling/database/network latency. There is no strict delivery bound.
-  Session 11 evaluates `LISTEN/NOTIFY` and pool sizing under load.
+- **Idle streams are woken, and poll as a fallback.** A stream is idle once a
+  lease has returned fewer jobs than it asked for while it still has credit;
+  it then waits up to `-poll-interval` (default 250ms) for a wakeup.
+  - An `Enqueue` or `EnqueueBatch` that inserts an `available` job wakes one
+    idle stream on that broker that serves the job's queue: one job, one
+    stream.
+  - If no stream on that broker is idle, the job is announced to the other
+    brokers with PostgreSQL `NOTIFY` on channel `hopper_available`. Each broker
+    holds one connection that `LISTEN`s, and wakes one idle stream for each
+    queue announced. A stream whose lease was already running when the job
+    arrived leases again before it waits, so it cannot sleep through the job.
+  - Announcements made while a broker is not listening are lost, so whenever
+    its listener (re)connects it wakes all of its streams.
+  - A broker sends one `NOTIFY` statement at a time, carrying every queue
+    still to announce, so announcements coalesce under load.
+  - Returned credit wakes a stream only if it had none left.
+  - Both halves are hints. Without a wakeup, a stream still leases again after
+    `-poll-interval`. That bounds what a lost wakeup costs, and it is the only
+    path for jobs that become available without an enqueue: promoted delays and
+    retries (§4) and redrives.
+  - At 20 jobs a second, pickup was 1.5 ms p50 / 3.2 ms p99 with wakeups and
+    88 ms / 239 ms polling alone, on one broker. Under
+    sustained load streams are rarely idle, so wakeups gain nothing there; at
+    3,000 jobs a second on one broker they cost enqueue latency (p99 8.1 ms
+    polling, 25.8 ms with wakeups). There is still no strict delivery bound.
 - **`ListJobs` order is by ID, not by creation.** Pages are keyed on the last
   ID seen. UUIDv7 ids follow application clocks, so order approximates but does
   not equal `created_at` or commit order. A traversal is live, not a snapshot:
   rows inserted or changed behind the cursor may be missed, and a cursor whose
   row was since deleted still works. It has no dedicated index and walks the
-  primary key; Session 11 revisits that if it matters.
+  primary key. Session 11's load generator reads each run back through it
+  once; at tens of thousands of rows the walk did not matter, so it stays
+  unindexed.
 
 ## 10. Cancellation and retention
 
@@ -539,6 +582,13 @@ under a new lease, and `attempts` accounts for every one (§15).
   worker Deployment serving a fixed list of queues; brokers run a fixed count.
 - **Production monitoring in the kind add-ons.** One Prometheus with a day of
   retention, no Alertmanager, no persistence.
+- **Batched confirmations.** Every delivery costs an ownership `Heartbeat` and
+  an `Ack` or `Nack`, each its own RPC and its own committed statement. After
+  Session 11 they are the broker's largest handlers: 32% of its CPU while two
+  brokers drain 40,000 jobs (Ack 20%, Heartbeat 12%, against 5% for leasing,
+  in a `scripts/bench.sh` profile).
+  - Batching them would change the confirmation path whose outage window
+    §11.3 states, so it is future work, not a setting.
 
 ## 13. Cron schedules and leader election
 
@@ -697,6 +747,11 @@ so it cannot collide with another exporter's in a shared Prometheus.
 | `hopper_lease_expirations_total` | counter | `queue` | Expired leases the reaper took back |
 | `hopper_job_wait_seconds` | histogram | `queue` | First lease minus due time (below) |
 | `hopper_job_run_seconds` | histogram | `queue` | Ack minus lease, completed deliveries only |
+| `hopper_db_pool_max_connections` | gauge | — | `-db-max-conns` |
+| `hopper_db_pool_connections` | gauge | `state` | Connections `acquired` (including those held for the scheduler role and the wakeup listener), `idle` or `constructing` |
+| `hopper_db_pool_acquires_total` | counter | — | Connections taken from the pool |
+| `hopper_db_pool_empty_acquires_total` | counter | — | Acquires that found no idle connection and waited |
+| `hopper_db_pool_empty_acquire_wait_seconds_total` | counter | — | How long those acquires waited |
 | `grpc_server_*` | histogram, counters | `grpc_type`, `grpc_service`, `grpc_method`, `grpc_code` | The standard gRPC interceptor's metrics |
 
 **Worker metrics** (`cmd/worker`).
@@ -705,6 +760,17 @@ so it cannot collide with another exporter's in a shared Prometheus.
 |---|---|---|---|
 | `hopper_worker_inflight_jobs` | gauge | — | Handlers executing right now |
 | `hopper_worker_handler_seconds` | histogram | `queue`, `status` | Handler wall time; `status` is `ok`, `error` or `panic` |
+
+**The pool.** `-db-max-conns` (`HOPPER_DB_MAX_CONNS`, default 16) bounds each
+broker's PostgreSQL connections. The scheduler role (§13) and the wakeup
+listener (§9) each hold one for as long as they run, so the flag must be at
+least 2, or 3 with `-scheduler` on, which leaves queries at least one; the
+broker refuses a smaller value at startup. Brokers × `-db-max-conns` must fit
+the server's `max_connections` (100 by default), with room for anything else
+that connects; Compose and the chart run two brokers, 32 connections at the
+default. The size is set only by the flag; a DSN with `pool_max_conns` is
+refused. The pool metrics are read from pgxpool's own counters at scrape time.
+Waits that grow with load mean the broker is short of connections, not CPU.
 
 Both processes also export the client library's `go_*` and `process_*`
 collectors. Nothing registers globally: each process builds one private
@@ -886,7 +952,10 @@ scopes:
 A rejected `EnqueueBatch` entry has no job. It logs `enqueue batch rejected`
 with its `index`, and belongs to neither scope. `rpc failed` is an internal
 error, logged at error level. `rpc unavailable` (warn) is a store call that could not reach the
-database; the caller got `UNAVAILABLE`, and `err` has the driver's detail. Every other rejection, such as a stale-lease
+database; the caller got `UNAVAILABLE`, and `err` has the driver's detail.
+`wakeup listener stopped` (warn): the broker's `LISTEN` session ended, usually
+with the database, and its lease streams poll until it reconnects.
+`debug endpoint listening` (warn): logged when `-debug-listen` is set. Every other rejection, such as a stale-lease
 Ack, is `rpc rejected` at debug level with its `code`. The broker's
 per-delivery lines (`job enqueued`, `job leased`, `job acked`, `job nacked`)
 are also at debug level, so they cost nothing by default and make the two logs
@@ -920,6 +989,17 @@ scrapeable during the drain. It gets its own 2s budget, then a hard close.
 **Trust model.** The metrics endpoints are plaintext and unauthenticated, like
 the API (§12). They expose allowlisted queue names, counts and timings. They
 never expose payloads, job ids or lease tokens.
+
+**Profiling endpoint.** `cmd/broker -debug-listen` (`HOPPER_DEBUG_LISTEN`,
+default empty, which is off) serves Go's runtime profiles under
+`/debug/pprof/`: the index, heap, goroutine and the other named profiles, plus
+`profile`, `trace` and `symbol`. It is for profiling under load
+(`scripts/bench.sh` with `PROFILE=1`). It never serves
+`/debug/pprof/cmdline`, because a `-dsn` flag carries the database password.
+Profiles still reveal code paths and allocation sites, so bind it to loopback
+or a private network. It has no write timeout, so a profile streams as long as
+asked. A bind failure stops the broker at startup. A failure later is logged,
+and the broker keeps serving.
 
 **Autoscaling reads depth the same way.** With `worker.autoscaling.enabled`,
 the chart renders a KEDA `ScaledObject` for the worker Deployment. It asks for
@@ -1081,3 +1161,11 @@ not in this table.
 | An outage longer than the lease re-executes handlers, each one its worker logged giving up, and loses no job | `chaos: TestAnOutageLongerThanTheLeaseReexecutes` (40 s) | 4 (2026-09-30) | pass: new sessions failed for between 40.09s and 40.4s; 12 handlers repeated, all `lost` (`its lease ran out`), the six gated jobs among them |
 | Sixteen retrying producers through a broker crash and a PostgreSQL restart, with new keys arriving throughout, get exactly one row per key counted in SQL, and every answer names it | `chaos: TestEnqueueStormDeduplicates` | 4 (2026-09-30) | pass: about 1,000 keys and rows each; 16,399–17,168 calls, 142–179 retried; 6–14 keys in doubt; fails when retries use fresh keys |
 | The chaos suite passes three times in a row | `go test -tags chaos -count=3 ./test/chaos` | 1 invocation (2026-09-30) | pass: 1,206 s |
+| A lease walks `jobs_lease_idx` and its candidate scans produce at most n rows per subscribed queue whatever the backlog, plus only the rows another lessor holds, none of which it leases; a repeated queue still yields n distinct jobs; the batch is the best n across queues | `postgres: TestLeaseCostDoesNotGrowWithTheBacklog`, `TestLeaseCostSkipsLockedCandidates`, `TestLeaseWithARepeatedQueueLeasesDistinctJobs`, `TestLeaseOrdersAcrossQueues` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass; the old statement read 6,000 rows for 10; candidate scans 6,000 rows and 80 shared blocks before, 21 rows and 8 blocks after (24 and 8 with five rows locked) |
+| Announcements reach every listener; a listening session never returns to the pool; a terminated one is reported unavailable | `postgres: TestAnnounceReachesEveryListener`, `TestListenEndsWithItsContextAndKeepsNoSession`, `TestListenReportsATerminatedSession` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
+| An enqueue wakes one idle stream, not every one, and a burst reaches distinct streams; a job enqueued while a lease runs is not slept through; a short batch and returned credit cost no extra lease; only a job no local stream took is announced; delayed and deduplicated jobs wake nothing; announcements coalesce while one is in flight; the listener wakes every stream when it reconnects | `broker: TestAnEnqueueWakesOneIdleStreamNotEveryOne` and 17 more in `wake_test.go` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
+| An enqueue on one broker process wakes an idle stream on another within seconds, both polling hourly; each exports its pool | `integration: TestAnEnqueueOnOneBrokerWakesAStreamOnAnother` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
+| The load generator offers exactly its jobs and rate, charges late calls from their schedule, stops on the first error, and reads back only its own jobs | `loadgen: TestProduceOffersTheRate` and 19 more (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
+| The profiling endpoint serves profiles and never the command line | `broker: TestDebugServerServesProfilesButNotTheCommandLine` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
+| Drain, steady and idle numbers before and after the lease rewrite, the pool size and the wakeups | `scripts/bench.sh` | 70 runs (66 matrix, 4 diagnostic; 9 rerun after the host slept), 2026-10-13 | drain 2,131 → 6,191 jobs/s on one broker, 1,851 → 5,001 on two |
+| The chaos suite passes with Session 11's lease and wakeups | `go test -tags chaos -count=1 ./test/chaos` | *Task 13* | *Task 13* |
