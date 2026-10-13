@@ -1,4 +1,4 @@
-# The benchmark stack (scripts/bench.sh, docs/BENCHMARKS.md), merged over
+# The benchmark stack (scripts/bench.sh), merged over
 # docker-compose.yml as project hopper-bench:
 #
 #   docker compose -p hopper-bench -f docker-compose.yml -f deploy/bench/compose.yaml ...

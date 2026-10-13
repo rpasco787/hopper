@@ -329,7 +329,7 @@ func seedBacklog(t *testing.T, ctx context.Context) {
 // A lease's candidates are at most n unlocked rows from each subscribed queue,
 // however deep the backlog. Until Session 11 it read and sorted every
 // available row in the subscribed queues on every call, so its cost grew with
-// the backlog it was meant to drain (docs/BENCHMARKS.md).
+// the backlog it was meant to drain.
 func TestLeaseCostDoesNotGrowWithTheBacklog(t *testing.T) {
 	ctx := ctxT(t)
 	newStore(t)

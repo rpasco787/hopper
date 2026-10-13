@@ -29,8 +29,7 @@ type poolCollector struct {
 
 // RegisterPool exports the broker's PostgreSQL pool. Waiting acquires are the
 // signal: an acquire that finds no idle connection waits for one, and a
-// broker whose waits grow with load is short of connections, not of CPU
-// (docs/BENCHMARKS.md).
+// broker whose waits grow with load is short of connections, not of CPU.
 func RegisterPool(reg prometheus.Registerer, stat func() PoolStat) error {
 	name := func(n string) string { return prometheus.BuildFQName(namespace, "db_pool", n) }
 	return reg.Register(&poolCollector{

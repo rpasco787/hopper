@@ -1,7 +1,6 @@
 // Command loadgen offers a measured load to hopper brokers and reports what
 // came back: enqueue latency per call, and, once every job has finished,
-// pickup and end-to-end latency per job and the completed throughput
-// (docs/BENCHMARKS.md).
+// pickup and end-to-end latency per job and the completed throughput.
 //
 // It speaks only the public gRPC API. It assumes it owns -queue for the
 // length of the run, which a fresh benchmark stack guarantees: it waits until

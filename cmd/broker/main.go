@@ -76,7 +76,7 @@ const MaxMetricsQueues = 100
 // is the machine's CPU count (8 on the benchmark host), which starved a broker
 // serving 64 worker slots: every lease, heartbeat and ack queued for a
 // connection. 16 was the smallest size within 5% of the best measured drain
-// on both topologies (docs/BENCHMARKS.md).
+// on both topologies.
 // Brokers times this must fit the server's max_connections, which is 100 by
 // default; two brokers use at most 32.
 const DefaultDBMaxConns = 16

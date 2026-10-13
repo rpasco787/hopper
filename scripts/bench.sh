@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs one benchmark against a fresh Compose project, hopper-bench, and keeps
-# the evidence (docs/BENCHMARKS.md):
+# the evidence:
 #
 #   scripts/bench.sh drain    # preload JOBS, start the workers, time the drain
 #   scripts/bench.sh steady   # workers up; loadgen offers RATE jobs/s for DURATION
@@ -171,7 +171,7 @@ steady)
   read -r throughput retried enqueue_p50 enqueue_p99 pickup_p50 pickup_p99 e2e_p50 e2e_p99 offered max_lag <<<"$(jq -r '
     [(.throughput | round), .retried, .enqueue.p50_ms, .enqueue.p99_ms, .pickup.p50_ms, .pickup.p99_ms,
      .end_to_end.p50_ms, .end_to_end.p99_ms, .offered_rate, (.max_lag_ms | round)] | @tsv' "$dir/loadgen.json")"
-  # Keeping up (docs/BENCHMARKS.md): at least 98% of offered, no call a second late.
+  # Keeping up: at least 98% of offered, no call a second late.
   kept_up="$(awk -v t="$throughput" -v o="$offered" -v l="$max_lag" \
     'BEGIN { print (o > 0 && t >= 0.98 * o && l < 1000) ? "yes" : "no" }')"
   ;;

@@ -76,7 +76,7 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 // return the subscribed queues in one order, so PostgreSQL read every
 // available row in them and sorted the lot on every call: a lease cost
 // O(backlog), and a deep queue drained slowest exactly when it most needed to
-// drain fast (docs/BENCHMARKS.md). The per-queue LIMIT gives the same rows,
+// drain fast. The per-queue LIMIT gives the same rows,
 // because the best n overall are among the best n of each queue.
 //
 // A queue's subquery can lock up to n rows the outer LIMIT then drops. They

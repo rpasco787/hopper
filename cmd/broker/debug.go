@@ -7,7 +7,7 @@ import (
 )
 
 // newDebugServer serves the runtime profiles, for profiling a broker under
-// load (docs/BENCHMARKS.md). It is off unless -debug-listen is set.
+// load (scripts/bench.sh PROFILE=1). It is off unless -debug-listen is set.
 //
 // The handlers are registered on a private mux rather than by importing
 // net/http/pprof for its side effect, which would put them on
