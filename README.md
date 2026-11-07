@@ -438,7 +438,7 @@ Tear down with `kind delete cluster --name hopper`.
 ## Performance
 
 On one laptop (Apple M2, everything in one Docker VM), draining 40,000 jobs
-went from 2,131 to 6,191 jobs a second on one broker and from 1,851 to 5,001 on
+went from 2,131 to 9,191 jobs a second on one broker and from 1,851 to 5,001 on
 two, after the lease query was rewritten to read each queue through its index,
 the connection pool was sized, and idle streams were woken on enqueue. At
 3,000 jobs a second, the highest rate measured, every run kept up, with
