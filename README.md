@@ -19,9 +19,6 @@ renew their leases by heartbeat.
   Helm chart, KEDA autoscaling on queue depth, and a chaos suite.
 - **9,191 jobs/s** drained on one broker on a laptop ([Performance](#performance)).
 
-> **Status:** a prototype for trusted networks. The API is plaintext and
-> unauthenticated, and container images are not published yet.
-
 ## Quick start
 
 Requires Docker with Compose v2.
