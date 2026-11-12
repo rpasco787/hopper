@@ -33,3 +33,10 @@ go.work.sum
 
 block2-job-queue-plan.md
 docs/plans
+
+# Bulky per-run benchmark files; the rest of docs/bench/ is the evidence.
+docs/bench/**/logs.txt
+docs/bench/**/broker-cpu.pprof
+
+# Bytecode from importing scripts/bench_summary.py in its tests.
+__pycache__/
