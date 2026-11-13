@@ -91,8 +91,8 @@ type Options struct {
 	DialOptions []grpc.DialOption
 }
 
-// Worker runs handlers against one broker. Create it with New, register
-// handlers, then call Run once.
+// Worker runs handlers against the brokers its target resolves to. Create it
+// with New, register handlers, then call Run once.
 type Worker struct {
 	target string
 	opts   Options
@@ -293,20 +293,33 @@ func permanentStreamError(err error) bool {
 	}
 }
 
+// serviceConfig and keepaliveParams match client/client.go; keep them in step.
+// round_robin connects to every broker the target resolves to, sends each
+// heartbeat and confirmation to the next one, and opens each new lease stream
+// on the next one, which is how streams spread back out after a broker
+// restart. The pings, also sent on idle connections, notice a broker that
+// vanished silently in about 15s; the broker permits them
+// (internal/broker/lifetime.go).
+const serviceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+
+var keepaliveParams = keepalive.ClientParameters{
+	Time:                10 * time.Second,
+	Timeout:             5 * time.Second,
+	PermitWithoutStream: true,
+}
+
 // dial follows client.Dial's precedence: SDK defaults first, caller options
 // after, so grpc.WithTransportCredentials replaces the plaintext default
-// rather than conflicting with it.
+// rather than conflicting with it, and a caller's own service config replaces
+// round_robin.
 //
-// Keepalive matches what the server enforces by default (a ping no oftener
-// than every five minutes). It detects a broker that vanished without a FIN;
-// it is not the shutdown mechanism, which is the lifecycle deadline.
+// Keepalive detects a broker that vanished without a FIN; it is not the
+// shutdown mechanism, which is the lifecycle deadline.
 func (w *Worker) dial() (*grpc.ClientConn, error) {
 	base := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    5 * time.Minute,
-			Timeout: 20 * time.Second,
-		}),
+		grpc.WithDefaultServiceConfig(serviceConfig),
+		grpc.WithKeepaliveParams(keepaliveParams),
 	}
 	conn, err := grpc.NewClient(w.target, append(base, w.opts.DialOptions...)...)
 	if err != nil {
