@@ -309,6 +309,23 @@ always ridden out. The exact rule, set by the last successful renewal, is in
 [docs/semantics.md §11.3](docs/semantics.md) with worked examples; §15 has the
 runs.
 
+**Several brokers behind one name.** Point clients and workers at a name
+that resolves to every broker: the chart's `hopper-broker-headless` Service, or
+`brokers` in Compose. Both SDKs connect to each address, send every unary call
+to the next broker, and ping each connection every 10s, so a broker that goes
+silent is noticed in about 15s. A worker's lease stream stays on one broker
+until the broker ends it at `-lease-stream-max-age` (default 5m, ±10%). The
+broker does that only between batches, so every row the stream leased has
+been sent, and the worker reopens the stream on the next broker. That is how
+streams spread back out after a restart. `-max-connection-age` (default 5m)
+makes clients reconnect and resolve the name again, so they find brokers added
+later; an aged connection keeps its lease stream until the stream ends itself.
+How long recovery takes depends on both ages, the DNS resolver's 30s minimum
+between resolutions, gRPC's reconnect backoff and random placement, so
+[docs/semantics.md §15](docs/semantics.md) gives measured times rather than a
+bound. Upgrade brokers before clients: an
+older broker answers the SDK's ping rate with GOAWAY `too_many_pings`.
+
 Handlers must stay idempotent, because side effects can duplicate across the
 Ack-loss window.
 
@@ -325,6 +342,7 @@ answers `GET /metrics` only.
 | `hopper_queue_depth_last_sample_timestamp_seconds` | When this broker last sampled depth successfully |
 | `hopper_jobs_{enqueued,completed,failed,dead}_total{queue}` | Committed transitions; `failed` counts attempts, not jobs |
 | `hopper_lease_expirations_total{queue}` | Leases the reaper took back |
+| `hopper_lease_streams_open` | Lease streams this broker is serving now |
 | `hopper_job_wait_seconds{queue}` | Due time to first lease |
 | `hopper_job_run_seconds{queue}` | Lease to ack, completions only |
 | `hopper_db_pool_*` | The PostgreSQL pool: size, connections by state, acquires and waits for a free connection |
@@ -521,9 +539,12 @@ The query, the fallback, the scale-down argument and the ownership rule are in
   Its password is bootstrap-only (above).
 - The API is plaintext and unauthenticated; see
   [docs/semantics.md §12](docs/semantics.md#12-non-goals).
-- gRPC is balanced per connection, not per request. Each worker holds one
-  connection to one broker, so after a broker restart workers can stay
-  concentrated on the surviving broker until they reconnect.
+- Stream placement is random. After a broker restart, streams spread back out
+  as they reach `-lease-stream-max-age` and the workers resolve the broker name
+  again, and round robin puts each reopened stream on the next broker in a
+  per-worker rotation. A fair share is therefore statistical: with few workers
+  per broker, one broker can hold noticeably more streams than another
+  (`hopper_lease_streams_open` shows it).
 - A worker rollout preserves the pod count, not leasing capacity: with no
   readiness probe, a new worker counts as ready before it is leasing.
 - The kind add-ons are for development: one Prometheus with a day of

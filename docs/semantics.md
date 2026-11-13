@@ -138,7 +138,12 @@ returning j.*;
   receipt acknowledgments. Stream teardown reclaims only unresolved stream
   credit. On reconnect the worker advertises its currently free slots; closing
   a stream does not revoke leases or capacity held by deliveries already in
-  progress. A redundant subscription is rejected.
+  progress. A redundant subscription is rejected. A broker ends a stream with
+  `UNAVAILABLE` when it reaches `-lease-stream-max-age` (±10%), and only
+  between batches, so every row it leased has been sent. The worker reconnects
+  as it does after a drain. `-max-connection-age` never cuts a stream: its
+  grace is unlimited, so an aged connection closes only once its lease stream
+  has ended.
 - **Extension.** `Heartbeat(id, lease_id, dur)` (store method: `ExtendLease`) sets
   `lease_expires = now() + dur` **only if** `state = 'leased' and lease_id = $2`.
   Each delivery carries valid `leased_at` and `lease_expires` timestamps; their
@@ -570,9 +575,13 @@ under a new lease, and `attempts` accounts for every one (§15).
   never depends on the database, which would turn an outage into a restart
   storm. Brokers do answer `UNAVAILABLE` during a database outage (§5), so a
   worker rides it out within its lease (§11.3).
-- **Request-level gRPC load balancing.** The broker Service balances per
-  connection, and each worker holds one long-lived connection, so after a
-  broker restart workers can stay concentrated on the surviving broker.
+- **Even lease-stream placement.** Unary calls are balanced per request by
+  client-side round robin, and lease streams move as they age out, but each
+  reopened stream lands on whichever broker is next in that worker's rotation,
+  so placement is random across workers and an even split is only
+  statistical. Exact balance would need a worker to hold one stream per
+  broker and divide its credit among them, which changes the flow-control
+  accounting in §4.
 - **Scaling workers to zero.** `minReplicas` is at least 1. Scale-to-zero
   needs KEDA's activation threshold and accepts a cold start for the first
   job, and neither is designed here.
@@ -745,6 +754,7 @@ so it cannot collide with another exporter's in a shared Prometheus.
 | `hopper_jobs_failed_total` | counter | `queue` | **Failed attempts**, not failed jobs: Nacks applied, whether rescheduled or dead-lettered. A job that fails three times counts 3 |
 | `hopper_jobs_dead_total` | counter | `queue` | Transitions into `dead`, by Nack or lease expiry |
 | `hopper_lease_expirations_total` | counter | `queue` | Expired leases the reaper took back |
+| `hopper_lease_streams_open` | gauge | — | Lease streams this broker is serving now |
 | `hopper_job_wait_seconds` | histogram | `queue` | First lease minus due time (below) |
 | `hopper_job_run_seconds` | histogram | `queue` | Ack minus lease, completed deliveries only |
 | `hopper_db_pool_max_connections` | gauge | — | `-db-max-conns` |
@@ -1169,3 +1179,10 @@ not in this table.
 | The profiling endpoint serves profiles and never the command line | `broker: TestDebugServerServesProfilesButNotTheCommandLine` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
 | Drain, steady and idle numbers before and after the lease rewrite, the pool size and the wakeups | `scripts/bench.sh` | 70 runs (66 matrix, 4 diagnostic; 9 rerun after the host slept), 2026-10-13 | drain 2,131 → 6,191 jobs/s on one broker, 1,851 → 5,001 on two |
 | The chaos suite passes with Session 11's lease and wakeups | `go test -tags chaos -count=1 ./test/chaos` at `df3cde1` | 1 invocation (2026-10-13) | pass: 389 s; undisturbed run, killed workers, broker restart (graceful, crash), PostgreSQL restart (graceful, crash), outage longer than the lease, enqueue storm |
+| Unary calls reach every resolved broker | `client: TestDialSpreadsCallsAcrossEveryResolvedBroker`, `worker: TestReconnectingStreamsSpreadAcrossBrokers` | 3 (client, `-count=3`) and 2 (worker, `-count=2`), 2026-11-12 | pass |
+| A silent broker is noticed in about 15s | `client: TestSilentBrokerIsNoticedInAboutFifteenSeconds` (a proxy stops forwarding; no FIN or RST) | 1 (2026-11-12) | pass; noticed after 15.1 s |
+| A connection age makes clients find an added broker | `client: TestConnectionAgeFindsANewBroker` (with a control that never finds it) | 3 (`-count=3`, 2026-11-12) | pass |
+| A lease stream ages out only between batches, and a connection age never cuts a held batch | `broker: TestLeaseStreamAgesOutOnlyBetweenBatches`, `TestConnectionAgeNeverCutsAHeldBatch` | 3 (`-count=3`, 2026-11-12) | pass; each fails when broken on purpose (age read inside a batch: 1 of 3 rows sent; a 200ms grace: the transport cut with 3 rows leased and unsent) |
+| A client deadline cancels the broker's query | `integration: TestClientDeadlineCancelsTheQuery` (table lock; backend gone after the 500ms deadline) | 3 (`-count=3`, 2026-11-12) | pass |
+| Lease-stream age-outs strand no lease | `chaos: TestLeaseStreamAgeOutsStrandNothing` (3 workers, 2 brokers, 5s ages, 6,000 jobs) | 3 (2026-11-12) | pass; 33, 33, 33 age-outs; 0 extra leases |
+| Streams spread back after a broker returns, losing nothing | `chaos: TestStreamsSpreadBackAfterABrokerReturns` (8 workers, 2 brokers, 20s ages, 40,000 jobs) | 3 (2026-11-12) | pass; back in 9, 4, 20 s (3/5, 2/6, 3/5 streams); 0 lost, 0 repeated starts; run 3 redelivered 1 job whose lease the stopped broker's drain took and never sent (§11), reaped 30 s later |
