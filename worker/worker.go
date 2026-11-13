@@ -109,6 +109,11 @@ type Worker struct {
 	// runner owns a delivery once it is off the stream. It is a field so tests
 	// can drive dispatch and capacity without staging a whole execution.
 	runner deliveryRunner
+
+	// healthySession is how long a lease stream must have stayed up for its
+	// end to count as routine rather than as a failure; see consume. It is a
+	// field so a test can shorten it.
+	healthySession time.Duration
 }
 
 // New creates a Worker. It does no network work; the connection is made by Run.
@@ -136,6 +141,8 @@ func New(target string, opts Options) *Worker {
 		opts:     opts,
 		log:      opts.Logger.With("worker_id", opts.ID),
 		handlers: make(map[string]HandlerFunc),
+
+		healthySession: backoffCap,
 	}
 	w.runner = w.execute
 	return w
@@ -243,6 +250,7 @@ func (w *Worker) consume(ctx context.Context) error {
 	b := newBackoff()
 	for !lc.isDraining() {
 		s := &session{w: w, lc: lc, rpc: rpc, pool: pool, log: w.log}
+		opened := time.Now()
 		err := s.run()
 		if lc.isDraining() {
 			break
@@ -251,12 +259,22 @@ func (w *Worker) consume(ctx context.Context) error {
 			sessionErr = err
 			break
 		}
-		if s.deliveryCount() > 0 {
+		// A stream that delivered, or that stayed up a while, reached a healthy
+		// broker, so the next attempt starts from the shortest delay. The
+		// second case is the broker ending the stream at its maximum age, which
+		// happens to every stream every few minutes; on a quiet queue it
+		// delivers nothing, and treating it as a failure would climb the backoff
+		// toward its cap. A stream that ended at once still backs off.
+		healthy := time.Since(opened) >= w.healthySession
+		if healthy || s.deliveryCount() > 0 {
 			b.reset()
 		}
-		if err != nil {
+		switch {
+		case healthy && status.Code(err) == codes.Unavailable:
+			w.log.Info("lease stream failed; reconnecting", "err", err)
+		case err != nil:
 			w.log.Warn("lease stream failed; reconnecting", "err", err)
-		} else {
+		default:
 			w.log.Warn("lease stream closed; reconnecting")
 		}
 
