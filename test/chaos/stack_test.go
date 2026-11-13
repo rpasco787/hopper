@@ -100,8 +100,9 @@ type stack struct {
 
 // up starts a fresh stack for one test and removes it when the test ends,
 // saving every container's log into the evidence directory first, pass or
-// fail.
-func up(t *testing.T, name string) *stack {
+// fail. env adds variables to every Compose command, for the opt-ins in
+// compose.yaml.
+func up(t *testing.T, name string, env ...string) *stack {
 	t.Helper()
 	deadline, ok := t.Deadline()
 	if !ok {
@@ -115,7 +116,7 @@ func up(t *testing.T, name string) *stack {
 	require.NoError(t, err)
 	fmt.Fprintln(events, "time,action,container")
 	pg, broker, standby := freePort(t), freePort(t), freePort(t)
-	s := &stack{t: t, ctx: ctx, dir: dir, env: portEnv(pg, broker, standby), events: events,
+	s := &stack{t: t, ctx: ctx, dir: dir, env: append(portEnv(pg, broker, standby), env...), events: events,
 		dsn:        fmt.Sprintf("postgres://hopper:hopper@127.0.0.1:%s/hopper?sslmode=disable&connect_timeout=5", pg),
 		brokerAddr: "127.0.0.1:" + broker, standbyAddr: "127.0.0.1:" + standby}
 
