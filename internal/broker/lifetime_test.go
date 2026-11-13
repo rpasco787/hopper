@@ -218,3 +218,23 @@ func TestConnectionAgeNeverCutsAHeldBatch(t *testing.T) {
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "maximum age")
 }
+
+// TestClientDeadlineCancelsTheStoreCall: a caller's 100ms deadline reaches the
+// store as context cancellation, so a slow query is abandoned with its caller.
+func TestClientDeadlineCancelsTheStoreCall(t *testing.T) {
+	t.Parallel()
+	cancelled := make(chan struct{})
+	_, conn := startServer(t, &fakeStore{getJobFn: func(ctx context.Context, _ uuid.UUID) (store.Job, error) {
+		<-ctx.Done()
+		close(cancelled)
+		return store.Job{}, ctx.Err()
+	}}, Config{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := hopperv1.NewHopperServiceClient(conn).GetJob(ctx, &hopperv1.GetJobRequest{Id: uuid.NewString()})
+	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+	waitFor(t, cancelled, "the store call to see the deadline")
+	require.Less(t, time.Since(start), time.Second)
+}
