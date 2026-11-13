@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/resolver/manual"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
 	"github.com/rpasco787/hopper/internal/broker"
@@ -129,9 +130,15 @@ func (enqueueOnlyStore) GetJob(context.Context, uuid.UUID) (store.Job, error) {
 
 func serve(t *testing.T, st store.Store) string {
 	t.Helper()
+	return serveWith(t, st, broker.Config{})
+}
+
+// serveWith is serve with a broker config and extra server options.
+func serveWith(t *testing.T, st store.Store, cfg broker.Config, opts ...grpc.ServerOption) string {
+	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	srv := broker.NewServer(st, broker.Config{})
+	srv := broker.NewServer(st, cfg, opts...)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -264,4 +271,129 @@ func TestDialSpreadsCallsAcrossEveryResolvedBroker(t *testing.T) {
 		}
 		return a.calls.Load() > 0 && b.calls.Load() > 0
 	}, 5*time.Second, 5*time.Millisecond, "every call went to one broker")
+}
+
+// connEvents counts transports opened and closed. As a server option it sees
+// the broker's side; as a dial option, the client's.
+type connEvents struct{ begins, ends atomic.Int32 }
+
+func (c *connEvents) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context   { return ctx }
+func (c *connEvents) HandleRPC(context.Context, stats.RPCStats)                         {}
+func (c *connEvents) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context { return ctx }
+func (c *connEvents) HandleConn(_ context.Context, s stats.ConnStats) {
+	switch s.(type) {
+	case *stats.ConnBegin:
+		c.begins.Add(1)
+	case *stats.ConnEnd:
+		c.ends.Add(1)
+	}
+}
+
+// TestIdleConnectionSurvivesKeepalive: Dial pings an idle broker every 10s.
+// gRPC's default enforcement forgives the first ping after the server last
+// wrote, counts each later early ping as a strike, and answers the third
+// strike (the fourth ping, about 40s in) with GOAWAY "too_many_pings". The
+// broker's own policy must allow the SDK's rate, so the connection has to
+// survive a full minute, well past that point. -short skips it.
+func TestIdleConnectionSurvivesKeepalive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits a minute through keepalive pings")
+	}
+	t.Parallel()
+
+	events := &connEvents{}
+	c, err := Dial(serveWith(t, enqueueOnlyStore{}, broker.Config{}, grpc.StatsHandler(events)))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = c.GetJob(ctx, uuid.New())
+	require.ErrorIs(t, err, ErrNotFound)
+	require.Never(t, func() bool { return events.ends.Load() > 0 }, time.Minute, 500*time.Millisecond,
+		"the broker closed an idle connection that was only pinging")
+	require.Equal(t, int32(1), events.begins.Load())
+}
+
+// freezer is a TCP proxy that can stop forwarding without closing anything,
+// which is how a powered-off broker or a dropped network path looks to the
+// client: no FIN, no RST, only silence.
+type freezer struct {
+	lis    net.Listener
+	target string
+	frozen atomic.Bool
+}
+
+func startFreezer(t *testing.T, target string) *freezer {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	f := &freezer{lis: lis, target: target}
+	t.Cleanup(func() { lis.Close() })
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go f.pipe(c)
+		}
+	}()
+	return f
+}
+
+func (f *freezer) addr() string { return f.lis.Addr().String() }
+
+func (f *freezer) pipe(client net.Conn) {
+	server, err := net.Dial("tcp", f.target)
+	if err != nil {
+		client.Close()
+		return
+	}
+	forward := func(dst, src net.Conn) {
+		defer dst.Close()
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := src.Read(buf)
+			if err != nil {
+				return
+			}
+			if f.frozen.Load() {
+				continue // dropped, as on a dead path; the proxy is never thawed
+			}
+			if _, err := dst.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}
+	go forward(server, client)
+	go forward(client, server)
+}
+
+// TestSilentBrokerIsNoticedInAboutFifteenSeconds: the path to the broker
+// goes silent mid-connection. The client's next ping, 10s after its last
+// read, gets no answer, and it closes the connection 5s later. -short skips it.
+func TestSilentBrokerIsNoticedInAboutFifteenSeconds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for a keepalive timeout")
+	}
+	t.Parallel()
+
+	proxy := startFreezer(t, serve(t, enqueueOnlyStore{}))
+	events := &connEvents{}
+	c, err := Dial(proxy.addr(), grpc.WithStatsHandler(events))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = c.GetJob(ctx, uuid.New())
+	require.ErrorIs(t, err, ErrNotFound)
+	proxy.frozen.Store(true)
+	frozenAt := time.Now()
+	require.Eventually(t, func() bool { return events.ends.Load() > 0 }, 25*time.Second, 100*time.Millisecond,
+		"the client never noticed the silent broker")
+	took := time.Since(frozenAt)
+	t.Logf("silent broker noticed after %s", took.Round(100*time.Millisecond))
+	require.Less(t, took, 17*time.Second, "Time + Timeout is 15s")
 }

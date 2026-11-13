@@ -41,7 +41,7 @@ type Server struct {
 // quickstart works.
 func NewServer(st store.Store, cfg Config, opts ...grpc.ServerOption) *Server {
 	svc := NewService(st, cfg)
-	g := grpc.NewServer(slices.Concat(opts, []grpc.ServerOption{
+	g := grpc.NewServer(slices.Concat(opts, lifetimeOptions(cfg), []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(MaxMessageBytes), grpc.MaxSendMsgSize(MaxMessageBytes),
 		grpc.ChainStreamInterceptor(svc.drainStreams),
 	})...)

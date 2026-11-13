@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -48,6 +49,19 @@ type Client struct {
 // state, so any broker can answer any call. Keep in step with worker/worker.go.
 const serviceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
 
+// keepaliveParams ping every 10s even with no call in flight, so a broker that
+// goes silent without closing its connections is noticed in about 15s rather
+// than at the next call's deadline. Round robin holds a connection to every
+// broker, most of them idle, which is why idle pings matter. The broker permits
+// this rate (internal/broker/lifetime.go); a broker older than that policy
+// answers with GOAWAY "too_many_pings", so upgrade brokers first. Keep in step
+// with worker/worker.go.
+var keepaliveParams = keepalive.ClientParameters{
+	Time:                10 * time.Second,
+	Timeout:             5 * time.Second,
+	PermitWithoutStream: true,
+}
+
 // Dial connects to the brokers target resolves to. A DNS name that returns
 // several addresses gets a connection to each, and calls rotate across them.
 // The connection is lazy: this does not fail because the broker is down, it
@@ -62,6 +76,7 @@ func Dial(target string, opts ...grpc.DialOption) (*Client, error) {
 	base := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(serviceConfig),
+		grpc.WithKeepaliveParams(keepaliveParams),
 	}
 	conn, err := grpc.NewClient(target, append(base, opts...)...)
 	if err != nil {
