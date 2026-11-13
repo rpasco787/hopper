@@ -1,0 +1,19 @@
+# Headless: this name resolves to every ready broker pod, so the worker SDK's
+# round_robin connects to all of them, sends each heartbeat and confirmation
+# to the next, and opens each new lease stream on the next. Streams spread
+# back out after a broker restart as they reach -lease-stream-max-age. The
+# ClusterIP Service beside it stays for metrics scraping.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hopper.fullname" . }}-broker-headless
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "broker") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "hopper.selectorLabels" (dict "root" . "component" "broker") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: 9090
+      targetPort: grpc

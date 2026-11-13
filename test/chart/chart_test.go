@@ -625,7 +625,7 @@ func TestCronSchedulesReachTheBroker(t *testing.T) {
 func TestWorkerConfig(t *testing.T) {
 	objects := render(t)
 	require.Equal(t, map[string]any{
-		"HOPPER_BROKER":           "hopper-broker:9090",
+		"HOPPER_BROKER":           "hopper-broker-headless:9090",
 		"HOPPER_CONCURRENCY":      "8",
 		"HOPPER_SHUTDOWN_TIMEOUT": "45s",
 		"HOPPER_LOG_LEVEL":        "info",
@@ -694,4 +694,20 @@ func TestRenderedManifestsAreCurrent(t *testing.T) {
 			helmVersion, canonicalHelm)
 	}
 	require.Equal(t, string(want), string(got), msg)
+}
+
+// TestWorkersDialEveryBrokerThroughAHeadlessService: a headless Service's DNS
+// name returns every ready broker pod, which is what the SDK's round robin
+// needs. The ClusterIP Service stays for metrics scraping.
+func TestWorkersDialEveryBrokerThroughAHeadlessService(t *testing.T) {
+	objects := render(t)
+	svc := object(t, objects, "Service/hopper-broker-headless")
+	require.Equal(t, "None", dig(svc, "spec", "clusterIP"))
+	require.Equal(t, []any{map[string]any{"name": "grpc", "port": 9090, "targetPort": "grpc"}},
+		dig(svc, "spec", "ports"), "gRPC only: a metrics port here would be scraped twice")
+	require.Equal(t, dig(object(t, objects, "Deployment/hopper-broker"), "spec", "selector", "matchLabels"),
+		dig(svc, "spec", "selector"))
+	require.Nil(t, dig(svc, "spec", "publishNotReadyAddresses"), "DNS must return only ready brokers")
+	require.Equal(t, "hopper-broker-headless:9090",
+		dig(object(t, objects, "ConfigMap/hopper-worker"), "data", "HOPPER_BROKER"))
 }

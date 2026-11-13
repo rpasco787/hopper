@@ -1,5 +1,6 @@
-# ClusterIP: each worker holds one long-lived gRPC connection, so balancing is
-# per connection, not per request (see the README). The named metrics port is
+# ClusterIP: one stable address for metrics scraping and for anything that
+# wants a single endpoint. Workers dial the headless Service instead, so they
+# reach every broker (see broker-headless-service.yaml). The named metrics port is
 # what a ServiceMonitor selects.
 apiVersion: v1
 kind: Service
