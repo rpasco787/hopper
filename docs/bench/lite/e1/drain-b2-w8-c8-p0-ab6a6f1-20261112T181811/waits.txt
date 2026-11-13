@@ -1,0 +1,17 @@
+samples|8
+active_mean|20.62
+type|IPC|3|1.8
+type|CPU|22|13.3
+type|Lock|4|2.4
+type|LWLock|123|74.5
+type|Client|7|4.2
+type|IO|6|3.6
+event|IO|WALWrite|1|0.6
+event|LWLock|XactSLRU|1|0.6
+event|Lock|transactionid|4|2.4
+event|IO|WALSync|5|3.0
+event|Client|ClientRead|7|4.2
+event|IPC|XactGroupUpdate|3|1.8
+event|LWLock|WALWrite|107|64.8
+event|LWLock|BufferContent|15|9.1
+event|CPU|running|22|13.3

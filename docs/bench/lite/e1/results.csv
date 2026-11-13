@@ -1,0 +1,7 @@
+label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,evidence
+e1 b1,drain,ab6a6f1,1,8,16,default,on,8,0,5068,0,,,,,,,,,,157,83,104,8.75,24.3,0.0,65.7,8.6,0.267,151.9,docs/bench/lite/e1/drain-b1-w8-c8-p0-ab6a6f1-20261112T181623
+e1 b2,drain,ab6a6f1,2,8,16,default,on,8,0,5472,0,,,,,,,,,,149,85,98,24.14,7.7,0.6,85.8,3.6,0.662,179.0,docs/bench/lite/e1/drain-b2-w8-c8-p0-ab6a6f1-20261112T181644
+e1 b1,drain,ab6a6f1,1,8,16,default,on,8,0,5185,0,,,,,,,,,,141,74,91,10.00,16.2,0.0,65.0,7.5,0.278,152.1,docs/bench/lite/e1/drain-b1-w8-c8-p0-ab6a6f1-20261112T181707
+e1 b2,drain,ab6a6f1,2,8,16,default,on,8,0,5444,0,,,,,,,,,,152,82,94,18.38,10.9,2.7,78.2,4.8,0.707,181.0,docs/bench/lite/e1/drain-b2-w8-c8-p0-ab6a6f1-20261112T181728
+e1 b1,drain,ab6a6f1,1,8,16,default,on,8,0,5088,0,,,,,,,,,,155,81,102,10.38,12.0,0.0,78.3,8.4,0.275,152.0,docs/bench/lite/e1/drain-b1-w8-c8-p0-ab6a6f1-20261112T181750
+e1 b2,drain,ab6a6f1,2,8,16,default,on,8,0,5147,0,,,,,,,,,,166,91,107,20.62,13.3,2.4,74.5,3.6,0.742,182.5,docs/bench/lite/e1/drain-b2-w8-c8-p0-ab6a6f1-20261112T181811

@@ -1,0 +1,10 @@
+# Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
+# the layout is the same at one and two brokers, so only the broker count
+# changes. With one broker, CPU 3 is idle.
+services:
+  postgres: {cpuset: "0-1"}
+  broker: {cpuset: "2"}
+  broker-standby: {cpuset: "3"}
+  worker: {cpuset: "4-6"}
+  worker-b: {cpuset: "4-6"}
+  loadgen: {cpuset: "7"}
