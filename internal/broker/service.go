@@ -24,6 +24,11 @@ const (
 	DefaultPollInterval  = 250 * time.Millisecond
 	DefaultListLimit     = 100
 	MaxListLimit         = 1000
+
+	// DefaultLeaseStreamMaxAge and DefaultMaxConnectionAge are cmd/broker's
+	// defaults. A Service built with zero values never ages anything out.
+	DefaultLeaseStreamMaxAge = 5 * time.Minute
+	DefaultMaxConnectionAge  = 5 * time.Minute
 )
 
 // Gauge is the part of a Prometheus gauge the service uses. It is an
@@ -50,6 +55,12 @@ type Config struct {
 	// lost wakeup and the only path for jobs that become available without an
 	// Enqueue: promoted delays and retries, and redrives (docs/semantics.md §9).
 	PollInterval time.Duration
+	// LeaseStreamMaxAge ends each lease stream with UNAVAILABLE after about
+	// this long (±10%), at a point where every row it leased has been sent.
+	// The worker reopens it and round robin places the new stream, which is
+	// what spreads streams back out after a broker restart. Zero never ends a
+	// stream for age.
+	LeaseStreamMaxAge time.Duration
 	// Wakeups carries enqueue announcements between brokers. Nil keeps them
 	// within this broker; RunWakeups does the rest.
 	Wakeups store.Wakeups

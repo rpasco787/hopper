@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"math/rand/v2"
 	"time"
 
 	"google.golang.org/grpc"
@@ -36,4 +37,10 @@ func lifetimeOptions(cfg Config) []grpc.ServerOption {
 			Timeout: serverPingTimeout,
 		}),
 	}
+}
+
+// jitter spreads d by ±10%, as gRPC does for MaxConnectionAge, so streams one
+// restart opened together do not all age out, and reconnect, together.
+func jitter(d time.Duration) time.Duration {
+	return d + time.Duration((rand.Float64()*0.2-0.1)*float64(d))
 }

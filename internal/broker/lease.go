@@ -16,6 +16,9 @@ import (
 
 // LeaseJobs spends cooperative worker credits. A successful Send is not a
 // receipt acknowledgment. Rows from earlier batches may still be buffered.
+//
+// A stream ends when the client half-closes, the broker drains, or it reaches
+// LeaseStreamMaxAge; the last happens only between batches.
 func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error {
 	ctx, cancel := context.WithCancelCause(stream.Context())
 	defer cancel(context.Canceled)
@@ -140,13 +143,34 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 	defer logger.InfoContext(ctx, "lease stream closed")
 	s.cfg.LeaseStreams.Inc()
 	defer s.cfg.LeaseStreams.Dec()
+	// aged fires once this stream has served its share of LeaseStreamMaxAge.
+	// It is read only where every row this stream leased has been sent: at the
+	// top of the loop and in its two waits, never inside a batch. Ending a
+	// stream for age therefore never strands a lease until the reaper.
+	var aged <-chan time.Time
+	if s.cfg.LeaseStreamMaxAge > 0 {
+		timer := time.NewTimer(jitter(s.cfg.LeaseStreamMaxAge))
+		defer timer.Stop()
+		aged = timer.C
+	}
+	ageOut := func() error {
+		logger.InfoContext(ctx, "lease stream reached its maximum age")
+		return status.Error(codes.Unavailable, "lease stream reached its maximum age; reconnect")
+	}
 	for {
 		if checkStop() != nil {
 			return stopped()
 		}
+		select {
+		case <-aged:
+			return ageOut()
+		default:
+		}
 		if credit.Load() == 0 {
 			select {
 			case <-wake:
+			case <-aged:
+				return ageOut()
 			case <-ctx.Done():
 				return stopped()
 			}
@@ -203,6 +227,8 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 		select {
 		case <-time.After(s.cfg.PollInterval):
 		case <-wake:
+		case <-aged:
+			return ageOut()
 		case <-ctx.Done():
 			return stopped()
 		}

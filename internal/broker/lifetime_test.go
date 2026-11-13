@@ -75,3 +75,79 @@ func TestRejectedSubscriptionIsNotCounted(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Zero(t, g.incs.Load())
 }
+
+func TestJitterStaysWithinTenPercent(t *testing.T) {
+	t.Parallel()
+	for range 1000 {
+		d := jitter(time.Minute)
+		require.GreaterOrEqual(t, d, 54*time.Second)
+		require.LessOrEqual(t, d, 66*time.Second)
+	}
+}
+
+// TestLeaseStreamAgesOut: an idle stream (parked after an empty lease) and a
+// stream with no credit (waiting for some) both end with UNAVAILABLE once
+// they reach their maximum age, so the worker reconnects.
+func TestLeaseStreamAgesOut(t *testing.T) {
+	t.Parallel()
+	for _, credit := range []uint32{0, 1} {
+		svc := NewService(idleStore(), Config{LeaseStreamMaxAge: 20 * time.Millisecond, PollInterval: time.Hour})
+		stream := newFakeLeaseStream(t, sendNothing)
+		stream.in <- subscribeMsg(credit)
+		err := awaitEnd(t, runLease(svc, stream))
+		require.Equal(t, codes.Unavailable, status.Code(err), "credit %d", credit)
+		require.Contains(t, status.Convert(err).Message(), "maximum age", "credit %d", credit)
+	}
+}
+
+// TestLeaseStreamWithoutMaxAgeStaysOpen: zero means never.
+func TestLeaseStreamWithoutMaxAgeStaysOpen(t *testing.T) {
+	t.Parallel()
+	svc := NewService(idleStore(), Config{PollInterval: time.Hour})
+	stream := newFakeLeaseStream(t, sendNothing)
+	stream.in <- subscribeMsg(1)
+	done := runLease(svc, stream)
+	require.Never(t, func() bool { return len(done) > 0 }, 200*time.Millisecond, 10*time.Millisecond)
+	close(stream.in)
+	require.NoError(t, awaitEnd(t, done))
+}
+
+// TestLeaseStreamAgesOutOnlyBetweenBatches: the age timer fires while a batch
+// is half sent. The stream must send the rest of the batch first; a leased row
+// it never sent would sit leased until the reaper took it back.
+func TestLeaseStreamAgesOutOnlyBetweenBatches(t *testing.T) {
+	t.Parallel()
+	const maxAge = 20 * time.Millisecond
+	var leases atomic.Int32
+	svc := NewService(&fakeStore{leaseFn: func(context.Context, []string, int, time.Duration, string) ([]store.Job, error) {
+		if leases.Add(1) > 1 {
+			return nil, nil
+		}
+		return []store.Job{leasedJob("q"), leasedJob("q"), leasedJob("q")}, nil
+	}}, Config{LeaseStreamMaxAge: maxAge, PollInterval: time.Hour})
+
+	firstSend, release := make(chan struct{}), make(chan struct{})
+	var sent atomic.Int32
+	stream := newFakeLeaseStream(t, func(ctx context.Context, _ *hopperv1.LeaseJobsResponse) error {
+		if sent.Add(1) == 1 {
+			close(firstSend)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+	stream.in <- subscribeMsg(3)
+	done := runLease(svc, stream)
+
+	waitFor(t, firstSend, "the first send")
+	time.Sleep(5 * maxAge) // the timer has fired: it is at most 1.1 × maxAge
+	close(release)
+
+	err := awaitEnd(t, done)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "maximum age")
+	require.Equal(t, int32(3), sent.Load(), "every leased row was sent before the stream ended")
+}
