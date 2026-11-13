@@ -35,6 +35,14 @@ func lifetimeOptions(cfg Config) []grpc.ServerOption {
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    serverPingInterval,
 			Timeout: serverPingTimeout,
+			// Zero is gRPC's "never". MaxConnectionAgeGrace is deliberately
+			// left at its default, unlimited. When grace runs out, gRPC closes
+			// the connection whatever streams it carries, and a lease stream
+			// holding a batch (a slow lease query, a blocked send) must not be
+			// cut with rows leased but unsent. GOAWAY still goes out at the age,
+			// so clients still re-resolve. The old connection closes once its
+			// lease stream ages out.
+			MaxConnectionAge: cfg.MaxConnectionAge,
 		}),
 	}
 }

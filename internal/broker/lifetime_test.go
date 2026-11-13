@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
 	hopperv1 "github.com/rpasco787/hopper/gen/hopper/v1"
@@ -150,4 +153,68 @@ func TestLeaseStreamAgesOutOnlyBetweenBatches(t *testing.T) {
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "maximum age")
 	require.Equal(t, int32(3), sent.Load(), "every leased row was sent before the stream ended")
+}
+
+type connCounter struct{ n atomic.Int32 }
+
+func (c *connCounter) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context   { return ctx }
+func (c *connCounter) HandleRPC(context.Context, stats.RPCStats)                         {}
+func (c *connCounter) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context { return ctx }
+func (c *connCounter) HandleConn(_ context.Context, s stats.ConnStats) {
+	if _, ok := s.(*stats.ConnBegin); ok {
+		c.n.Add(1)
+	}
+}
+
+// TestMaxConnectionAgeRecyclesConnections: after its age a connection is sent
+// GOAWAY, and the client's next call opens a new one.
+func TestMaxConnectionAgeRecyclesConnections(t *testing.T) {
+	t.Parallel()
+	conns := &connCounter{}
+	_, conn := startServer(t, &fakeStore{getJobFn: func(context.Context, uuid.UUID) (store.Job, error) {
+		return store.Job{}, store.ErrNotFound
+	}}, Config{MaxConnectionAge: 100 * time.Millisecond}, grpc.StatsHandler(conns))
+	rpc := hopperv1.NewHopperServiceClient(conn)
+
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = rpc.GetJob(ctx, &hopperv1.GetJobRequest{Id: uuid.NewString()})
+		return conns.n.Load() >= 2
+	}, 5*time.Second, 50*time.Millisecond, "the connection was never recycled")
+}
+
+// TestConnectionAgeNeverCutsAHeldBatch: GOAWAY arrives while the stream's
+// lease call is stuck, here for a second. That is ten times the stream's own
+// age and twenty times the connection's. With unlimited grace the connection
+// stays up for the stream, which sends every leased row and then ends itself
+// for age. A grace shorter than the hold would cut the transport with three
+// rows leased and unsent, and they would wait for the reaper.
+func TestConnectionAgeNeverCutsAHeldBatch(t *testing.T) {
+	t.Parallel()
+	var leases atomic.Int32
+	_, conn := startServer(t, &fakeStore{leaseFn: func(ctx context.Context, _ []string, _ int, _ time.Duration, _ string) ([]store.Job, error) {
+		if leases.Add(1) > 1 {
+			return nil, nil
+		}
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []store.Job{leasedJob("q"), leasedJob("q"), leasedJob("q")}, nil
+	}}, Config{MaxConnectionAge: 50 * time.Millisecond, LeaseStreamMaxAge: 100 * time.Millisecond, PollInterval: time.Hour})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := hopperv1.NewHopperServiceClient(conn).LeaseJobs(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(subscribeMsg(3)))
+	for i := range 3 {
+		_, err := stream.Recv()
+		require.NoError(t, err, "row %d of the held batch", i+1)
+	}
+	_, err = stream.Recv()
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "maximum age")
 }

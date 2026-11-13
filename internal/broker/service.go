@@ -61,6 +61,12 @@ type Config struct {
 	// what spreads streams back out after a broker restart. Zero never ends a
 	// stream for age.
 	LeaseStreamMaxAge time.Duration
+	// MaxConnectionAge sends GOAWAY on each client connection after about
+	// this long (gRPC adds ±10%), so clients reconnect, re-resolve the broker
+	// name and find brokers added since they connected. Grace is unlimited:
+	// a lease stream on the old connection runs until it ends itself, at
+	// LeaseStreamMaxAge or a drain. Zero never closes a connection for age.
+	MaxConnectionAge time.Duration
 	// Wakeups carries enqueue announcements between brokers. Nil keeps them
 	// within this broker; RunWakeups does the rest.
 	Wakeups store.Wakeups

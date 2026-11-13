@@ -397,3 +397,55 @@ func TestSilentBrokerIsNoticedInAboutFifteenSeconds(t *testing.T) {
 	t.Logf("silent broker noticed after %s", took.Round(100*time.Millisecond))
 	require.Less(t, took, 17*time.Second, "Time + Timeout is 15s")
 }
+
+// TestConnectionAgeFindsANewBroker: the name resolves to broker A, and B is
+// added later, as when brokers scale up. The resolver reports B only when the
+// client asks it to resolve again. A gRPC client asks when a connection closes
+// or receives GOAWAY. Nothing fails here, so without a connection age the
+// client never asks and B never gets a call. The first subtest is the control
+// that shows this.
+func TestConnectionAgeFindsANewBroker(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		age   time.Duration
+		finds bool
+	}{
+		{"without a connection age", 0, false},
+		{"with a connection age", 200 * time.Millisecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, b := &countingStore{}, &countingStore{}
+			addrA := serveWith(t, a, broker.Config{MaxConnectionAge: tc.age})
+			addrB := serve(t, b)
+
+			first := resolver.Endpoint{Addresses: []resolver.Address{{Addr: addrA}}}
+			added := resolver.Endpoint{Addresses: []resolver.Address{{Addr: addrB}}}
+			r := manual.NewBuilderWithScheme("hoppertest")
+			r.InitialState(resolver.State{Endpoints: []resolver.Endpoint{first}})
+			r.ResolveNowCallback = func(resolver.ResolveNowOptions) {
+				// Not inline: updating state from inside ResolveNow can
+				// deadlock the channel.
+				go r.UpdateState(resolver.State{Endpoints: []resolver.Endpoint{first, added}})
+			}
+			c, err := Dial("hoppertest:///brokers", grpc.WithResolvers(r))
+			require.NoError(t, err)
+			defer c.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			reachedB := func() bool {
+				_, _ = c.GetJob(ctx, uuid.New())
+				return b.calls.Load() > 0
+			}
+			if tc.finds {
+				require.Eventually(t, reachedB, 5*time.Second, 10*time.Millisecond,
+					"the added broker never got a call")
+			} else {
+				require.Never(t, reachedB, time.Second, 10*time.Millisecond,
+					"the client found the added broker without being told to look")
+			}
+		})
+	}
+}
