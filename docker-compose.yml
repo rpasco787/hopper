@@ -23,6 +23,11 @@ x-broker: &broker
   volumes:
     - ./deploy/cron/schedules.json:/etc/hopper/schedules.json:ro
   stop_grace_period: 40s
+  # Every broker also answers to "brokers", so a client dialing brokers:9090
+  # resolves all of them and the SDK's round robin uses each.
+  networks:
+    default:
+      aliases: [brokers]
 
 services:
   postgres:
@@ -58,7 +63,7 @@ services:
     depends_on:
       - broker
     environment:
-      HOPPER_BROKER: broker:9090
+      HOPPER_BROKER: brokers:9090
       HOPPER_CONCURRENCY: "4"
       HOPPER_SHUTDOWN_TIMEOUT: 45s
       HOPPER_LOG_LEVEL: info

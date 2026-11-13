@@ -36,7 +36,8 @@ services:
     environment: *bench-broker-env
     env_file: ["${HOPPER_BENCH_BROKER_ENV:?set by scripts/bench.sh}"]
 
-  # Workers on `worker` dial `broker`; those on `worker-b` dial
+  # Workers on `worker` dial `broker` (explicitly, since the base file's
+  # workers dial the shared `brokers` name); those on `worker-b` dial
   # `broker-standby`, so a two-broker run splits the load deterministically.
   # Workers log at warn by default: their info lines are per job, and the
   # benchmark measures the queue, not the logging pipeline.
@@ -44,6 +45,10 @@ services:
     image: hopper-bench/worker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
     pull_policy: never
     environment: &bench-worker-env
+      # Pinned, not brokers:9090: a two-broker run splits workers evenly
+      # by service, and round robin's random placement would not.
+      # worker-b overrides it.
+      HOPPER_BROKER: broker:9090
       HOPPER_CONCURRENCY: "${HOPPER_BENCH_CONCURRENCY:-16}"
       HOPPER_LOG_LEVEL: "${HOPPER_BENCH_WORKER_LOG_LEVEL:-warn}"
 

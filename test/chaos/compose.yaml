@@ -7,6 +7,8 @@
 # replacing the base file's fixed ones, so the suite can run beside a
 # development stack and a restarted container comes back on the port the
 # suite's connections expect. Cron is off, so every job is the suite's.
+# HOPPER_CHAOS_WORKER_BROKER and HOPPER_CHAOS_STREAM_AGE let a test opt into
+# round robin across both brokers and short stream ages.
 services:
   postgres:
     ports:
@@ -16,8 +18,17 @@ services:
       - "127.0.0.1:${HOPPER_CHAOS_BROKER_PORT:?set by the chaos suite}:9090"
     environment:
       HOPPER_SCHEDULER: "false"
+      HOPPER_LEASE_STREAM_MAX_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
+      HOPPER_MAX_CONNECTION_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
   broker-standby:
     ports:
       - "127.0.0.1:${HOPPER_CHAOS_STANDBY_PORT:?set by the chaos suite}:9090"
     environment:
       HOPPER_SCHEDULER: "false"
+      HOPPER_LEASE_STREAM_MAX_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
+      HOPPER_MAX_CONNECTION_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
+  worker:
+    environment:
+      # The restart tests need to know which broker every worker is on, so
+      # workers dial `broker` unless a test opts into the shared name.
+      HOPPER_BROKER: ${HOPPER_CHAOS_WORKER_BROKER:-broker:9090}
