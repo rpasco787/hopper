@@ -762,7 +762,7 @@ so it cannot collide with another exporter's in a shared Prometheus.
 | `hopper_db_pool_acquires_total` | counter | — | Connections taken from the pool |
 | `hopper_db_pool_empty_acquires_total` | counter | — | Acquires that found no idle connection and waited |
 | `hopper_db_pool_empty_acquire_wait_seconds_total` | counter | — | How long those acquires waited |
-| `grpc_server_*` | histogram, counters | `grpc_type`, `grpc_service`, `grpc_method`, `grpc_code` | The standard gRPC interceptor's metrics |
+| `grpc_server_*` | histogram, counters | `grpc_type`, `grpc_service`, `grpc_method`, `grpc_code` | The standard gRPC interceptor's metrics. Every lease stream that reaches `-lease-stream-max-age` counts as `LeaseJobs` `Unavailable`, so an error-rate alert should exclude `grpc_method="LeaseJobs"` |
 
 **Worker metrics** (`cmd/worker`).
 
@@ -1179,7 +1179,7 @@ not in this table.
 | The profiling endpoint serves profiles and never the command line | `broker: TestDebugServerServesProfilesButNotTheCommandLine` (`-race`) | 3 (`-count=3`, 2026-10-13) | pass |
 | Drain, steady and idle numbers before and after the lease rewrite, the pool size and the wakeups | `scripts/bench.sh` | 70 runs (66 matrix, 4 diagnostic; 9 rerun after the host slept), 2026-10-13 | drain 2,131 → 6,191 jobs/s on one broker, 1,851 → 5,001 on two |
 | The chaos suite passes with Session 11's lease and wakeups | `go test -tags chaos -count=1 ./test/chaos` at `df3cde1` | 1 invocation (2026-10-13) | pass: 389 s; undisturbed run, killed workers, broker restart (graceful, crash), PostgreSQL restart (graceful, crash), outage longer than the lease, enqueue storm |
-| Unary calls reach every resolved broker | `client: TestDialSpreadsCallsAcrossEveryResolvedBroker`, `worker: TestReconnectingStreamsSpreadAcrossBrokers` | 3 (client, `-count=3`) and 2 (worker, `-count=2`), 2026-11-12 | pass |
+| Unary calls, and reopened lease streams, reach every resolved broker | `client: TestDialSpreadsCallsAcrossEveryResolvedBroker` (calls), `worker: TestReconnectingStreamsSpreadAcrossBrokers` (streams) | 3 (client, `-count=3`) and 2 (worker, `-count=2`), 2026-11-12 | pass |
 | A silent broker is noticed in about 15s | `client: TestSilentBrokerIsNoticedInAboutFifteenSeconds` (a proxy stops forwarding; no FIN or RST) | 1 (2026-11-12) | pass; noticed after 15.1 s |
 | A connection age makes clients find an added broker | `client: TestConnectionAgeFindsANewBroker` (with a control that never finds it) | 3 (`-count=3`, 2026-11-12) | pass |
 | A lease stream ages out only between batches, and a connection age never cuts a held batch | `broker: TestLeaseStreamAgesOutOnlyBetweenBatches`, `TestConnectionAgeNeverCutsAHeldBatch` | 3 (`-count=3`, 2026-11-12) | pass; each fails when broken on purpose (age read inside a batch: 1 of 3 rows sent; a 200ms grace: the transport cut with 3 rows leased and unsent) |

@@ -323,8 +323,20 @@ later; an aged connection keeps its lease stream until the stream ends itself.
 How long recovery takes depends on both ages, the DNS resolver's 30s minimum
 between resolutions, gRPC's reconnect backoff and random placement, so
 [docs/semantics.md §15](docs/semantics.md) gives measured times rather than a
-bound. Upgrade brokers before clients: an
-older broker answers the SDK's ping rate with GOAWAY `too_many_pings`.
+bound.
+
+**Upgrade brokers before clients and workers.** A broker older than this
+keepalive policy answers the SDKs' 10s pings with GOAWAY `too_many_pings` and
+closes the connection at once, lease streams included: rows a stream had
+leased but not sent wait out their lease and are delivered again. The chart
+gives every component one image tag, so a plain `helm upgrade` rolls brokers
+and workers together. Roll the brokers first, then upgrade the release:
+
+```bash
+kubectl set image deployment/hopper-broker broker=ghcr.io/rpasco787/hopper-broker:<new>
+kubectl rollout status deployment/hopper-broker
+helm upgrade hopper deploy/helm/hopper --set image.tag=<new>
+```
 
 Handlers must stay idempotent, because side effects can duplicate across the
 Ack-loss window.

@@ -31,8 +31,12 @@ type Server struct {
 // server reflection. opts are applied before the server's own, which puts
 // caller interceptors outermost — gRPC runs chained interceptors in the order
 // they were added — so an instrumentation interceptor sees every RPC,
-// including the Unavailable a drain produces. The server's own message-size
-// limits come after opts and therefore win.
+// including the Unavailable a drain produces. The server's own options come
+// after opts and therefore win: the message-size limits, and the keepalive
+// and connection-age settings, which are set through Config instead
+// (lifetime.go). A caller's grpc.KeepaliveParams or
+// grpc.KeepaliveEnforcementPolicy is overridden, so the enforcement policy the
+// SDKs rely on cannot be weakened by accident.
 //
 // Reflection is on deliberately. It is what lets grpcurl, grpcui and Postman
 // call this server with no .proto file in hand, which turns "can I try the
