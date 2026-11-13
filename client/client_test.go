@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/resolver/manual"
 	"google.golang.org/grpc/status"
 
 	"github.com/rpasco787/hopper/internal/broker"
@@ -213,4 +217,51 @@ func TestDialLetsExplicitCredentialsOverrideTheDefault(t *testing.T) {
 	default:
 		t.Fatal("the caller's credentials were never used: the plaintext default won")
 	}
+}
+
+// countingStore answers GetJob with NotFound and counts the calls, so a test
+// can tell which broker served them.
+type countingStore struct {
+	store.Store
+	calls atomic.Int32
+}
+
+func (s *countingStore) GetJob(context.Context, uuid.UUID) (store.Job, error) {
+	s.calls.Add(1)
+	return store.Job{}, store.ErrNotFound
+}
+
+// twoBrokers resolves one target to both addresses, the way DNS resolves a
+// headless Service or a shared Compose alias to every broker.
+func twoBrokers(a, b string) (string, grpc.DialOption) {
+	r := manual.NewBuilderWithScheme("hoppertest")
+	r.InitialState(resolver.State{Endpoints: []resolver.Endpoint{
+		{Addresses: []resolver.Address{{Addr: a}}},
+		{Addresses: []resolver.Address{{Addr: b}}},
+	}})
+	return "hoppertest:///brokers", grpc.WithResolvers(r)
+}
+
+// TestDialSpreadsCallsAcrossEveryResolvedBroker: brokers are stateless, so a
+// producer should use all of them. Under pick_first every call goes to the
+// first address forever.
+func TestDialSpreadsCallsAcrossEveryResolvedBroker(t *testing.T) {
+	t.Parallel()
+
+	a, b := &countingStore{}, &countingStore{}
+	target, resolve := twoBrokers(serve(t, a), serve(t, b))
+	c, err := Dial(target, resolve)
+	require.NoError(t, err)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Round robin skips a broker until its connection is ready, so keep
+	// calling until both have answered.
+	require.Eventually(t, func() bool {
+		if _, err := c.GetJob(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
+			return false
+		}
+		return a.calls.Load() > 0 && b.calls.Load() > 0
+	}, 5*time.Second, 5*time.Millisecond, "every call went to one broker")
 }

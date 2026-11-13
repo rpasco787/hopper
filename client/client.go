@@ -42,16 +42,27 @@ type Client struct {
 	rpc  hopperv1.HopperServiceClient
 }
 
-// Dial connects to a broker. The connection is lazy: this does not fail
-// because the broker is down, it fails on the first call, which is what you
-// want in a producer that starts before its broker does.
+// serviceConfig selects round_robin. A broker name that resolves to several
+// addresses (a headless Service, a shared Compose alias) gets a connection to
+// each, and every unary call goes to the next one. Brokers hold no session
+// state, so any broker can answer any call. Keep in step with worker/worker.go.
+const serviceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+
+// Dial connects to the brokers target resolves to. A DNS name that returns
+// several addresses gets a connection to each, and calls rotate across them.
+// The connection is lazy: this does not fail because the broker is down, it
+// fails on the first call, which is what you want in a producer that starts
+// before its broker does.
 //
 // The default is plaintext, because the broker is a trusted-network prototype
 // that serves plaintext. Options come after that default, so passing
 // grpc.WithTransportCredentials replaces it.
 func Dial(target string, opts ...grpc.DialOption) (*Client, error) {
 	// Defaults precede caller options, so explicit credentials can override them.
-	base := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	base := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(serviceConfig),
+	}
 	conn, err := grpc.NewClient(target, append(base, opts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("hopper: dial %s: %w", target, err)
