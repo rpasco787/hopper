@@ -232,3 +232,13 @@ func TestBrokerIsConcurrencySafe(t *testing.T) {
 	require.Equal(t, 2*want, testutil.ToFloat64(b.dead.WithLabelValues("q")))
 	require.Equal(t, want, testutil.ToFloat64(b.expired.WithLabelValues("q")))
 }
+
+func TestBrokerCountsOpenLeaseStreams(t *testing.T) {
+	reg, b := newTestBroker(t)
+	b.LeaseStreams().Inc()
+	b.LeaseStreams().Inc()
+	b.LeaseStreams().Dec()
+	family := metricFamily(t, reg, "hopper_lease_streams_open")
+	require.Len(t, family.Metric, 1)
+	require.Equal(t, 1.0, family.Metric[0].GetGauge().GetValue())
+}

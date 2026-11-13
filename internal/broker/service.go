@@ -26,6 +26,18 @@ const (
 	MaxListLimit         = 1000
 )
 
+// Gauge is the part of a Prometheus gauge the service uses. It is an
+// interface so this package needs no metrics dependency and a test can count.
+type Gauge interface {
+	Inc()
+	Dec()
+}
+
+type nopGauge struct{}
+
+func (nopGauge) Inc() {}
+func (nopGauge) Dec() {}
+
 // Config is the request-independent behaviour of a Service.
 type Config struct {
 	// LeaseDuration is used when a stream or heartbeat does not ask for one.
@@ -42,6 +54,9 @@ type Config struct {
 	// within this broker; RunWakeups does the rest.
 	Wakeups store.Wakeups
 	Logger  *slog.Logger
+	// LeaseStreams counts lease streams from accepted subscription to end.
+	// Nil counts nothing.
+	LeaseStreams Gauge
 }
 
 // Service implements hopperv1.HopperServiceServer over a store.Store.
@@ -87,6 +102,9 @@ func NewService(st store.Store, cfg Config) *Service {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.LeaseStreams == nil {
+		cfg.LeaseStreams = nopGauge{}
 	}
 	return &Service{store: st, cfg: cfg, shutdown: make(chan struct{}), wakes: newWakeups()}
 }

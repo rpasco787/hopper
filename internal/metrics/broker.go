@@ -17,6 +17,7 @@ type Broker struct {
 	wait, run                                  *prometheus.HistogramVec
 	labels                                     map[string]struct{} // allowlist; read-only after NewBroker
 	depth                                      *depthCollector
+	streams                                    prometheus.Gauge
 }
 
 var _ store.Observer = (*Broker)(nil)
@@ -66,6 +67,11 @@ func NewBroker(reg prometheus.Registerer, queues []string) (*Broker, error) {
 			Help:      "Seconds from lease to Ack for jobs this process completed.",
 			Buckets:   JobBuckets,
 		}, []string{"queue"}),
+		streams: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "lease_streams_open",
+			Help:      "Lease streams this broker is serving now.",
+		}),
 		labels: make(map[string]struct{}, len(queues)+1),
 	}
 	depthLabels := make([]string, 0, len(queues)+1)
@@ -92,7 +98,7 @@ func NewBroker(reg prometheus.Registerer, queues []string) (*Broker, error) {
 		b.run.WithLabelValues(queue)
 	}
 	for _, collector := range []prometheus.Collector{
-		b.enqueued, b.completed, b.failed, b.dead, b.expired, b.wait, b.run, b.depth,
+		b.enqueued, b.completed, b.failed, b.dead, b.expired, b.wait, b.run, b.depth, b.streams,
 	} {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("metrics: register broker: %w", err)
@@ -100,6 +106,9 @@ func NewBroker(reg prometheus.Registerer, queues []string) (*Broker, error) {
 	}
 	return b, nil
 }
+
+// LeaseStreams is the open-lease-stream gauge, for broker.Config.LeaseStreams.
+func (b *Broker) LeaseStreams() prometheus.Gauge { return b.streams }
 
 func (b *Broker) label(queue string) string {
 	if _, ok := b.labels[queue]; ok {

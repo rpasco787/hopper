@@ -138,6 +138,8 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 	logger := s.cfg.Logger.With("worker_id", sub.GetWorkerId(), "queues", sub.GetQueues())
 	logger.InfoContext(ctx, "lease stream opened", "credit", credit.Load())
 	defer logger.InfoContext(ctx, "lease stream closed")
+	s.cfg.LeaseStreams.Inc()
+	defer s.cfg.LeaseStreams.Dec()
 	for {
 		if checkStop() != nil {
 			return stopped()

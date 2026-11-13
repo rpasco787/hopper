@@ -356,10 +356,14 @@ func run(args []string) error {
 			"so anyone who can connect can read and mutate every job, including lease tokens",
 			"addr", cfg.listen)
 	}
-	srv := broker.NewServer(st, broker.Config{
+	brokerCfg := broker.Config{
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
 		PollInterval: cfg.pollInterval, Wakeups: st, Logger: logger,
-	}, grpcOpts...)
+	}
+	if bm != nil {
+		brokerCfg.LeaseStreams = bm.LeaseStreams()
+	}
+	srv := broker.NewServer(st, brokerCfg, grpcOpts...)
 	if grpcMet != nil {
 		grpcMet.InitializeMetrics(srv)
 	}
