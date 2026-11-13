@@ -37,27 +37,31 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, 5*time.Second, c.schedulerInterval)
 	require.Empty(t, c.cronFile)
 	require.Nil(t, c.schedules, "no file leaves cron_schedules unmanaged")
+	require.Equal(t, 5*time.Minute, c.leaseStreamMaxAge)
+	require.Equal(t, 5*time.Minute, c.maxConnectionAge)
 }
 
 // TestConfigReadsEveryEnvironmentVariable: each documented variable reaches its
 // field, so a rename in one place cannot silently disconnect the other.
 func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 	for k, v := range map[string]string{
-		"HOPPER_DSN":                "postgres://env",
-		"HOPPER_LISTEN":             "127.0.0.1:1234",
-		"HOPPER_METRICS_LISTEN":     "127.0.0.1:1235",
-		"HOPPER_DEBUG_LISTEN":       "127.0.0.1:1236",
-		"HOPPER_METRICS_QUEUES":     "alpha, beta",
-		"HOPPER_LOG_LEVEL":          "debug",
-		"HOPPER_LEASE_DURATION":     "45s",
-		"HOPPER_REAPER_INTERVAL":    "2s",
-		"HOPPER_POLL_INTERVAL":      "75ms",
-		"HOPPER_RETENTION":          "72h",
-		"HOPPER_SHUTDOWN_TIMEOUT":   "9s",
-		"HOPPER_MAX_LEASE_BATCH":    "7",
-		"HOPPER_DB_MAX_CONNS":       "12",
-		"HOPPER_SCHEDULER":          "false",
-		"HOPPER_SCHEDULER_INTERVAL": "3s",
+		"HOPPER_DSN":                  "postgres://env",
+		"HOPPER_LISTEN":               "127.0.0.1:1234",
+		"HOPPER_METRICS_LISTEN":       "127.0.0.1:1235",
+		"HOPPER_DEBUG_LISTEN":         "127.0.0.1:1236",
+		"HOPPER_METRICS_QUEUES":       "alpha, beta",
+		"HOPPER_LOG_LEVEL":            "debug",
+		"HOPPER_LEASE_DURATION":       "45s",
+		"HOPPER_REAPER_INTERVAL":      "2s",
+		"HOPPER_POLL_INTERVAL":        "75ms",
+		"HOPPER_RETENTION":            "72h",
+		"HOPPER_SHUTDOWN_TIMEOUT":     "9s",
+		"HOPPER_MAX_LEASE_BATCH":      "7",
+		"HOPPER_DB_MAX_CONNS":         "12",
+		"HOPPER_SCHEDULER":            "false",
+		"HOPPER_SCHEDULER_INTERVAL":   "3s",
+		"HOPPER_LEASE_STREAM_MAX_AGE": "90s",
+		"HOPPER_MAX_CONNECTION_AGE":   "2m",
 	} {
 		t.Setenv(k, v)
 	}
@@ -70,7 +74,20 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 		pollInterval: 75 * time.Millisecond, retention: 72 * time.Hour,
 		shutdownTimeout: 9 * time.Second, maxLeaseBatch: 7, dbMaxConns: 12,
 		scheduler: false, schedulerInterval: 3 * time.Second,
+		leaseStreamMaxAge: 90 * time.Second, maxConnectionAge: 2 * time.Minute,
 	}, c)
+}
+
+// TestConfigLifetimesAcceptZeroButNotNegative: zero turns an age off, which
+// is a real choice; a negative age is a typo.
+func TestConfigLifetimesAcceptZeroButNotNegative(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://unused")
+	for _, name := range []string{"lease-stream-max-age", "max-connection-age"} {
+		_, err := parseConfig([]string{"-" + name, "0s"})
+		require.NoError(t, err, "-%s 0s", name)
+		_, err = parseConfig([]string{"-" + name, "-1s"})
+		require.ErrorContains(t, err, name+" must not be negative")
+	}
 }
 
 func TestConfigMetricsListen(t *testing.T) {

@@ -47,6 +47,7 @@ type config struct {
 	dsn, listen, metricsListen, debugListen, logLevel                       string
 	metricsQueues                                                           []string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
+	leaseStreamMaxAge, maxConnectionAge                                     time.Duration
 	maxLeaseBatch, dbMaxConns                                               int
 
 	scheduler         bool
@@ -68,6 +69,7 @@ var envVars = [][2]string{
 	{"scheduler", "HOPPER_SCHEDULER"}, {"scheduler-interval", "HOPPER_SCHEDULER_INTERVAL"},
 	{"cron-file", "HOPPER_CRON_FILE"}, {"debug-listen", "HOPPER_DEBUG_LISTEN"},
 	{"db-max-conns", "HOPPER_DB_MAX_CONNS"},
+	{"lease-stream-max-age", "HOPPER_LEASE_STREAM_MAX_AGE"}, {"max-connection-age", "HOPPER_MAX_CONNECTION_AGE"},
 }
 
 const MaxMetricsQueues = 100
@@ -112,6 +114,10 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "RPC drain deadline (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
 	fs.IntVar(&c.dbMaxConns, "db-max-conns", DefaultDBMaxConns, "PostgreSQL connections per broker (HOPPER_DB_MAX_CONNS)")
+	fs.DurationVar(&c.leaseStreamMaxAge, "lease-stream-max-age", broker.DefaultLeaseStreamMaxAge,
+		"end each lease stream after about this long so workers re-spread across brokers; 0 never (HOPPER_LEASE_STREAM_MAX_AGE)")
+	fs.DurationVar(&c.maxConnectionAge, "max-connection-age", broker.DefaultMaxConnectionAge,
+		"recycle client connections after about this long so clients find new brokers; 0 never (HOPPER_MAX_CONNECTION_AGE)")
 	fs.BoolVar(&c.scheduler, "scheduler", true, "run the cron scheduler in this process (HOPPER_SCHEDULER)")
 	fs.DurationVar(&c.schedulerInterval, "scheduler-interval", 5*time.Second, "leadership retry and tick period (HOPPER_SCHEDULER_INTERVAL)")
 	fs.StringVar(&c.cronFile, "cron-file", "", "JSON schedule declarations; empty leaves cron_schedules unmanaged (HOPPER_CRON_FILE)")
@@ -184,6 +190,14 @@ func parseConfig(args []string) (config, error) {
 	} {
 		if d.value <= 0 {
 			return c, fmt.Errorf("%s must be positive", d.name)
+		}
+	}
+	for _, d := range []struct {
+		name  string
+		value time.Duration
+	}{{"lease-stream-max-age", c.leaseStreamMaxAge}, {"max-connection-age", c.maxConnectionAge}} {
+		if d.value < 0 {
+			return c, fmt.Errorf("%s must not be negative", d.name)
 		}
 	}
 	if c.maxLeaseBatch <= 0 {
@@ -359,6 +373,7 @@ func run(args []string) error {
 	brokerCfg := broker.Config{
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
 		PollInterval: cfg.pollInterval, Wakeups: st, Logger: logger,
+		LeaseStreamMaxAge: cfg.leaseStreamMaxAge, MaxConnectionAge: cfg.maxConnectionAge,
 	}
 	if bm != nil {
 		brokerCfg.LeaseStreams = bm.LeaseStreams()
@@ -450,7 +465,8 @@ func run(args []string) error {
 	}
 	logger.Info("broker listening", "addr", lis.Addr().String(),
 		"lease_duration", cfg.leaseDuration.String(), "reaper_interval", cfg.reaperInterval.String(),
-		"retention", cfg.retention.String(), "db_max_conns", cfg.dbMaxConns)
+		"retention", cfg.retention.String(), "db_max_conns", cfg.dbMaxConns,
+		"lease_stream_max_age", cfg.leaseStreamMaxAge.String(), "max_connection_age", cfg.maxConnectionAge.String())
 
 	servingErr, served := awaitServing(ctx, serveErr, metricsErr)
 	stop() // restore default handling before draining; a second signal can exit
