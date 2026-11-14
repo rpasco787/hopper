@@ -38,7 +38,8 @@ services:
 
   # Workers on `worker` dial `broker` (explicitly, since the base file's
   # workers dial the shared `brokers` name); those on `worker-b` dial
-  # `broker-standby`, so a two-broker run splits the load deterministically.
+  # `broker-standby`, so a two- or four-broker run splits the load deterministically,
+  # one worker service per broker.
   # Workers log at warn by default: their info lines are per job, and the
   # benchmark measures the queue, not the logging pipeline.
   worker:
@@ -59,6 +60,66 @@ services:
     environment:
       <<: *bench-worker-env
       HOPPER_BROKER: broker-standby:9090
+      HOPPER_SHUTDOWN_TIMEOUT: 45s
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9092
+    stop_grace_period: 60s
+
+  # broker-3 and broker-4 exist only here, for BROKERS=4. YAML anchors don't
+  # reach across Compose files, so they repeat x-broker's settings from
+  # docker-compose.yml; keep the two in step. They need no network alias:
+  # benchmark workers are pinned to one broker each.
+  broker-3:
+    image: hopper-bench/broker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &bench-extra-broker-env
+      <<: *bench-broker-env
+      HOPPER_DSN: postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
+      HOPPER_LISTEN: 0.0.0.0:9090
+      HOPPER_LEASE_DURATION: 30s
+      HOPPER_LOG_LEVEL: info
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9091
+      HOPPER_METRICS_QUEUES: sleep,fail_n_times,cpu_burn
+    ports:
+      - "127.0.0.1:16093:9091"
+      - "127.0.0.1:16062:6060"
+    env_file: ["${HOPPER_BENCH_BROKER_ENV:?set by scripts/bench.sh}"]
+    stop_grace_period: 40s
+
+  broker-4:
+    image: hopper-bench/broker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *bench-extra-broker-env
+    ports:
+      - "127.0.0.1:16094:9091"
+      - "127.0.0.1:16063:6060"
+    env_file: ["${HOPPER_BENCH_BROKER_ENV:?set by scripts/bench.sh}"]
+    stop_grace_period: 40s
+
+  # Workers on worker-c and worker-d dial broker-3 and broker-4.
+  worker-c:
+    image: hopper-bench/worker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    depends_on: [broker-3]
+    environment:
+      <<: *bench-worker-env
+      HOPPER_BROKER: broker-3:9090
+      HOPPER_SHUTDOWN_TIMEOUT: 45s
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9092
+    stop_grace_period: 60s
+
+  worker-d:
+    image: hopper-bench/worker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    depends_on: [broker-4]
+    environment:
+      <<: *bench-worker-env
+      HOPPER_BROKER: broker-4:9090
       HOPPER_SHUTDOWN_TIMEOUT: 45s
       HOPPER_METRICS_LISTEN: 0.0.0.0:9092
     stop_grace_period: 60s

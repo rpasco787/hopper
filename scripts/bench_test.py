@@ -33,6 +33,8 @@ elif args[0] == 'stats':
     time.sleep(0.02)
 elif args[0] == 'compose':
     event('compose files: ' + ' '.join(a for a in args if a.endswith(('.yml', '.yaml'))))
+    if 'up' in args:
+        event('compose up: ' + ' '.join(args))
     if 'up' in args and 'worker-b' in args:
         event('workers consuming')
         time.sleep(0.2)
@@ -48,7 +50,9 @@ elif args[0] == 'compose':
                 print('12:00:00.000|CPU|running|3')
         elif 'with next as' in sql: print('0.500|12.0')
     elif 'logs' in args: print('"lease stream opened"\n' * 16, end='')
-    elif 'run' in args: print('{}')
+    elif 'run' in args:
+        event('compose run: ' + ' '.join(args))
+        print('{}')
 '''
 
 
@@ -121,11 +125,46 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(row['pinned'], '1')
             cpuset = (evidence_dir(root) / 'cpuset.yaml').read_text()
             self.assertIn('postgres: {cpuset: "0-1"}', cpuset)
-            self.assertIn('broker-standby: {cpuset: "3"}', cpuset)
+            self.assertIn('broker-standby: {cpuset: "2-3"}', cpuset)
+            self.assertIn('broker: {cpuset: "2-3"}', cpuset)
+            self.assertIn('broker-4: {cpuset: "2-3"}', cpuset)
+            self.assertIn('worker-d: {cpuset: "4-6"}', cpuset)
             compose_calls = [e for e in trace(root) if e.startswith('compose files:')]
             self.assertTrue(compose_calls)
             for call in compose_calls:
                 self.assertIn('cpuset.yaml', call)
+
+    def test_four_brokers_split_the_workers_evenly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BROKERS='4', WORKERS='8')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['brokers'], '4')
+            ups = [e for e in trace(root) if e.startswith('compose up: ')]
+            self.assertTrue(any('broker-4' in e and 'postgres' in e for e in ups), ups)
+            [workers] = [e for e in ups if 'worker-b' in e]
+            for service in ('worker', 'worker-b', 'worker-c', 'worker-d'):
+                self.assertIn(f'--scale {service}=2', workers)
+            [preload] = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertIn('broker:9090,broker-standby:9090,broker-3:9090,broker-4:9090', preload)
+
+    def test_one_broker_gives_every_worker_to_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BROKERS='1', WORKERS='5')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [workers] = [e for e in trace(root) if e.startswith('compose up: ') and 'worker-b' in e]
+            self.assertIn('--scale worker=5', workers)
+            self.assertIn('--scale worker-b=0', workers)
+            self.assertIn('--scale worker-d=0', workers)
+
+    def test_brokers_must_be_one_two_or_four(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BROKERS='3')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('BROKERS must be 1, 2 or 4', result.stderr)
 
     def test_pin_needs_eight_vm_cpus(self):
         with tempfile.TemporaryDirectory() as tmp:

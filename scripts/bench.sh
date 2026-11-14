@@ -7,7 +7,7 @@
 #
 # Settings, all from the environment:
 #   REF            build broker and worker from this git ref (default: the working tree)
-#   BROKERS        1 or 2 (default 1); with 2, workers split evenly and producers alternate
+#   BROKERS        1, 2 or 4 (default 1); workers split evenly, one worker service per broker, and producers alternate
 #   WORKERS        worker containers (default 4), CONCURRENCY slots each (default 16)
 #   JOBS           drain: jobs to preload (default 40000)
 #   RATE DURATION PRODUCERS BATCH WORK_MS
@@ -38,7 +38,7 @@ esac
 brokers="${BROKERS:-1}"
 workers="${WORKERS:-4}"
 concurrency="${CONCURRENCY:-16}"
-case "$brokers" in 1 | 2) ;; *) echo "BROKERS must be 1 or 2" >&2; exit 2 ;; esac
+case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
 vm_cpus="$(docker info --format '{{.NCPU}}')"
@@ -81,14 +81,19 @@ files=(-f docker-compose.yml -f deploy/bench/compose.yaml)
 if [ "$pin" = 1 ]; then
   cat >"$dir/cpuset.yaml" <<'EOF'
 # Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
-# the layout is the same at one and two brokers, so only the broker count
-# changes. With one broker, CPU 3 is idle.
+# the layout is the same at every broker count, so only the broker count
+# changes. Every broker may use CPUs 2 and 3, so the brokers' CPU budget is
+# two CPUs however many there are; Go sizes GOMAXPROCS from the set.
 services:
   postgres: {cpuset: "0-1"}
-  broker: {cpuset: "2"}
-  broker-standby: {cpuset: "3"}
+  broker: {cpuset: "2-3"}
+  broker-standby: {cpuset: "2-3"}
+  broker-3: {cpuset: "2-3"}
+  broker-4: {cpuset: "2-3"}
   worker: {cpuset: "4-6"}
   worker-b: {cpuset: "4-6"}
+  worker-c: {cpuset: "4-6"}
+  worker-d: {cpuset: "4-6"}
   loadgen: {cpuset: "7"}
 EOF
   files+=(-f "$dir/cpuset.yaml")
@@ -117,22 +122,33 @@ cleanup() {
 trap cleanup EXIT
 
 compose down -v --remove-orphans >/dev/null 2>&1 || true
-services="postgres broker"
-[ "$brokers" = 2 ] && services="$services broker-standby"
+case "$brokers" in
+1) broker_services="broker" ;;
+2) broker_services="broker broker-standby" ;;
+4) broker_services="broker broker-standby broker-3 broker-4" ;;
+esac
+services="postgres $broker_services"
 # shellcheck disable=SC2086 # word splitting is the point
 compose up -d --no-build --wait $services >/dev/null
 sql "create extension pg_stat_statements" >/dev/null
 
-# Workers split evenly; with one broker every worker dials it.
-wa="$workers"; wb=0
-if [ "$brokers" = 2 ]; then wa=$(((workers + 1) / 2)); wb=$((workers - wa)); fi
+# Workers split evenly across the brokers, the first services taking any
+# remainder. Worker service i dials broker i, so the split is exact.
+worker_services=(worker worker-b worker-c worker-d)
+scale=()
+for i in 0 1 2 3; do
+  n=0
+  if [ "$i" -lt "$brokers" ]; then n=$(((workers + brokers - 1 - i) / brokers)); fi
+  scale+=(--scale "${worker_services[$i]}=$n")
+done
 start_workers() {
-  compose up -d --no-build --no-deps --scale worker="$wa" --scale worker-b="$wb" worker worker-b >/dev/null
+  compose up -d --no-build --no-deps "${scale[@]}" "${worker_services[@]}" >/dev/null
 }
-brokers_arg="broker:9090"
-[ "$brokers" = 2 ] && brokers_arg="broker:9090,broker-standby:9090"
-metrics_ports="16091"
-[ "$brokers" = 2 ] && metrics_ports="16091 16092"
+brokers_arg="broker:9090"; metrics_ports="16091"
+if [ "$brokers" -ge 2 ]; then brokers_arg="$brokers_arg,broker-standby:9090"; metrics_ports="$metrics_ports 16092"; fi
+if [ "$brokers" = 4 ]; then
+  brokers_arg="$brokers_arg,broker-3:9090,broker-4:9090"; metrics_ports="$metrics_ports 16093 16094"
+fi
 loadgen() { compose run --rm -T --no-deps loadgen "$@"; }
 
 # CPU per container, sampled through workload completion, with no idle tail.
