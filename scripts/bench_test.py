@@ -49,6 +49,19 @@ elif args[0] == 'compose':
                 print('12:00:00.000|LWLock|LockManager|1')
                 print('12:00:00.000|CPU|running|3')
         elif 'with next as' in sql: print('0.500|12.0')
+    elif 'config' in args:
+        import json
+        services = {}
+        path = next((a for a in args if a.endswith('settings.yaml')), None)
+        if path and os.environ.get('BENCH_TEST_IGNORE_SETTINGS') != '1':
+            for line in Path(path).read_text().splitlines():
+                if line.startswith('      '):
+                    k, v = line.strip().split(': ', 1)
+                    services[svc]['environment'][k] = v.strip('"')
+                elif line.startswith('  ') and not line.startswith('   '):
+                    svc = line.strip().rstrip(':')
+                    services[svc] = {'environment': {}}
+        print(json.dumps({'services': services}))
     elif 'logs' in args: print('"lease stream opened"\n' * 16, end='')
     elif 'run' in args:
         event('compose run: ' + ' '.join(args))
@@ -165,6 +178,68 @@ class BenchmarkTest(unittest.TestCase):
             result = run_bench(root, BROKERS='3')
             self.assertEqual(result.returncode, 2)
             self.assertIn('BROKERS must be 1, 2 or 4', result.stderr)
+
+    def test_settings_override_what_the_stack_already_sets(self):
+        # The bench overlay sets the workers' HOPPER_LOG_LEVEL in environment,
+        # where an env_file could not override it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_ENV='HOPPER_LOG_LEVEL=info', BROKER_ENV='HOPPER_MAX_LEASE_BATCH=8',
+                               VARIANT='lease8', PAYLOAD_BYTES='300')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            settings = (evidence_dir(root) / 'settings.yaml').read_text()
+            self.assertIn('  worker-d:\n    environment:\n      HOPPER_LOG_LEVEL: "info"\n', settings)
+            self.assertIn('  broker-4:\n    environment:\n      HOPPER_MAX_LEASE_BATCH: "8"\n', settings)
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('settings.yaml', call)
+            [row] = rows(root)
+            self.assertEqual((row['variant'], row['payload_bytes']), ('lease8', '300'))
+            [preload] = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertIn('-payload-bytes 300', preload)
+
+    def test_a_setting_compose_would_not_apply_stops_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_ENV='HOPPER_LOG_LEVEL=info', VARIANT='info',
+                               BENCH_TEST_IGNORE_SETTINGS='1')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('worker would run with HOPPER_LOG_LEVEL=unset, not info', result.stderr)
+
+    def test_a_run_without_settings_writes_no_settings_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((evidence_dir(root) / 'settings.yaml').exists())
+
+    def test_settings_must_be_assignments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_ENV='oops')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WORKER_ENV entries must be NAME=value: oops', result.stderr)
+
+    def test_setting_values_may_not_hold_quotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BROKER_ENV='HOPPER_X=a"b')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('BROKER_ENV entries may not contain quotes or backslashes: HOPPER_X=a"b', result.stderr)
+
+    def test_a_variant_may_not_break_the_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, VARIANT='a,b')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('VARIANT may not contain a comma', result.stderr)
+
+    def test_row_names_the_harness_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertRegex(row['harness'], r'^[0-9a-f]{7,}(-dirty)?$')
 
     def test_pin_needs_eight_vm_cpus(self):
         with tempfile.TemporaryDirectory() as tmp:

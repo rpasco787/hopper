@@ -14,6 +14,13 @@
 #                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0)
 #   DB_MAX_CONNS   the brokers' pool size; unset keeps the binary's default
 #   SYNC_COMMIT    PostgreSQL synchronous_commit (default on; off is a diagnostic)
+#   PAYLOAD_BYTES  pad every job's payload to at least this many bytes (default 0)
+#   VARIANT        free text naming what this run changes (default empty). Rows
+#                  group by it, so an A/B on one build is two variants
+#   BROKER_ENV WORKER_ENV
+#                  space-separated NAME=value settings for every broker or worker,
+#                  e.g. WORKER_ENV="HOPPER_LOG_LEVEL=info". They override the stack's
+#                  own (settings.yaml), and a run stops if Compose wouldn't apply one
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
 #   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
 #   OUT            evidence root (default ${TMPDIR:-/tmp}/hopper-bench); LABEL names the row
@@ -41,6 +48,21 @@ concurrency="${CONCURRENCY:-16}"
 case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
+payload_bytes="${PAYLOAD_BYTES:-0}"
+variant="${VARIANT:-}"
+case "$variant" in *,*) echo "VARIANT may not contain a comma" >&2; exit 2 ;; esac
+for setting in BROKER_ENV WORKER_ENV; do
+  # shellcheck disable=SC2086 # one word per setting
+  for kv in ${!setting:-}; do
+    case "$kv" in [A-Z_]*=*) ;; *) echo "$setting entries must be NAME=value: $kv" >&2; exit 2 ;; esac
+    case "${kv%%=*}" in *[!A-Z0-9_]*) echo "$setting entries must be NAME=value: $kv" >&2; exit 2 ;; esac
+    case "$kv" in *[\"\\]*) echo "$setting entries may not contain quotes or backslashes: $kv" >&2; exit 2 ;; esac
+  done
+done
+# The instruments (this script, loadgen and the Compose files) always come
+# from the working tree, whatever REF says, so each row names their revision
+# too. Evidence and notes under docs/ don't count.
+harness="$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- . ':(exclude)docs' || echo -dirty)"
 vm_cpus="$(docker info --format '{{.NCPU}}')"
 if [ "$pin" = 1 ] && [ "$vm_cpus" -lt 8 ]; then
   echo "PIN=1 needs a Docker VM with at least 8 CPUs; this one has $vm_cpus" >&2
@@ -70,7 +92,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -98,6 +120,26 @@ services:
 EOF
   files+=(-f "$dir/cpuset.yaml")
 fi
+# Per-run settings, as a Compose file of their own merged after the bench
+# overlay. Compose prefers a service's environment to its env_file, and a
+# later file's environment to an earlier one's, so this is the one place a
+# run can override what the stack already sets (the workers' log level, say).
+bench_services="broker broker-standby broker-3 broker-4 worker worker-b worker-c worker-d"
+settings_for() { case "$1" in broker*) echo "${BROKER_ENV:-}" ;; *) echo "${WORKER_ENV:-}" ;; esac; }
+if [ -n "${BROKER_ENV:-}${WORKER_ENV:-}" ]; then
+  {
+    echo "# Written by scripts/bench.sh: the settings this run overrides."
+    echo "services:"
+    for svc in $bench_services; do
+      kvs="$(settings_for "$svc")"
+      [ -n "$kvs" ] || continue
+      printf '  %s:\n    environment:\n' "$svc"
+      # shellcheck disable=SC2086 # one word per setting
+      for kv in $kvs; do printf '      %s: "%s"\n' "${kv%%=*}" "${kv#*=}"; done
+    done
+  } >"$dir/settings.yaml"
+  files+=(-f "$dir/settings.yaml")
+fi
 {
   echo "host: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)"
   echo "docker: $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes, server {{.ServerVersion}}')"
@@ -111,6 +153,19 @@ export HOPPER_BENCH_TAG="$tag" HOPPER_BENCH_BROKER_ENV="$dir/broker.env"
 export HOPPER_BENCH_SYNC_COMMIT="${SYNC_COMMIT:-on}" HOPPER_BENCH_CONCURRENCY="$concurrency"
 compose() { docker compose -p hopper-bench "${files[@]}" "$@"; }
 sql() { compose exec -T postgres psql -U hopper -d hopper -qAt -c "$1"; }
+
+# Read every per-run setting back from Compose's merged model, so one Compose
+# would not apply stops the run instead of being silently ignored.
+if [ -f "$dir/settings.yaml" ]; then
+  model="$(compose config --format json)"
+  for svc in $bench_services; do
+    # shellcheck disable=SC2086
+    for kv in $(settings_for "$svc"); do
+      got="$(jq -r --arg s "$svc" --arg k "${kv%%=*}" '.services[$s].environment[$k] // empty' <<<"$model")"
+      [ "$got" = "${kv#*=}" ] || { echo "$svc would run with ${kv%%=*}=${got:-unset}, not ${kv#*=}" >&2; exit 2; }
+    done
+  done
+fi
 
 samplers=""
 profiler=""
@@ -204,7 +259,7 @@ profile() {
 case "$scenario" in
 drain)
   jobs="${JOBS:-40000}"
-  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -wait=false -json >"$dir/preload.json"
+  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" -wait=false -json >"$dir/preload.json"
   sql "vacuum analyze jobs" >/dev/null
   sql "select pg_stat_statements_reset()" >/dev/null
   pool_snapshot before
@@ -247,7 +302,7 @@ steady)
   waits & samplers="$samplers $!"
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
   loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${DURATION:-30s}" \
-    -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -json >"$dir/loadgen.json"
+    -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" -json >"$dir/loadgen.json"
   stop_samplers
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
@@ -309,7 +364,7 @@ reject() {
 grep -q broker "$dir/stats.csv" 2>/dev/null || reject "no broker CPU samples"
 [ -n "$lease_mean" ] || reject "the lease statement is missing from pg_stat_statements"
 if [ "$scenario" = drain ] && [ "$retried" != 0 ]; then reject "$retried jobs were retried"; fi
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$dir"
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"
