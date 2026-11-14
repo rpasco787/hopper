@@ -14,6 +14,10 @@
 #                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0)
 #   DB_MAX_CONNS   the brokers' pool size; unset keeps the binary's default
 #   SYNC_COMMIT    PostgreSQL synchronous_commit (default on; off is a diagnostic)
+#   PG_ARGS        extra server settings as name=value words, e.g. "commit_delay=200 commit_siblings=5"
+#   EXPLAIN        1 logs a sample of executed plans with buffer counts (auto_explain) to
+#                  logs.txt. A diagnostic: its overhead means the run's numbers are not a result
+#   BENCH_SQL      SQL run once the brokers have migrated and before the preload
 #   PAYLOAD_BYTES  pad every job's payload to at least this many bytes (default 0)
 #   VARIANT        free text naming what this run changes (default empty). Rows
 #                  group by it, so an A/B on one build is two variants
@@ -59,6 +63,20 @@ for setting in BROKER_ENV WORKER_ENV; do
     case "$kv" in *[\"\\]*) echo "$setting entries may not contain quotes or backslashes: $kv" >&2; exit 2 ;; esac
   done
 done
+# shellcheck disable=SC2086
+for kv in ${PG_ARGS:-}; do
+  case "$kv" in *=*) ;; *) echo "PG_ARGS entries must be name=value: $kv" >&2; exit 2 ;; esac
+  case "$kv" in *\"*) echo "PG_ARGS entries may not contain quotes: $kv" >&2; exit 2 ;; esac
+done
+# Rows group by their columns, and these settings aren't columns, so a run
+# that changes one must name itself or the summary would pool it with
+# default runs.
+if [ -z "$variant" ]; then
+  for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL; do
+    [ -z "${!knob:-}" ] || { echo "$knob changes the run: name it with VARIANT" >&2; exit 2; }
+  done
+  [ "${EXPLAIN:-0}" != 1 ] || { echo "EXPLAIN changes the run: name it with VARIANT" >&2; exit 2; }
+fi
 # The instruments (this script, loadgen and the Compose files) always come
 # from the working tree, whatever REF says, so each row names their revision
 # too. Evidence and notes under docs/ don't count.
@@ -120,6 +138,28 @@ services:
 EOF
   files+=(-f "$dir/cpuset.yaml")
 fi
+# The server's command line for this run, kept as evidence. It replaces the
+# overlay's command, which stays for anyone running the stack by hand. (The
+# array is never empty when expanded: bash 3.2, macOS's, treats an empty
+# "${a[@]}" as unbound under set -u.)
+preload_libs="pg_stat_statements"
+if [ "${EXPLAIN:-0}" = 1 ]; then preload_libs="pg_stat_statements,auto_explain"; fi
+pg_settings=("shared_preload_libraries=$preload_libs" "synchronous_commit=${SYNC_COMMIT:-on}")
+if [ "${EXPLAIN:-0}" = 1 ]; then
+  pg_settings+=(auto_explain.log_min_duration=0 auto_explain.sample_rate=0.002
+    auto_explain.log_analyze=on auto_explain.log_buffers=on auto_explain.log_timing=off)
+fi
+# shellcheck disable=SC2086
+for kv in ${PG_ARGS:-}; do pg_settings+=("$kv"); done
+{
+  echo "# Written by scripts/bench.sh: the server settings for this run."
+  echo "services:"
+  echo "  postgres:"
+  printf '    command: ["postgres"'
+  for kv in "${pg_settings[@]}"; do printf ', "-c", "%s"' "$kv"; done
+  echo ']'
+} >"$dir/postgres.yaml"
+files+=(-f "$dir/postgres.yaml")
 # Per-run settings, as a Compose file of their own merged after the bench
 # overlay. Compose prefers a service's environment to its env_file, and a
 # later file's environment to an earlier one's, so this is the one place a
@@ -186,6 +226,17 @@ services="postgres $broker_services"
 # shellcheck disable=SC2086 # word splitting is the point
 compose up -d --no-build --wait $services >/dev/null
 sql "create extension pg_stat_statements" >/dev/null
+# The brokers migrate on start, and nothing guarantees they are done when
+# Compose says they are running.
+deadline=$((SECONDS + 60))
+until [ "$(sql "select to_regclass('public.jobs') is not null")" = t ]; do
+  [ "$SECONDS" -lt "$deadline" ] || { echo "the brokers did not migrate within a minute" >&2; exit 1; }
+  sleep 0.25
+done
+if [ -n "${BENCH_SQL:-}" ]; then
+  printf '%s\n' "$BENCH_SQL" >"$dir/bench.sql"
+  sql "$BENCH_SQL" >/dev/null
+fi
 
 # Workers split evenly across the brokers, the first services taking any
 # remainder. Worker service i dials broker i, so the split is exact.

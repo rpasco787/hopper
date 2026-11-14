@@ -40,7 +40,9 @@ elif args[0] == 'compose':
         time.sleep(0.2)
     elif 'exec' in args:
         sql = args[-1]
+        event('sql: ' + ' '.join(sql.split())[:60])
         if "where state = 'completed'" in sql: print('1')
+        elif 'to_regclass' in sql: print('t')
         elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
         elif 'pg_stat_activity' in sql:
@@ -240,6 +242,44 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             [row] = rows(root)
             self.assertRegex(row['harness'], r'^[0-9a-f]{7,}(-dirty)?$')
+
+    def test_server_settings_are_written_per_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, PG_ARGS='commit_delay=200 commit_siblings=5', EXPLAIN='1', VARIANT='delay')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pg = (evidence_dir(root) / 'postgres.yaml').read_text()
+            self.assertIn('"-c", "commit_delay=200", "-c", "commit_siblings=5"', pg)
+            self.assertIn('shared_preload_libraries=pg_stat_statements,auto_explain', pg)
+            self.assertIn('"-c", "synchronous_commit=on"', pg)
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('postgres.yaml', call)
+
+    def test_pg_args_must_be_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, PG_ARGS='oops')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('PG_ARGS entries must be name=value: oops', result.stderr)
+
+    def test_bench_sql_runs_before_the_preload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_SQL='alter table jobs set (fillfactor = 80)', VARIANT='ff80')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            events = trace(root)
+            setup = events.index('sql: alter table jobs set (fillfactor = 80)')
+            preload = next(i for i, e in enumerate(events) if e.startswith('compose run: '))
+            self.assertLess(setup, preload)
+            self.assertIn('fillfactor = 80', (evidence_dir(root) / 'bench.sql').read_text())
+
+    def test_changed_settings_need_a_variant(self):
+        for knob, value in [('PG_ARGS', 'commit_delay=200'), ('BROKER_ENV', 'HOPPER_MAX_LEASE_BATCH=8'),
+                            ('WORKER_ENV', 'HOPPER_LOG_LEVEL=info'), ('BENCH_SQL', 'select 1'), ('EXPLAIN', '1')]:
+            with self.subTest(knob=knob), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), **{knob: value})
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f'{knob} changes the run: name it with VARIANT', result.stderr)
 
     def test_pin_needs_eight_vm_cpus(self):
         with tempfile.TemporaryDirectory() as tmp:
