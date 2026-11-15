@@ -45,6 +45,11 @@ elif args[0] == 'compose':
         elif 'to_regclass' in sql: print('t')
         elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
+        elif 'pg_stat_wal' in sql:
+            event('counters')
+            n = trace.read_text().splitlines().count('counters')
+            print('%d|%d|%d|%d|%d|%d' % (1000 * n, 100 * n, 4096000 * n, 300 * n, 30 * n, 50 * n))
+        elif 'wal_sync_method' in sql: print(os.environ.get('BENCH_TEST_WAL_SYNC', 'on|fdatasync'))
         elif 'pg_stat_activity' in sql:
             if os.environ.get('BENCH_TEST_NO_WAITS') != '1':
                 print('12:00:00.000|SAMPLE|-|0')
@@ -70,7 +75,6 @@ elif args[0] == 'compose':
         print('{}')
 '''
 
-
 def run_bench(root, scenario='drain', **overrides):
     """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess."""
     fake = root / 'docker'
@@ -82,7 +86,8 @@ def run_bench(root, scenario='drain', **overrides):
     env = os.environ.copy()
     env.update(PATH=str(root) + os.pathsep + env['PATH'],
                BENCH_TEST_TRACE=str(root / 'trace'), OUT=str(root / 'out'),
-               REF='HEAD', JOBS='1', BROKERS='1', WORKERS='4', PROFILE='0', KEEP='0')
+               REF='HEAD', JOBS='1', BROKERS='1', WORKERS='4', PROFILE='0', KEEP='0',
+               STATS_SETTLE='0')
     env.update(overrides)
     return subprocess.run(['bash', 'scripts/bench.sh', scenario], env=env,
                           capture_output=True, text=True, timeout=30)
@@ -351,6 +356,39 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn('has a different header; use a new OUT', result.stderr)
             self.assertNotIn('workers consuming', trace(root))
+
+    def test_row_carries_commits_wal_and_update_mix_per_job(self):
+        # The fake's counters grow by 1000 commits, 100 syncs, 4,096,000 WAL
+        # bytes, 300 updates and 30 HOT updates between snapshots, over JOBS=1.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['commits_per_job'], '1000.00')
+            self.assertEqual(row['wal_syncs_per_job'], '100.000')
+            self.assertEqual(row['wal_kb_per_job'], '4000.00')
+            self.assertEqual(row['hot_update_pct'], '10.0')
+            self.assertEqual(row['dead_tuples'], '100')
+            self.assertEqual(len((evidence_dir(root) / 'counters.txt').read_text().splitlines()), 2)
+
+    def test_wal_syncs_are_blank_where_postgres_does_not_count_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_WAL_SYNC='on|open_datasync')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['wal_syncs_per_job'], '')
+            self.assertEqual(row['commits_per_job'], '1000.00')
+            self.assertEqual((evidence_dir(root) / 'wal_sync.txt').read_text(), 'on|open_datasync\n')
+
+    def test_statistics_settle_before_both_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            start = time.monotonic()
+            result = run_bench(root, STATS_SETTLE='1')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(time.monotonic() - start, 2)
 
 
 if __name__ == '__main__':

@@ -25,6 +25,7 @@
 #                  space-separated NAME=value settings for every broker or worker,
 #                  e.g. WORKER_ENV="HOPPER_LOG_LEVEL=info". They override the stack's
 #                  own (settings.yaml), and a run stops if Compose wouldn't apply one
+#   STATS_SETTLE   seconds to wait before each snapshot of cumulative statistics (default 11)
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
 #   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
 #   OUT            evidence root (default ${TMPDIR:-/tmp}/hopper-bench); LABEL names the row
@@ -110,7 +111,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -193,6 +194,18 @@ export HOPPER_BENCH_TAG="$tag" HOPPER_BENCH_BROKER_ENV="$dir/broker.env"
 export HOPPER_BENCH_SYNC_COMMIT="${SYNC_COMMIT:-on}" HOPPER_BENCH_CONCURRENCY="$concurrency"
 compose() { docker compose -p hopper-bench "${files[@]}" "$@"; }
 sql() { compose exec -T postgres psql -U hopper -d hopper -qAt -c "$1"; }
+# Commits and WAL across the database, and how updates landed on jobs, as
+# xact_commit|wal_sync|wal_bytes|n_tup_upd|n_tup_hot_upd|n_dead_tup.
+counters() {
+  sql "select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup
+       from pg_stat_database d, pg_stat_wal w, pg_stat_user_tables t
+       where d.datname = current_database() and t.relname = 'jobs'"
+}
+# Backends publish statistics on their own schedule, and an idle one can hold
+# them for up to 10 seconds (PGSTAT_IDLE_INTERVAL). Waiting this long before
+# each snapshot keeps the preload out of the first and the run's tail in the
+# second.
+settle_stats() { sleep "${STATS_SETTLE:-11}"; }
 
 # Read every per-run setting back from Compose's merged model, so one Compose
 # would not apply stops the run instead of being silently ignored.
@@ -312,7 +325,10 @@ drain)
   jobs="${JOBS:-40000}"
   loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" -wait=false -json >"$dir/preload.json"
   sql "vacuum analyze jobs" >/dev/null
+  settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
+  counters_before="$(counters)"
+  sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
   sample_once
   waits_once
@@ -334,6 +350,7 @@ drain)
     select round(count(*) / extract(epoch from max(finished_at) - min(leased_at))),
            count(*) filter (where attempts > 1)
     from jobs" | tr '|' ',')"
+  completed="$jobs"
   enqueue_p50=""; enqueue_p99=""; pickup_p50=""; pickup_p99=""; e2e_p50=""; e2e_p99=""
   offered=""; max_lag=""; kept_up=""
   ;;
@@ -347,7 +364,10 @@ steady)
     [ "$SECONDS" -lt "$deadline" ] || { echo "the workers did not all open lease streams" >&2; exit 1; }
     sleep 0.25
   done
+  settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
+  counters_before="$(counters)"
+  sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
   sample & samplers="$!"
   waits & samplers="$samplers $!"
@@ -363,9 +383,13 @@ steady)
   # Keeping up: at least 98% of offered, no call a second late.
   kept_up="$(awk -v t="$throughput" -v o="$offered" -v l="$max_lag" \
     'BEGIN { print (o > 0 && t >= 0.98 * o && l < 1000) ? "yes" : "no" }')"
+  completed="$(sql "select count(*) from jobs where state = 'completed'")"
   ;;
 esac
 stop_samplers
+settle_stats
+counters_after="$(counters)"
+printf '%s\n%s\n' "$counters_before" "$counters_after" >"$dir/counters.txt"
 
 # Every statement counts toward the total, so a share is of all database time
 # in the interval, the harness's own polling included.
@@ -415,7 +439,18 @@ reject() {
 grep -q broker "$dir/stats.csv" 2>/dev/null || reject "no broker CPU samples"
 [ -n "$lease_mean" ] || reject "the lease statement is missing from pg_stat_statements"
 if [ "$scenario" = drain ] && [ "$retried" != 0 ]; then reject "$retried jobs were retried"; fi
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$dir"
+[ -n "$counters_before" ] && [ -n "$counters_after" ] || reject "no statistics snapshot"
+IFS='|' read -r c0 s0 w0 u0 h0 _ <<<"$counters_before"
+IFS='|' read -r c1 s1 w1 u1 h1 dead_tuples <<<"$counters_after"
+read -r commits_per_job wal_syncs_per_job wal_kb_per_job hot_update_pct <<<"$(awk \
+  -v n="$completed" -v c=$((c1 - c0)) -v s=$((s1 - s0)) -v w=$((w1 - w0)) -v u=$((u1 - u0)) -v h=$((h1 - h0)) \
+  'BEGIN { if (n < 1) n = 1; printf "%.2f %.3f %.2f %.1f\n", c / n, s / n, w / n / 1024, (u > 0 ? 100 * h / u : 0) }')"
+# wal_sync stays zero unless fsync is on and the method is one it counts.
+case "$(cat "$dir/wal_sync.txt")" in
+  'on|fdatasync' | 'on|fsync' | 'on|fsync_writethrough') ;;
+  *) wal_syncs_per_job="" ;;
+esac
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"
