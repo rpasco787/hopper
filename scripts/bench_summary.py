@@ -1,41 +1,62 @@
 #!/usr/bin/env python3
-"""Medians, ranges, saturation and a 1-vs-2-broker verdict for scripts/bench.sh.
+"""Medians, ranges, saturation and broker-count verdicts for scripts/bench.sh.
 
     python3 scripts/bench_summary.py docs/bench/lite/e1/results.csv > docs/bench/lite/e1/summary.md
 
 Rows are grouped by everything that must match for runs to be comparable;
-the broker count is the only thing that varies inside a group.
+the broker count is the only thing that varies inside a group. Columns an
+older results.csv lacks show as a dash.
 """
 import csv
 import statistics
 import sys
 from collections import defaultdict
 
-SETUP = ('ref', 'scenario', 'workers', 'concurrency', 'vm_cpus', 'pinned')
+# Everything that defines a configuration. Settings with no column of their
+# own (BROKER_ENV, WORKER_ENV, PG_ARGS, BENCH_SQL, EXPLAIN) are folded into
+# variant: scripts/bench.sh refuses them without one.
+SETUP = ('ref', 'harness', 'scenario', 'variant', 'payload_bytes', 'sync_commit', 'db_max_conns',
+         'workers', 'concurrency', 'vm_cpus', 'pinned')
+WANT = 5
 # Under PIN=1, a role is saturated at 90% of the cores scripts/bench.sh gives
-# it, in percent of one core.
-PINNED_LIMITS = (('postgres', 'postgres_cpu', 180), ('broker', 'per_broker_cpu', 90),
-                 ('workers', 'worker_cpu', 270))
+# it, in percent of one core. Every broker may use CPUs 2 and 3, so the
+# brokers together saturate at 180 however many there are.
+PINNED_LIMITS = (('postgres', 'postgres_cpu', 180), ('workers', 'worker_cpu', 270))
+BROKERS_LIMIT = 180
+# The evidence rule: medians at least 10% apart, and ranges that don't overlap.
+MEASURABLE = 0.10
 HEADER = ('| brokers | runs | jobs/s median (range) | postgres CPU | CPU per broker | worker CPU '
-          '| on-CPU % | Lock+LWLock % | IO % | lease ms | lease blocks | saturated |')
-RULE = '|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|'
+          '| on-CPU % | Lock+LWLock % | IO % | lease ms | lease blocks | commits/job | WAL syncs/job '
+          '| WAL KB/job | HOT % | ack p99 ms | hb p99 ms | saturated |')
+RULE = '|---:|---:|---|' + '---:|' * 14 + '---|'
 
 
 def fmt(x, digits=0):
-    return f'{x:,.{digits}f}'
+    return '–' if x is None else f'{x:,.{digits}f}'
 
 
-def verdict(one, two):
-    if max(two) < min(one):
-        return '2 brokers slower'
-    if min(two) > max(one):
-        return '2 brokers faster'
-    return 'inconclusive (ranges overlap)'
+def median_of(rs, key):
+    vals = [float(r[key]) for r in rs if r.get(key) not in (None, '')]
+    return statistics.median(vals) if vals else None
+
+
+def verdict(one, other, n):
+    ratio = statistics.median(other) / statistics.median(one)
+    if not (max(other) < min(one) or min(other) > max(one)):
+        return 'inconclusive (ranges overlap)'
+    if ratio >= 1 + MEASURABLE:
+        return f'{n} brokers faster'
+    if ratio <= 1 - MEASURABLE:
+        return f'{n} brokers slower'
+    return 'no measurable difference (ranges apart, medians under 10% apart)'
 
 
 def saturation(cpu, brokers, vm_cpus, pinned):
     if pinned:
-        return ', '.join(name for name, key, limit in PINNED_LIMITS if cpu[key] >= limit) or 'none'
+        hot = [name for name, key, limit in PINNED_LIMITS if cpu[key] >= limit]
+        if cpu['per_broker_cpu'] * brokers >= BROKERS_LIMIT:
+            hot.append('brokers')
+        return ', '.join(hot) or 'none'
     total = cpu['postgres_cpu'] + cpu['per_broker_cpu'] * brokers + cpu['worker_cpu']
     return 'VM' if total >= 0.9 * 100 * vm_cpus else 'none'
 
@@ -43,41 +64,51 @@ def saturation(cpu, brokers, vm_cpus, pinned):
 def summarize(rows):
     groups = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        groups[tuple(r[k] for k in SETUP)][int(r['brokers'])].append(r)
+        groups[tuple(r.get(k, '') for k in SETUP)][int(r['brokers'])].append(r)
     lines = []
     for setup in sorted(groups):
         fields = dict(zip(SETUP, setup))
-        lines.append('## ' + ', '.join(f'{k}={v}' for k, v in fields.items()))
+        lines.append('## ' + ', '.join(f'{k}={v}' for k, v in fields.items() if v != ''))
         lines.append('')
         if fields['ref'].endswith('-dirty'):
             lines += ['> Built from a dirty tree: not a result.', '']
+        if fields['harness'].endswith('-dirty'):
+            lines += ['> Measured with an uncommitted harness: not a result.', '']
         lines += [HEADER, RULE]
         throughputs = {}
         for brokers in sorted(groups[setup]):
             rs = groups[setup][brokers]
 
             def med(key):
-                return statistics.median(float(r[key]) for r in rs)
+                return median_of(rs, key)
 
             ts = [float(r['throughput']) for r in rs]
             throughputs[brokers] = ts
             cpu = {'postgres_cpu': med('postgres_cpu'), 'per_broker_cpu': med('broker_cpu') / brokers,
                    'worker_cpu': med('worker_cpu')}
+            lock = None if med('lock_pct') is None else med('lock_pct') + med('lwlock_pct')
             cells = [
                 str(brokers),
-                str(len(rs)) if len(rs) == 3 else f'{len(rs)} (want 3)',
+                str(len(rs)) if len(rs) >= WANT else f'{len(rs)} (want {WANT})',
                 f'{fmt(statistics.median(ts))} ({fmt(min(ts))}–{fmt(max(ts))})',
                 fmt(cpu['postgres_cpu']), fmt(cpu['per_broker_cpu']), fmt(cpu['worker_cpu']),
-                fmt(med('on_cpu_pct'), 1), fmt(med('lock_pct') + med('lwlock_pct'), 1),
-                fmt(med('io_pct'), 1), fmt(med('lease_mean_ms'), 3), fmt(med('lease_blks_per_call'), 1),
+                fmt(med('on_cpu_pct'), 1), fmt(lock, 1), fmt(med('io_pct'), 1),
+                fmt(med('lease_mean_ms'), 3), fmt(med('lease_blks_per_call'), 1),
+                fmt(med('commits_per_job'), 2), fmt(med('wal_syncs_per_job'), 3),
+                fmt(med('wal_kb_per_job'), 2), fmt(med('hot_update_pct'), 1),
+                fmt(med('ack_p99_ms'), 2), fmt(med('heartbeat_p99_ms'), 2),
                 saturation(cpu, brokers, int(fields['vm_cpus']), fields['pinned'] == '1'),
             ]
             lines.append('| ' + ' | '.join(cells) + ' |')
         lines.append('')
-        if 1 in throughputs and 2 in throughputs:
-            ratio = statistics.median(throughputs[2]) / statistics.median(throughputs[1])
-            lines += [f'**Verdict:** {verdict(throughputs[1], throughputs[2])}; '
-                      f'the 2-broker median is {ratio:.2f}× the 1-broker median.', '']
+        if 1 in throughputs and len(throughputs) > 1:
+            for n in sorted(throughputs):
+                if n == 1:
+                    continue
+                ratio = statistics.median(throughputs[n]) / statistics.median(throughputs[1])
+                lines.append(f'**Verdict:** {verdict(throughputs[1], throughputs[n], n)}; '
+                             f'the {n}-broker median is {ratio:.2f}× the 1-broker median.')
+            lines.append('')
     return '\n'.join(lines)
 
 

@@ -46,7 +46,7 @@ class SummaryTest(unittest.TestCase):
 
     def test_short_groups_are_flagged(self):
         out = bench_summary.summarize(runs(1, [9000, 9100]))
-        self.assertIn('2 (want 3)', out)
+        self.assertIn('2 (want 5)', out)
 
     def test_each_setup_is_its_own_section(self):
         out = bench_summary.summarize(runs(1, [1, 2, 3], vm_cpus=4) + runs(1, [1, 2, 3], vm_cpus=8))
@@ -56,6 +56,51 @@ class SummaryTest(unittest.TestCase):
     def test_dirty_refs_are_marked(self):
         out = bench_summary.summarize(runs(1, [1, 2, 3], ref='abc1234-dirty'))
         self.assertIn('dirty tree', out)
+
+    def test_four_brokers_get_their_own_verdict(self):
+        out = bench_summary.summarize(runs(1, [5000, 5100, 5200]) + runs(4, [6000, 6100, 6200]))
+        self.assertIn('**Verdict:** 4 brokers faster; the 4-broker median is 1.20× the 1-broker median.', out)
+
+    def test_variants_are_separate_sections(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], variant='batch') + runs(1, [1, 2, 3], variant='nobatch'))
+        self.assertIn('variant=batch', out)
+        self.assertIn('variant=nobatch', out)
+
+    def test_commit_and_latency_columns_show_medians(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], commits_per_job='2.20', ack_p99_ms='1.50'))
+        self.assertIn('| 2.20 |', out)
+        self.assertIn('| 1.50 |', out)
+
+    def test_columns_an_old_file_lacks_are_dashes(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3]))
+        self.assertIn('| – |', out)
+
+    def test_four_pinned_brokers_share_two_cores(self):
+        def row4(out):
+            return next(l for l in out.splitlines() if l.startswith('| 4 |'))
+        # Four brokers on CPUs 2-3 saturate at 90% of two cores: 180 in total.
+        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=170))).endswith('| none |'))
+        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=185))).endswith('| brokers |'))
+
+    def test_one_pinned_broker_has_both_cores(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, broker_cpu=170))
+        row1 = next(l for l in out.splitlines() if l.startswith('| 1 |'))
+        self.assertTrue(row1.endswith('| none |'), row1)
+
+    def test_ranges_apart_but_medians_close_are_no_measurable_difference(self):
+        # The evidence rule wants 10%; these medians are 2% apart.
+        out = bench_summary.summarize(runs(1, [5000, 5010, 5020]) + runs(2, [5100, 5110, 5120]))
+        self.assertIn('**Verdict:** no measurable difference', out)
+
+    def test_pool_size_and_harness_are_part_of_the_setup(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], db_max_conns='16') + runs(1, [1, 2, 3], db_max_conns='32'))
+        self.assertEqual(out.count('\n## '), 1)
+        out = bench_summary.summarize(runs(1, [1, 2, 3], harness='abc1234') + runs(1, [1, 2, 3], harness='def5678'))
+        self.assertEqual(out.count('\n## '), 1)
+
+    def test_a_dirty_harness_is_marked(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], harness='abc1234-dirty'))
+        self.assertIn('uncommitted harness', out)
 
 
 if __name__ == '__main__':
