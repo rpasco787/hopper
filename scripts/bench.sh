@@ -111,7 +111,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -306,13 +306,20 @@ waits_once() {
        group by 2, 3" >>"$dir/waits.psv" || true
 }
 waits() { until [ -e "$dir/samplers.stop" ]; do sleep 1; [ -e "$dir/samplers.stop" ] || waits_once; done; }
-# Every broker's pool counters, before and after the measured interval, so
-# their deltas leave out the preload and startup.
+# Every broker's pool counters and confirmation latency histograms, before and
+# after the measured interval, so their deltas leave out the preload and
+# startup. A failed scrape is written down, not skipped: bench_hist.py then
+# rejects the measurement rather than summing fewer brokers.
 pool_snapshot() {
   for port in $metrics_ports; do
-    echo "# $1 :$port"
-    curl -sf "http://127.0.0.1:$port/metrics" | grep '^hopper_db_pool' || echo "# no pool metrics"
-  done >>"$dir/pool.txt"
+    metrics="$(curl -sf "http://127.0.0.1:$port/metrics")" || metrics="# scrape failed"
+    { echo "# $1 :$port"
+      grep -E '^hopper_db_pool|^# scrape failed' <<<"$metrics" || echo "# no pool metrics"
+    } >>"$dir/pool.txt"
+    { echo "# $1 :$port"
+      grep -E '^grpc_server_handling_seconds_bucket\{.*grpc_method="(Ack|Heartbeat)"|^# scrape failed' <<<"$metrics" || true
+    } >>"$dir/rpc.txt"
+  done
 }
 profile() {
   sleep 3
@@ -450,7 +457,17 @@ case "$(cat "$dir/wal_sync.txt")" in
   'on|fdatasync' | 'on|fsync' | 'on|fsync_writethrough') ;;
   *) wal_syncs_per_job="" ;;
 esac
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$dir"
+# A broker whose snapshots don't pair up makes the run incomplete, not quieter.
+hist="$(python3 scripts/bench_hist.py "$dir/rpc.txt" Ack 2>&1)" || reject "$hist"
+read -r ack_calls ack_p99 <<<"$hist"
+hist="$(python3 scripts/bench_hist.py "$dir/rpc.txt" Heartbeat 2>&1)" || reject "$hist"
+read -r _ heartbeat_p99 <<<"$hist"
+# Every drained job was acked at least once, so fewer Ack calls than jobs
+# means some broker's calls went uncounted.
+if [ "$scenario" = drain ] && [ "$ack_calls" -lt "$jobs" ]; then
+  reject "the Ack histograms saw $ack_calls calls for $jobs jobs"
+fi
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"

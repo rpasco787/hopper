@@ -75,19 +75,34 @@ elif args[0] == 'compose':
         print('{}')
 '''
 
+# Stands in for curl. It counts its calls in BENCH_TEST_CURLS and reports Ack
+# buckets that grow by BENCH_TEST_ACKS calls (default 100, 90% of them under
+# 1 ms) per call. Call number BENCH_TEST_CURL_FAIL fails, as a dead broker would.
+FAKE_CURL = r'''#!/bin/sh
+n=$(cat "$BENCH_TEST_CURLS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$BENCH_TEST_CURLS"
+[ "$n" = "${BENCH_TEST_CURL_FAIL:-0}" ] && exit 22
+a=${BENCH_TEST_ACKS:-100}
+echo "hopper_db_pool_acquires_total 1"
+b='grpc_server_handling_seconds_bucket{grpc_method="Ack",grpc_service="s",grpc_type="unary",le='
+echo "${b}\"0.001\"} $((a * 9 / 10 * n))"
+echo "${b}\"0.0025\"} $((a * n))"
+echo "${b}\"+Inf\"} $((a * n))"
+'''
+
+
 def run_bench(root, scenario='drain', **overrides):
     """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess."""
     fake = root / 'docker'
     fake.write_text(FAKE_DOCKER)
     fake.chmod(0o755)
     curl = root / 'curl'
-    curl.write_text('#!/bin/sh\necho "hopper_db_pool_acquires_total 1"\n')
+    curl.write_text(FAKE_CURL)
     curl.chmod(0o755)
     env = os.environ.copy()
     env.update(PATH=str(root) + os.pathsep + env['PATH'],
                BENCH_TEST_TRACE=str(root / 'trace'), OUT=str(root / 'out'),
                REF='HEAD', JOBS='1', BROKERS='1', WORKERS='4', PROFILE='0', KEEP='0',
-               STATS_SETTLE='0')
+               STATS_SETTLE='0', BENCH_TEST_CURLS=str(root / 'curls'))
     env.update(overrides)
     return subprocess.run(['bash', 'scripts/bench.sh', scenario], env=env,
                           capture_output=True, text=True, timeout=30)
@@ -389,6 +404,31 @@ class BenchmarkTest(unittest.TestCase):
             result = run_bench(root, STATS_SETTLE='1')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertGreaterEqual(time.monotonic() - start, 2)
+
+    def test_row_carries_confirmation_p99(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['ack_p99_ms'], '2.35')
+            self.assertEqual(row['heartbeat_p99_ms'], '')
+            self.assertIn('# after :16091', (evidence_dir(root) / 'rpc.txt').read_text())
+
+    def test_a_failed_scrape_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_CURL_FAIL='2')
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(rows(root), [])
+            self.assertIn(':16091 after scrape failed', (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_a_drain_with_fewer_acks_than_jobs_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_ACKS='0')
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('the Ack histograms saw 0 calls for 1 jobs', (evidence_dir(root) / 'rejected.txt').read_text())
 
 
 if __name__ == '__main__':
