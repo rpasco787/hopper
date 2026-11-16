@@ -31,12 +31,7 @@ func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
 		leasedAt   *time.Time // nullable in the schema; always set by Lease
 		finishedAt time.Time
 	)
-	err := s.pool.QueryRow(ctx, `
-		update jobs
-		set state = 'completed', finished_at = now(), updated_at = now()
-		where id = $1 and lease_id = $2 and state = 'leased'
-		returning queue, leased_at, finished_at`,
-		id, leaseID).Scan(&queue, &leasedAt, &finishedAt)
+	err := s.pool.QueryRow(ctx, ackSQL, id, leaseID).Scan(&queue, &leasedAt, &finishedAt)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return s.classifyMiss(ctx, id, leaseID, store.StateCompleted)
@@ -50,6 +45,25 @@ func (s *Store) Ack(ctx context.Context, id, leaseID uuid.UUID) error {
 	s.obs.Completed(queue, la, finishedAt)
 	return nil
 }
+
+// ackSQL is Ack's statement: $1 job id, $2 lease id. It is a variable so tests
+// can EXPLAIN the statement Ack runs.
+//
+// The state guard is
+//
+//	(state || '') = 'leased'
+//
+// not state = 'leased', on purpose. The plain form lets the planner prove
+// jobs_reap_idx's predicate and scan that index for the id. With statistics
+// from a moment when nothing was leased it believes the index empty, and the
+// scan then visits every leased row (docs/scaling.md H3a). The expression can
+// only be served by the primary key, and means the same thing: state is never
+// null.
+var ackSQL = `
+		update jobs
+		set state = 'completed', finished_at = now(), updated_at = now()
+		where id = $1 and lease_id = $2 and (state || '') = 'leased'
+		returning queue, leased_at, finished_at`
 
 // classifyMiss explains a guarded UPDATE that affected zero rows, mapping the
 // row's current state and lease_id to the table in docs/semantics.md §5.

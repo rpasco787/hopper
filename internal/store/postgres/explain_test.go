@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +121,58 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 				require.NotContains(t, plan, "Sort", "plan:\n%s", plan)
 			}
 		})
+	}
+}
+
+// explainPrepared plans sql as a named prepared statement under mode
+// (force_custom_plan or force_generic_plan) on a fresh connection, so the
+// prepared statement never reaches the shared pool. args are SQL literals.
+func explainPrepared(t *testing.T, mode, sql, args string) string {
+	t.Helper()
+	ctx := ctxT(t)
+	conn, err := pgx.Connect(ctx, dsn)
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+	simple := pgx.QueryExecModeSimpleProtocol
+	_, err = conn.Exec(ctx, "set plan_cache_mode = "+mode, simple)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "prepare probe as "+sql, simple)
+	require.NoError(t, err)
+	rows, err := conn.Query(ctx, "explain (costs off) execute probe("+args+")", simple)
+	require.NoError(t, err)
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return strings.Join(lines, "\n")
+}
+
+// TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics: statistics gathered
+// while nothing was leased say jobs_reap_idx is empty. A plan that believes
+// them finds one id by walking every leased row (docs/scaling.md H3a).
+func TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	_, err := pool.Exec(ctx, `insert into jobs (queue, payload, state, run_at)
+		select 'q', '{}', 'available', now() from generate_series(1, 20000)`)
+	require.NoError(t, err)
+	// VACUUM refuses to run in a transaction block; the simple protocol sends
+	// it bare.
+	_, err = pool.Exec(ctx, "vacuum analyze jobs", pgx.QueryExecModeSimpleProtocol)
+	require.NoError(t, err)
+	leased, err := s.Lease(ctx, []string{"q"}, 128, time.Minute, "w")
+	require.NoError(t, err)
+	require.Len(t, leased, 128)
+	id, lease := leased[0].ID, *leased[0].LeaseID
+
+	for _, tc := range []struct{ name, sql, args string }{
+		{"ack", ackSQL, fmt.Sprintf("'%s', '%s'", id, lease)},
+		{"heartbeat", extendSQL, fmt.Sprintf("'%s', '%s', '1 minute'", id, lease)},
+	} {
+		for _, mode := range []string{"force_custom_plan", "force_generic_plan"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				plan := explainPrepared(t, mode, tc.sql, tc.args)
+				require.Contains(t, plan, "jobs_pkey", "plan:\n%s", plan)
+				require.NotContains(t, plan, "jobs_reap_idx", "plan:\n%s", plan)
+			})
+		}
 	}
 }
