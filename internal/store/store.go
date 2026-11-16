@@ -67,6 +67,13 @@ var (
 // (docs/semantics.md §5).
 var ErrUnavailable = errors.New("store: database unavailable")
 
+// ErrNotApplied is a BatchConfirmer's answer for a pair its statement didn't
+// apply: the row was locked by another transaction, or its guard failed. It
+// never reaches a client. The caller applies that pair alone, with Ack or
+// ExtendLease, which waits for the lock and names the miss
+// (docs/design/confirmation-batching.md).
+var ErrNotApplied = errors.New("store: not applied in the batch")
+
 // Terminal reports whether s is a state that no automatic process ever leaves.
 // Dead is terminal in this sense even though Redrive can move it, because
 // Redrive is an operator action, not part of the job lifecycle.
@@ -241,6 +248,33 @@ type Wakeups interface {
 	// until ctx ends or the connection fails, and returns why. It holds one
 	// connection for as long as it runs.
 	Listen(ctx context.Context, wake func(queue string)) error
+}
+
+// LeaseRef names one delivery: a job and the lease token it was delivered under.
+type LeaseRef struct {
+	ID, LeaseID uuid.UUID
+}
+
+// Extension is one heartbeat: a delivery and how far from now to extend its lease.
+type Extension struct {
+	LeaseRef
+	Duration time.Duration
+}
+
+// BatchConfirmer is implemented by stores that can apply many Acks, or many
+// heartbeats, in one statement and one commit. It is separate from Store,
+// like QueueDepthSource, because only the broker's confirmation batching
+// uses it (docs/design/confirmation-batching.md).
+//
+// Each method returns one error per input, in order: nil for a pair its
+// statement applied, ErrNotApplied for one it didn't, or, when the statement
+// itself fails, that failure for every input. A method never waits for a row
+// lock and never retries, so one locked row holds up no other pair. The
+// caller applies an ErrNotApplied pair alone. A pair repeated in one call
+// gets the same answer each time.
+type BatchConfirmer interface {
+	AckMany(ctx context.Context, refs []LeaseRef) []error
+	ExtendLeaseMany(ctx context.Context, exts []Extension) []error
 }
 
 // Store is the persistence contract. Every method takes a context for
