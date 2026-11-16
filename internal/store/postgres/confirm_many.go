@@ -2,12 +2,15 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/rpasco787/hopper/internal/store"
 )
+
+var _ store.BatchConfirmer = (*Store)(nil)
 
 // ackManySQL is AckMany's statement: $1 job ids and $2 lease ids, paired by
 // position. It is Ack's guarded UPDATE (docs/semantics.md §5) for every pair
@@ -106,6 +109,73 @@ func fill(errs []error, err error) []error {
 	for i := range errs {
 		if errs[i] == nil {
 			errs[i] = err
+		}
+	}
+	return errs
+}
+
+// extendManySQL is ExtendLeaseMany's statement: $1 job ids, $2 lease ids and
+// $3 durations in microseconds, paired by position. It is ExtendLease's
+// guarded UPDATE for every triple. It skips locked rows, and writes its
+// guard, for the reasons ackManySQL does.
+var extendManySQL = `
+	with mine as (
+		select j.id, c.dur_us
+		from unnest($1::uuid[], $2::uuid[], $3::int8[]) as c(id, lease_id, dur_us)
+		join jobs j on j.id = c.id and j.lease_id = c.lease_id
+		where (j.state || '') = 'leased'
+		for update of j skip locked
+	)
+	update jobs j
+	set lease_expires = now() + mine.dur_us * interval '1 microsecond', updated_at = now()
+	from mine
+	where j.id = mine.id
+	returning j.id, j.lease_id`
+
+// ExtendLeaseMany is ExtendLease for many deliveries in one statement
+// (store.BatchConfirmer). A delivery named twice is extended by the first
+// duration given for it.
+func (s *Store) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	errs := make([]error, len(exts))
+	var (
+		ids, leases []uuid.UUID
+		durs        []int64
+	)
+	seen := make(map[store.LeaseRef]bool, len(exts))
+	for i, e := range exts {
+		if e.Duration <= 0 {
+			errs[i] = errors.New("store: extend lease: duration must be positive")
+			continue
+		}
+		if !seen[e.LeaseRef] {
+			seen[e.LeaseRef] = true
+			ids = append(ids, e.ID)
+			leases = append(leases, e.LeaseID)
+			durs = append(durs, e.Duration.Microseconds())
+		}
+	}
+	if len(ids) == 0 {
+		return errs
+	}
+	rows, err := s.pool.Query(ctx, extendManySQL, ids, leases, durs)
+	if err != nil {
+		return fill(errs, wrap("extend lease many", err))
+	}
+	extended := make(map[store.LeaseRef]bool, len(ids))
+	for rows.Next() {
+		var ref store.LeaseRef
+		if err := rows.Scan(&ref.ID, &ref.LeaseID); err != nil {
+			rows.Close()
+			return fill(errs, wrap("extend lease many", err))
+		}
+		extended[ref] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fill(errs, wrap("extend lease many", err))
+	}
+	for i, e := range exts {
+		if errs[i] == nil && !extended[e.LeaseRef] {
+			errs[i] = store.ErrNotApplied
 		}
 	}
 	return errs

@@ -2,6 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,4 +132,67 @@ func TestAckManyReportsOnlyTheCompletionsItMade(t *testing.T) {
 	require.NoError(t, errs[0])
 	require.ErrorIs(t, errs[1], store.ErrNotApplied)
 	require.EqualValues(t, 1, obs.n.Load(), "a retried ack is not a second completion")
+}
+
+func TestExtendLeaseManyMovesEachLeaseByItsOwnDuration(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	short := leasedRef(t, ctx, s, "short")
+	long := leasedRef(t, ctx, s, "long")
+	cancelled := leasedRef(t, ctx, s, "cancelled")
+	_, err := s.Cancel(ctx, cancelled.ID)
+	require.NoError(t, err)
+
+	errs := s.ExtendLeaseMany(ctx, []store.Extension{
+		{LeaseRef: short, Duration: time.Minute},
+		{LeaseRef: long, Duration: time.Hour},
+		{LeaseRef: cancelled, Duration: time.Minute},
+		{LeaseRef: short, Duration: 0},
+	})
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.ErrorIs(t, errs[2], store.ErrNotApplied, "the one-row ExtendLease names it cancelled")
+	require.ErrorContains(t, errs[3], "duration must be positive")
+	remaining := func(id uuid.UUID) time.Duration {
+		var d time.Duration
+		require.NoError(t, pool.QueryRow(ctx, `select lease_expires - now() from jobs where id = $1`, id).Scan(&d))
+		return d
+	}
+	require.InDelta(t, time.Minute.Seconds(), remaining(short.ID).Seconds(), 5)
+	require.InDelta(t, time.Hour.Seconds(), remaining(long.ID).Seconds(), 5)
+}
+
+// TestOverlappingBatchesNeverDeadlock: two batches over the same rows in
+// opposite orders, over and over. A batch that waited for row locks in join
+// order could deadlock here. One that skips locked rows can only answer
+// ErrNotApplied for a row the other batch holds.
+func TestOverlappingBatchesNeverDeadlock(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	exts := make([]store.Extension, 20)
+	for i := range exts {
+		exts[i] = store.Extension{LeaseRef: leasedRef(t, ctx, s, fmt.Sprintf("q%d", i)), Duration: time.Minute}
+	}
+	reversed := slices.Clone(exts)
+	slices.Reverse(reversed)
+
+	failures := make(chan error, 2*200*len(exts))
+	var wg sync.WaitGroup
+	for _, batch := range [][]store.Extension{exts, reversed} {
+		wg.Go(func() {
+			for range 200 {
+				for _, err := range s.ExtendLeaseMany(ctx, batch) {
+					if err != nil && !errors.Is(err, store.ErrNotApplied) {
+						failures <- err
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		t.Fatalf("an overlapping batch failed: %v", err)
+	}
 }
