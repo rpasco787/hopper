@@ -145,10 +145,11 @@ func explainPrepared(t *testing.T, mode, sql, args string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics: statistics gathered
-// while nothing was leased say jobs_reap_idx is empty. A plan that believes
-// them finds one id by walking every leased row (docs/scaling.md H3a).
-func TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
+// leasedUnderStaleStatistics fills jobs with 20,000 idle rows, analyzes them
+// while nothing is leased, then leases 128: the statistics H3a found the
+// bench running under, which call jobs_reap_idx empty.
+func leasedUnderStaleStatistics(t *testing.T) []store.Job {
+	t.Helper()
 	ctx := ctxT(t)
 	s := newStore(t)
 	_, err := pool.Exec(ctx, `insert into jobs (queue, payload, state, run_at)
@@ -161,6 +162,14 @@ func TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
 	leased, err := s.Lease(ctx, []string{"q"}, 128, time.Minute, "w")
 	require.NoError(t, err)
 	require.Len(t, leased, 128)
+	return leased
+}
+
+// TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics: statistics gathered
+// while nothing was leased say jobs_reap_idx is empty. A plan that believes
+// them finds one id by walking every leased row (docs/scaling.md H3a).
+func TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
+	leased := leasedUnderStaleStatistics(t)
 	id, lease := leased[0].ID, *leased[0].LeaseID
 
 	for _, tc := range []struct{ name, sql, args string }{
@@ -173,6 +182,41 @@ func TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
 				require.Contains(t, plan, "jobs_pkey", "plan:\n%s", plan)
 				require.NotContains(t, plan, "jobs_reap_idx", "plan:\n%s", plan)
 			})
+		}
+	}
+}
+
+// TestBatchConfirmationsUseThePrimaryKeyUnderStaleStatistics: the batch
+// statements under the statistics that misled the one-row ones (H3a), at
+// each batch size the broker sends, planned both ways with the planner's
+// normal settings. The CTE's lookup and the UPDATE's join back to jobs must
+// both go through jobs_pkey. A sequential scan or jobs_reap_idx anywhere is
+// the H3a mistake in batch form.
+func TestBatchConfirmationsUseThePrimaryKeyUnderStaleStatistics(t *testing.T) {
+	leased := leasedUnderStaleStatistics(t)
+	for _, n := range []int{1, 16, 64} {
+		ids, leases, durs := make([]string, n), make([]string, n), make([]string, n)
+		for i, j := range leased[:n] {
+			ids[i] = "'" + j.ID.String() + "'"
+			leases[i] = "'" + j.LeaseID.String() + "'"
+			durs[i] = "60000000"
+		}
+		idArr := "array[" + strings.Join(ids, ", ") + "]::uuid[]"
+		leaseArr := "array[" + strings.Join(leases, ", ") + "]::uuid[]"
+		durArr := "array[" + strings.Join(durs, ", ") + "]::int8[]"
+		for _, tc := range []struct{ name, sql, args string }{
+			{"ack many", ackManySQL, idArr + ", " + leaseArr},
+			{"extend many", extendManySQL, idArr + ", " + leaseArr + ", " + durArr},
+		} {
+			for _, mode := range []string{"force_custom_plan", "force_generic_plan"} {
+				t.Run(fmt.Sprintf("%s/%d/%s", tc.name, n, mode), func(t *testing.T) {
+					plan := explainPrepared(t, mode, tc.sql, tc.args)
+					require.GreaterOrEqual(t, strings.Count(plan, "using jobs_pkey"), 2,
+						"the lookup and the update both by primary key; plan:\n%s", plan)
+					require.NotContains(t, plan, "jobs_reap_idx", "plan:\n%s", plan)
+					require.NotContains(t, plan, "Seq Scan on jobs", "plan:\n%s", plan)
+				})
+			}
 		}
 	}
 }
