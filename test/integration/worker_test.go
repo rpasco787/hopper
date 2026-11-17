@@ -365,6 +365,7 @@ func TestHopperctlBatchesAndStableKeyRerun(t *testing.T) {
 }
 
 type gatedRenewStore struct {
+	batches atomic.Int64
 	store.Store
 	calls   atomic.Int64
 	entered chan struct{}
@@ -437,9 +438,13 @@ func TestWorkerLeaseLossCancelsHandler(t *testing.T) {
 	row, err := base.GetJob(ctx, result.ID)
 	require.NoError(t, err)
 	require.Equal(t, store.StateScheduled, row.State)
+	if batchingOn() {
+		require.Positive(t, gated.batches.Load(), "the heartbeats never reached ExtendLeaseMany")
+	}
 }
 
 type delayedLeaseStore struct {
+	batches atomic.Int64
 	store.Store
 	delayed  atomic.Bool
 	leased   chan store.Job
@@ -525,9 +530,13 @@ func TestWorkerInitialValidationRejectsDelayedStaleDelivery(t *testing.T) {
 	row, err := base.GetJob(ctx, result.ID)
 	require.NoError(t, err)
 	require.Equal(t, store.StateCompleted, row.State)
+	if batchingOn() {
+		require.Positive(t, delayed.batches.Load(), "the heartbeats never reached ExtendLeaseMany")
+	}
 }
 
 type ambiguousAckStore struct {
+	batches atomic.Int64
 	store.Store
 	mu     sync.Mutex
 	tokens []uuid.UUID
@@ -611,6 +620,9 @@ func TestWorkerConfirmationAmbiguityReusesLeaseToken(t *testing.T) {
 			require.Equal(t, tokens[0], token)
 		}
 		require.Equal(t, int64(1), handled.Load())
+		if batchingOn() {
+			require.Positive(t, wrapped.batches.Load(), "the acks never reached AckMany")
+		}
 	})
 
 	t.Run("nack promoted before retry", func(t *testing.T) {
@@ -676,7 +688,7 @@ func serveLiveBroker(t *testing.T, addr string, st store.Store, cfg broker.Confi
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NoError(t, err)
-	b := &liveBroker{srv: broker.NewServer(st, cfg), done: make(chan error, 1), addr: lis.Addr().String()}
+	b := &liveBroker{srv: broker.NewServer(st, confirmationConfig(t, st, cfg)), done: make(chan error, 1), addr: lis.Addr().String()}
 	go func() { b.done <- b.srv.Serve(lis) }()
 	t.Cleanup(func() { require.NoError(t, b.stop()) })
 	return b
@@ -755,4 +767,79 @@ func TestWorkerReconnectsAcrossRealBrokerRestart(t *testing.T) {
 	_, completed, attemptsOne := storedCounts(t, ctx, "restart")
 	require.Equal(t, 2, completed)
 	require.Equal(t, 2, attemptsOne)
+}
+
+func (s *ambiguousNackStore) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	return batchOf(s.Store).AckMany(ctx, refs)
+}
+
+func (s *ambiguousNackStore) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	return batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+}
+
+func (s *gatedRenewStore) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	return batchOf(s.Store).AckMany(ctx, refs)
+}
+
+func (s *delayedLeaseStore) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	return batchOf(s.Store).AckMany(ctx, refs)
+}
+
+func (s *ambiguousAckStore) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	return batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+}
+
+func (s *delayedLeaseStore) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	s.batches.Add(1)
+	errs := batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+	for _, err := range errs {
+		if errors.Is(err, store.ErrNotApplied) {
+			continue // the broker retries it through ExtendLease, which reports it
+		}
+		select {
+		case s.extended <- err:
+		default:
+		}
+	}
+	return errs
+}
+
+func (s *gatedRenewStore) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	s.batches.Add(1)
+	if s.calls.Add(1) == 1 {
+		return batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+	}
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.release:
+		return batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+	case <-ctx.Done():
+		return repeatErr(ctx.Err(), len(exts))
+	}
+}
+
+func (s *ambiguousAckStore) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	s.batches.Add(1)
+	s.mu.Lock()
+	for _, r := range refs {
+		s.tokens = append(s.tokens, r.LeaseID)
+	}
+	first := !s.first
+	if first {
+		s.first = true
+	}
+	s.mu.Unlock()
+	errs := batchOf(s.Store).AckMany(ctx, refs)
+	if first {
+		for i, err := range errs {
+			if err == nil {
+				errs[i] = status.Error(codes.Unavailable, "ack response lost")
+				break
+			}
+		}
+	}
+	return errs
 }

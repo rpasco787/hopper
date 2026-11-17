@@ -427,3 +427,11 @@ func TestListJobsOverGRPC(t *testing.T) {
 	require.Equal(t, leased.GetId(), filtered.GetJobs()[0].GetId())
 	require.Empty(t, filtered.GetNextPageToken())
 }
+
+func (s *flakyStore) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	return batchOf(s.Store).AckMany(ctx, refs)
+}
+
+func (s *flakyStore) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	return batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+}

@@ -174,6 +174,7 @@ func TestAckRidesOutADatabaseOutage(t *testing.T) {
 // renewals reports every ExtendLease result, so a test can place an outage
 // between two renewals and see the one that met it.
 type renewals struct {
+	batches atomic.Int64
 	store.Store
 	results chan error
 }
@@ -254,4 +255,26 @@ func TestHeartbeatRidesOutADatabaseOutage(t *testing.T) {
 	close(h.release)
 	completedOnce(t, st, res.ID, h)
 	require.NoError(t, r.stop(t))
+	if batchingOn() {
+		require.Positive(t, st.batches.Load(), "the heartbeats never reached ExtendLeaseMany")
+	}
+}
+
+func (s *renewals) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
+	return batchOf(s.Store).AckMany(ctx, refs)
+}
+
+func (s *renewals) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []error {
+	s.batches.Add(1)
+	errs := batchOf(s.Store).ExtendLeaseMany(ctx, exts)
+	for _, err := range errs {
+		if errors.Is(err, store.ErrNotApplied) {
+			continue // the broker retries it through ExtendLease, which reports it
+		}
+		select {
+		case s.results <- err:
+		default:
+		}
+	}
+	return errs
 }
