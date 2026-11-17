@@ -50,6 +50,8 @@ elif args[0] == 'compose':
             n = trace.read_text().splitlines().count('counters')
             print('%d|%d|%d|%d|%d|%d' % (1000 * n, 100 * n, 4096000 * n, 300 * n, 30 * n, 50 * n))
         elif 'wal_sync_method' in sql: print(os.environ.get('BENCH_TEST_WAL_SYNC', 'on|fdatasync'))
+        elif "'ack_batch'" in sql:
+            print(os.environ.get('BENCH_TEST_CONFIRMATIONS', 'ack_batch|10|95\nack_one|5|5'))
         elif 'pg_stat_activity' in sql:
             if os.environ.get('BENCH_TEST_NO_WAITS') != '1':
                 print('12:00:00.000|SAMPLE|-|0')
@@ -130,6 +132,25 @@ def evidence_dir(root):
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_row_carries_batch_size_and_fallback_share(self):
+        # 100 Ack RPCs (the fake curl), 10 batch statements, 5 one-row Acks.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['ack_batch'], row['ack_fallback_pct']), ('10.0', '5.0'))
+            self.assertEqual((row['heartbeat_batch'], row['heartbeat_fallback_pct']), ('', ''))
+            self.assertIn('ack_one|5|5', (evidence_dir(root) / 'confirmations.txt').read_text())
+
+    def test_no_batch_statement_leaves_the_batch_columns_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_CONFIRMATIONS='ack_one|100|100')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['ack_batch'], row['ack_fallback_pct']), ('', ''))
+
     def test_drain_samples_before_workers_can_consume(self):
         # Starting collection after Compose returns loses jobs completed during startup.
         with tempfile.TemporaryDirectory() as tmp:

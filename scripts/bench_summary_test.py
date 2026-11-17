@@ -21,6 +21,11 @@ def runs(brokers, throughputs, **kw):
 
 
 class SummaryTest(unittest.TestCase):
+    def test_batch_size_and_fallback_share_show_per_kind(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], ack_batch='10.0', heartbeat_batch='8.0',
+                                           ack_fallback_pct='0.5', heartbeat_fallback_pct='0.0'))
+        self.assertIn('| 10.0/8.0 | 0.5/0.0 |', out)
+
     def test_separated_ranges_say_two_brokers_slower(self):
         out = bench_summary.summarize(runs(1, [9000, 9100, 9200]) + runs(2, [5000, 5100, 5200]))
         self.assertIn('**Verdict:** 2 brokers slower', out)

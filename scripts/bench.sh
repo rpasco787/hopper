@@ -111,7 +111,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -411,6 +411,24 @@ printf '%s\n%s\n' "$counters_before" "$counters_after" >"$dir/counters.txt"
   sql "select 'total|statements=' || count(*) || '|calls=' || sum(calls)
               || '|total_ms=' || round(sum(total_exec_time)::numeric) from pg_stat_statements"
 } >"$dir/statements.txt"
+# Every confirmation statement's exact calls and rows, however small its share
+# of time (statements.txt keeps the 15 most expensive), as kind|calls|rows. A
+# batch statement's rows are the pairs it applied. The one-row statements are
+# its fallbacks with batching on, and every confirmation with it off.
+{
+  echo "kind|calls|rows"
+  sql "select kind, sum(calls), sum(rows) from (
+         select case
+                  when q like 'with mine as ( select j.id from %' then 'ack_batch'
+                  when q like 'with mine as ( select j.id, c.dur_us %' then 'heartbeat_batch'
+                  when q like 'update jobs set state = %, finished_at = now(), updated_at = now() where id = % and lease_id = %' then 'ack_one'
+                  when q like 'update jobs set lease_expires = now() + %' then 'heartbeat_one'
+                end as kind, calls, rows
+         from (select ltrim(regexp_replace(query, '\s+', ' ', 'g')) as q, calls, rows from pg_stat_statements) s
+       ) k where kind is not null group by kind order by kind"
+} >"$dir/confirmations.txt"
+confirm_calls() { awk -F'|' -v k="$1" '$1 == k { print $2; f = 1 } END { if (!f) print 0 }' "$dir/confirmations.txt"; }
+
 # Wait shares are of all active-backend samples; active_mean is per sample.
 awk -F'|' '
   $2 == "SAMPLE" { n++; next }
@@ -461,13 +479,25 @@ esac
 hist="$(python3 scripts/bench_hist.py "$dir/rpc.txt" Ack 2>&1)" || reject "$hist"
 read -r ack_calls ack_p99 <<<"$hist"
 hist="$(python3 scripts/bench_hist.py "$dir/rpc.txt" Heartbeat 2>&1)" || reject "$hist"
-read -r _ heartbeat_p99 <<<"$hist"
+read -r heartbeat_calls heartbeat_p99 <<<"$hist"
 # Every drained job was acked at least once, so fewer Ack calls than jobs
 # means some broker's calls went uncounted.
 if [ "$scenario" = drain ] && [ "$ack_calls" -lt "$jobs" ]; then
   reject "the Ack histograms saw $ack_calls calls for $jobs jobs"
 fi
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$dir"
+# Batch size as submitted: confirmation RPCs per batch statement (a batch's
+# rows are only what it applied). Fallback share: one-row statements per RPC.
+# Both per kind, and blank when no batch statement ran, as with batching off.
+batch_stats() { # RPC calls, batch statements, one-row statements
+  awk -v r="$1" -v b="$2" -v o="$3" 'BEGIN { if (b > 0 && r > 0) printf "%.1f %.1f\n", r / b, 100 * o / r; else print "- -" }'
+}
+read -r ack_batch ack_fallback_pct <<<"$(batch_stats "$ack_calls" "$(confirm_calls ack_batch)" "$(confirm_calls ack_one)")"
+read -r heartbeat_batch heartbeat_fallback_pct <<<"$(batch_stats "${heartbeat_calls:-0}" "$(confirm_calls heartbeat_batch)" "$(confirm_calls heartbeat_one)")"
+for v in ack_batch ack_fallback_pct heartbeat_batch heartbeat_fallback_pct; do
+  if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
+done
+
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"

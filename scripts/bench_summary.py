@@ -27,12 +27,16 @@ BROKERS_LIMIT = 180
 MEASURABLE = 0.10
 HEADER = ('| brokers | runs | jobs/s median (range) | postgres CPU | CPU per broker | worker CPU '
           '| on-CPU % | Lock+LWLock % | IO % | lease ms | lease blocks | commits/job | WAL syncs/job '
-          '| WAL KB/job | HOT % | ack p99 ms | hb p99 ms | saturated |')
-RULE = '|---:|---:|---|' + '---:|' * 14 + '---|'
+          '| WAL KB/job | HOT % | ack p99 ms | hb p99 ms | batch ack/hb | fallback % ack/hb | saturated |')
+RULE = '|---:|---:|---|' + '---:|' * 16 + '---|'
 
 
 def fmt(x, digits=0):
     return '–' if x is None else f'{x:,.{digits}f}'
+
+
+def pair(a, b, digits=1):
+    return '–' if a is None and b is None else f'{fmt(a, digits)}/{fmt(b, digits)}'
 
 
 def median_of(rs, key):
@@ -97,6 +101,8 @@ def summarize(rows):
                 fmt(med('commits_per_job'), 2), fmt(med('wal_syncs_per_job'), 3),
                 fmt(med('wal_kb_per_job'), 2), fmt(med('hot_update_pct'), 1),
                 fmt(med('ack_p99_ms'), 2), fmt(med('heartbeat_p99_ms'), 2),
+                pair(med('ack_batch'), med('heartbeat_batch')),
+                pair(med('ack_fallback_pct'), med('heartbeat_fallback_pct')),
                 saturation(cpu, brokers, int(fields['vm_cpus']), fields['pinned'] == '1'),
             ]
             lines.append('| ' + ' | '.join(cells) + ' |')
