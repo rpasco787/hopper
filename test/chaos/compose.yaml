@@ -9,6 +9,7 @@
 # suite's connections expect. Cron is off, so every job is the suite's.
 # HOPPER_CHAOS_WORKER_BROKER and HOPPER_CHAOS_STREAM_AGE let a test opt into
 # round robin across both brokers and short stream ages.
+# HOPPER_CHAOS_CONFIRM_BATCH enables confirmation batching on both brokers.
 services:
   postgres:
     ports:
@@ -18,6 +19,7 @@ services:
       - "127.0.0.1:${HOPPER_CHAOS_BROKER_PORT:?set by the chaos suite}:9090"
     environment:
       HOPPER_SCHEDULER: "false"
+      HOPPER_CONFIRM_BATCH: ${HOPPER_CHAOS_CONFIRM_BATCH:-1}
       HOPPER_LEASE_STREAM_MAX_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
       HOPPER_MAX_CONNECTION_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
   broker-standby:
@@ -25,6 +27,7 @@ services:
       - "127.0.0.1:${HOPPER_CHAOS_STANDBY_PORT:?set by the chaos suite}:9090"
     environment:
       HOPPER_SCHEDULER: "false"
+      HOPPER_CONFIRM_BATCH: ${HOPPER_CHAOS_CONFIRM_BATCH:-1}
       HOPPER_LEASE_STREAM_MAX_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
       HOPPER_MAX_CONNECTION_AGE: ${HOPPER_CHAOS_STREAM_AGE:-5m}
   worker:
