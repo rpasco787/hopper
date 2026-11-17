@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,13 @@ import (
 // from flags; they live here so that a Service built in a test is usable
 // without configuring anything.
 const (
+	// DefaultConfirmBatch and DefaultConfirmFlights size the confirmation
+	// batchers (docs/design/confirmation-batching.md). Batching is off (1)
+	// until H2 measures that it helps and the user approves (docs/scaling.md);
+	// 64 is the size to turn it on with.
+	DefaultConfirmBatch   = 1
+	DefaultConfirmFlights = 2
+
 	MaxMessageBytes      = 4 << 20 // explicit transport ceiling; not an atomicity guarantee
 	DefaultLeaseDuration = 30 * time.Second
 	DefaultLeaseBatch    = 32
@@ -67,6 +75,16 @@ type Config struct {
 	// a lease stream on the old connection runs until it ends itself, at
 	// LeaseStreamMaxAge or a drain. Zero never closes a connection for age.
 	MaxConnectionAge time.Duration
+	// ConfirmBatch caps how many Acks, or how many Heartbeats, one statement
+	// applies. 1 applies each on its own; zero takes DefaultConfirmBatch, which
+	// is 1 (off). Batching needs a store that implements
+	// store.BatchConfirmer; NewService warns and confirms one call at a time
+	// with any other.
+	ConfirmBatch int
+	// ConfirmFlights is how many confirmation statements of each kind run at
+	// once. Zero takes DefaultConfirmFlights.
+	ConfirmFlights int
+
 	// Wakeups carries enqueue announcements between brokers. Nil keeps them
 	// within this broker; RunWakeups does the rest.
 	Wakeups store.Wakeups
@@ -104,6 +122,9 @@ type Service struct {
 
 	// wakes ends idle lease streams' waits when their queues get work.
 	wakes *wakeups
+	// acks and extends batch confirmations; nil confirms one call at a time.
+	acks    *batcher[store.LeaseRef]
+	extends *batcher[store.Extension]
 }
 
 // NewService returns a Service. Zero values in cfg take the package defaults.
@@ -123,7 +144,26 @@ func NewService(st store.Store, cfg Config) *Service {
 	if cfg.LeaseStreams == nil {
 		cfg.LeaseStreams = nopGauge{}
 	}
-	return &Service{store: st, cfg: cfg, shutdown: make(chan struct{}), wakes: newWakeups()}
+	if cfg.ConfirmBatch <= 0 {
+		cfg.ConfirmBatch = DefaultConfirmBatch
+	}
+	if cfg.ConfirmFlights <= 0 {
+		cfg.ConfirmFlights = DefaultConfirmFlights
+	}
+	svc := &Service{store: st, cfg: cfg, shutdown: make(chan struct{}), wakes: newWakeups()}
+	if cfg.ConfirmBatch > 1 {
+		if bc, ok := st.(store.BatchConfirmer); ok {
+			svc.acks = newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.AckMany)
+			svc.extends = newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.ExtendLeaseMany)
+			cfg.Logger.Info("confirmation batching on", "batch", cfg.ConfirmBatch, "flights", cfg.ConfirmFlights)
+		} else {
+			// A wrapper that embeds store.Store hides BatchConfirmer; say so
+			// rather than quietly confirming one call at a time.
+			cfg.Logger.Warn("confirmation batching off: the store cannot batch, so each Ack and Heartbeat is its own statement",
+				"confirm_batch", cfg.ConfirmBatch, "store", fmt.Sprintf("%T", st))
+		}
+	}
+	return svc
 }
 
 // Drain tells every lease stream to finish. It is safe to call more than once,

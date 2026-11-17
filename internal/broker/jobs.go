@@ -56,7 +56,7 @@ func (s *Service) Ack(ctx context.Context, req *hopperv1.AckRequest) (*hopperv1.
 	if err != nil {
 		return nil, s.fail(ctx, "Ack", err, "job_id", req.GetId(), "lease_id", req.GetLeaseId())
 	}
-	if err := s.store.Ack(ctx, id, leaseID); err != nil {
+	if err := s.ack(ctx, id, leaseID); err != nil {
 		return nil, s.fail(ctx, "Ack", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
 	s.cfg.Logger.DebugContext(ctx, "job acked", "job_id", id.String(), "lease_id", leaseID.String())
@@ -91,7 +91,7 @@ func (s *Service) Heartbeat(ctx context.Context, req *hopperv1.HeartbeatRequest)
 	if err != nil {
 		return nil, s.fail(ctx, "Heartbeat", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
-	if err := s.store.ExtendLease(ctx, id, leaseID, dur); err != nil {
+	if err := s.extend(ctx, id, leaseID, dur); err != nil {
 		return nil, s.fail(ctx, "Heartbeat", err, "job_id", id.String(), "lease_id", leaseID.String())
 	}
 	return &hopperv1.HeartbeatResponse{}, nil

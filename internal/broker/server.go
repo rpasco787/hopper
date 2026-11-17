@@ -106,14 +106,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		close(stopped)
 	}()
 
+	var err error
 	select {
 	case <-stopped:
-		return nil
 	case <-ctx.Done():
 		s.grpc.Stop()
 		<-stopped
-		return fmt.Errorf("broker: shutdown: %w", ctx.Err())
+		err = fmt.Errorf("broker: shutdown: %w", ctx.Err())
 	}
+	// Every handler has returned, so a confirmation statement still running
+	// has no caller left and is being cancelled (batcher.runBatch). Wait for
+	// it, so whoever closes the pool next doesn't close it under a statement.
+	// The batcher's cap bounds the wait.
+	waitCtx, cancel := context.WithTimeout(context.Background(), batchTimeout)
+	defer cancel()
+	if werr := s.service.waitConfirmations(waitCtx); werr != nil && err == nil {
+		err = fmt.Errorf("broker: shutdown: a confirmation statement is still running: %w", werr)
+	}
+	return err
 }
 
 // drainServerStream gives an auxiliary handler a context the interceptor can
