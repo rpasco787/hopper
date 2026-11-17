@@ -48,7 +48,7 @@ type config struct {
 	metricsQueues                                                           []string
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
 	leaseStreamMaxAge, maxConnectionAge                                     time.Duration
-	maxLeaseBatch, dbMaxConns                                               int
+	maxLeaseBatch, dbMaxConns, confirmBatch, confirmFlights                 int
 
 	scheduler         bool
 	schedulerInterval time.Duration
@@ -61,6 +61,7 @@ type config struct {
 // envVars maps each flag to the environment variable that can set it. A flag
 // given on the command line wins over its variable.
 var envVars = [][2]string{
+	{"confirm-batch", "HOPPER_CONFIRM_BATCH"}, {"confirm-flights", "HOPPER_CONFIRM_FLIGHTS"},
 	{"dsn", "HOPPER_DSN"}, {"listen", "HOPPER_LISTEN"}, {"log-level", "HOPPER_LOG_LEVEL"},
 	{"metrics-listen", "HOPPER_METRICS_LISTEN"}, {"metrics-queues", "HOPPER_METRICS_QUEUES"},
 	{"lease-duration", "HOPPER_LEASE_DURATION"}, {"reaper-interval", "HOPPER_REAPER_INTERVAL"},
@@ -114,6 +115,10 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "RPC drain deadline (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
 	fs.IntVar(&c.dbMaxConns, "db-max-conns", DefaultDBMaxConns, "PostgreSQL connections per broker (HOPPER_DB_MAX_CONNS)")
+	fs.IntVar(&c.confirmBatch, "confirm-batch", broker.DefaultConfirmBatch,
+		"most Acks, or Heartbeats, one statement applies; 1 (the default) applies each alone (HOPPER_CONFIRM_BATCH)")
+	fs.IntVar(&c.confirmFlights, "confirm-flights", broker.DefaultConfirmFlights,
+		"confirmation statements of each kind run at once (HOPPER_CONFIRM_FLIGHTS)")
 	fs.DurationVar(&c.leaseStreamMaxAge, "lease-stream-max-age", broker.DefaultLeaseStreamMaxAge,
 		"end each lease stream after about this long so workers re-spread across brokers; 0 never (HOPPER_LEASE_STREAM_MAX_AGE)")
 	fs.DurationVar(&c.maxConnectionAge, "max-connection-age", broker.DefaultMaxConnectionAge,
@@ -199,6 +204,12 @@ func parseConfig(args []string) (config, error) {
 		if d.value < 0 {
 			return c, fmt.Errorf("%s must not be negative", d.name)
 		}
+	}
+	if c.confirmBatch <= 0 {
+		return c, errors.New("confirm-batch must be positive")
+	}
+	if c.confirmFlights <= 0 {
+		return c, errors.New("confirm-flights must be positive")
 	}
 	if c.maxLeaseBatch <= 0 {
 		return c, errors.New("max-lease-batch must be positive")
@@ -371,6 +382,7 @@ func run(args []string) error {
 			"addr", cfg.listen)
 	}
 	brokerCfg := broker.Config{
+		ConfirmBatch: cfg.confirmBatch, ConfirmFlights: cfg.confirmFlights,
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
 		PollInterval: cfg.pollInterval, Wakeups: st, Logger: logger,
 		LeaseStreamMaxAge: cfg.leaseStreamMaxAge, MaxConnectionAge: cfg.maxConnectionAge,

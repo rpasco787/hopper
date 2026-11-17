@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,6 +34,8 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, 30*time.Second, c.shutdownTimeout)
 	require.Equal(t, 32, c.maxLeaseBatch)
 	require.Equal(t, 16, c.dbMaxConns)
+	require.Equal(t, 1, c.confirmBatch)
+	require.Equal(t, 2, c.confirmFlights)
 	require.True(t, c.scheduler, "every broker contends for the scheduler unless told not to")
 	require.Equal(t, 5*time.Second, c.schedulerInterval)
 	require.Empty(t, c.cronFile)
@@ -45,6 +48,8 @@ func TestConfigDefaults(t *testing.T) {
 // field, so a rename in one place cannot silently disconnect the other.
 func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 	for k, v := range map[string]string{
+		"HOPPER_CONFIRM_BATCH":        "8",
+		"HOPPER_CONFIRM_FLIGHTS":      "3",
 		"HOPPER_DSN":                  "postgres://env",
 		"HOPPER_LISTEN":               "127.0.0.1:1234",
 		"HOPPER_METRICS_LISTEN":       "127.0.0.1:1235",
@@ -73,6 +78,7 @@ func TestConfigReadsEveryEnvironmentVariable(t *testing.T) {
 		leaseDuration: 45 * time.Second, reaperInterval: 2 * time.Second,
 		pollInterval: 75 * time.Millisecond, retention: 72 * time.Hour,
 		shutdownTimeout: 9 * time.Second, maxLeaseBatch: 7, dbMaxConns: 12,
+		confirmBatch: 8, confirmFlights: 3,
 		scheduler: false, schedulerInterval: 3 * time.Second,
 		leaseStreamMaxAge: 90 * time.Second, maxConnectionAge: 2 * time.Minute,
 	}, c)
@@ -233,9 +239,9 @@ func TestFinalServingErrorPreservesMetricsFailure(t *testing.T) {
 
 func TestConfigRejectsNonPositiveKnobs(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://unused")
-	for _, name := range []string{"lease-duration", "reaper-interval", "poll-interval", "retention", "shutdown-timeout", "scheduler-interval", "max-lease-batch", "db-max-conns"} {
+	for _, name := range []string{"lease-duration", "reaper-interval", "poll-interval", "retention", "shutdown-timeout", "scheduler-interval", "max-lease-batch", "db-max-conns", "confirm-batch", "confirm-flights"} {
 		for _, value := range []string{"0", "-1"} {
-			if name != "max-lease-batch" && name != "db-max-conns" {
+			if !slices.Contains([]string{"max-lease-batch", "db-max-conns", "confirm-batch", "confirm-flights"}, name) {
 				value += "s"
 			}
 			_, err := parseConfig([]string{"-" + name, value})
