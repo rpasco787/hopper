@@ -16,9 +16,16 @@ import (
 	"github.com/rpasco787/hopper/internal/store/postgres"
 )
 
-// batchingOn reports whether HOPPER_TEST_CONFIRM_BATCH turned confirmation
-// batching on for this run of the suite.
-func batchingOn() bool { return os.Getenv("HOPPER_TEST_CONFIRM_BATCH") != "" }
+// batchingOn reports whether this run of the suite confirms in batches: the
+// broker default unless HOPPER_TEST_CONFIRM_BATCH names another size.
+func batchingOn() bool {
+	v := os.Getenv("HOPPER_TEST_CONFIRM_BATCH")
+	if v == "" {
+		return broker.DefaultConfirmBatch > 1
+	}
+	n, err := strconv.Atoi(v)
+	return err == nil && n > 1
+}
 
 // batchOf is the BatchConfirmer inside a test wrapper. Every wrapper around a
 // store forwards AckMany and ExtendLeaseMany through it, so turning batching
@@ -50,16 +57,21 @@ func TestRestartBrokerHonorsConfirmationBatchSwitch(t *testing.T) {
 // confirmationConfig applies the suite switch to every broker constructor.
 func confirmationConfig(t *testing.T, st store.Store, cfg broker.Config) broker.Config {
 	t.Helper()
-	// HOPPER_TEST_CONFIRM_BATCH runs the suite's brokers with confirmation
-	// batching on (docs/design/confirmation-batching.md); it is off by default.
+	// HOPPER_TEST_CONFIRM_BATCH sets the suite's confirmation batch size
+	// (docs/design/confirmation-batching.md); unset, brokers take the default,
+	// and 1 runs the suite with batching off.
 	if v := os.Getenv("HOPPER_TEST_CONFIRM_BATCH"); v != "" && cfg.ConfirmBatch == 0 {
 		n, err := strconv.Atoi(v)
 		require.NoError(t, err, "HOPPER_TEST_CONFIRM_BATCH=%q", v)
 		cfg.ConfirmBatch = n
 	}
+	size := cfg.ConfirmBatch
+	if size == 0 {
+		size = broker.DefaultConfirmBatch
+	}
 	// A store that can't batch would quietly confirm one call at a time and
 	// pass every test without exercising batching.
-	if cfg.ConfirmBatch > 1 {
+	if size > 1 {
 		_, ok := st.(store.BatchConfirmer)
 		require.True(t, ok, "%T hides store.BatchConfirmer: give it AckMany and ExtendLeaseMany (batching_test.go)", st)
 	}
