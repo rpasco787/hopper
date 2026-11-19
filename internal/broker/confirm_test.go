@@ -177,12 +177,12 @@ func TestABatchOfOneConfirmsDirectly(t *testing.T) {
 	st := &batchingStore{fakeStore: &fakeStore{
 		ackFn: func(context.Context, uuid.UUID, uuid.UUID) error { direct.Add(1); return nil },
 	}} // ackManyFn nil: batching would panic
-	for _, cfg := range []Config{{ConfirmBatch: 1}, {}} { // explicitly off, and off by default
+	for _, cfg := range []Config{{ConfirmBatch: 1}} { // explicitly off
 		rpc := newTestClient(t, NewService(st, cfg))
 		_, err := rpc.Ack(t.Context(), &hopperv1.AckRequest{Id: uuid.NewString(), LeaseId: uuid.NewString()})
 		require.NoError(t, err)
 	}
-	require.EqualValues(t, 2, direct.Load())
+	require.EqualValues(t, 1, direct.Load())
 }
 
 // TestBatchingIsAnnouncedOrRefusedOutLoud: a broker says when it batches,
@@ -233,4 +233,10 @@ func TestShutdownWaitsForAnAbandonedConfirmationStatement(t *testing.T) {
 	}
 	require.True(t, cancelled.Load(), "cancelled when its only caller left, not timed out at the cap")
 	require.Less(t, time.Since(start), 5*time.Second)
+}
+
+func TestConfirmationsBatchByDefault(t *testing.T) {
+	svc := NewService(&batchingStore{fakeStore: &fakeStore{}}, Config{})
+	require.NotNil(t, svc.acks)
+	require.NotNil(t, svc.extends)
 }

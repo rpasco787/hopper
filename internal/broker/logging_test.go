@@ -293,7 +293,7 @@ func TestNothingNewAtInfo(t *testing.T) {
 		leaseFn: func(context.Context, []string, int, time.Duration, string) ([]store.Job, error) {
 			return []store.Job{leased}, nil
 		},
-	}, Config{Logger: logger})
+	}, Config{Logger: logger, ConfirmBatch: 1}) // fakeStore can't batch; the default would warn at startup
 	ctx := context.Background()
 	_, err := svc.Enqueue(ctx, &hopperv1.EnqueueRequest{Job: &hopperv1.JobSpec{Queue: "q"}})
 	require.NoError(t, err)

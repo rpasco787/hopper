@@ -585,7 +585,7 @@ Enqueue latency was 1.00 ms p50 / 24.5 ms p99 on one broker and 1.22 ms /
 | Flag | Environment | Default | Meaning |
 |---|---|---:|---|
 | `-db-max-conns` | `HOPPER_DB_MAX_CONNS` | `16` | PostgreSQL connections per broker; at least 2, or 3 with the scheduler. Brokers × this must fit `max_connections`. |
-| `-confirm-batch` | `HOPPER_CONFIRM_BATCH` | `1` | Most Acks, or Heartbeats, one statement applies. `1` applies each on its own; `64` batches them. |
+| `-confirm-batch` | `HOPPER_CONFIRM_BATCH` | `64` | Most Acks, or Heartbeats, one statement applies. `1` applies each on its own; `64` batches them. |
 | `-confirm-flights` | `HOPPER_CONFIRM_FLIGHTS` | `2` | Confirmation statements of each kind a broker runs at once. |
 | `-poll-interval` | `HOPPER_POLL_INTERVAL` | `250ms` | How long an idle lease stream waits without a wakeup. |
 | `-debug-listen` | `HOPPER_DEBUG_LISTEN` | empty | pprof profiles; never bind beyond loopback or a private network. |

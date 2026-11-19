@@ -34,7 +34,7 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, 30*time.Second, c.shutdownTimeout)
 	require.Equal(t, 32, c.maxLeaseBatch)
 	require.Equal(t, 16, c.dbMaxConns)
-	require.Equal(t, 1, c.confirmBatch)
+	require.Equal(t, 64, c.confirmBatch)
 	require.Equal(t, 2, c.confirmFlights)
 	require.True(t, c.scheduler, "every broker contends for the scheduler unless told not to")
 	require.Equal(t, 5*time.Second, c.schedulerInterval)

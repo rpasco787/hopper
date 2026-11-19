@@ -20,10 +20,10 @@ import (
 // without configuring anything.
 const (
 	// DefaultConfirmBatch and DefaultConfirmFlights size the confirmation
-	// batchers (docs/design/confirmation-batching.md). Batching is off (1)
-	// until H2 measures that it helps and the user approves (docs/scaling.md);
-	// 64 is the size to turn it on with.
-	DefaultConfirmBatch   = 1
+	// batchers (docs/design/confirmation-batching.md). H2 measured that
+	// batching at 64 with two flights qualifies under the decision rule
+	// (docs/scaling.md); 1 disables batching.
+	DefaultConfirmBatch   = 64
 	DefaultConfirmFlights = 2
 
 	MaxMessageBytes      = 4 << 20 // explicit transport ceiling; not an atomicity guarantee
@@ -77,7 +77,7 @@ type Config struct {
 	MaxConnectionAge time.Duration
 	// ConfirmBatch caps how many Acks, or how many Heartbeats, one statement
 	// applies. 1 applies each on its own; zero takes DefaultConfirmBatch, which
-	// is 1 (off). Batching needs a store that implements
+	// is 64. Batching needs a store that implements
 	// store.BatchConfirmer; NewService warns and confirms one call at a time
 	// with any other.
 	ConfirmBatch int

@@ -116,7 +116,7 @@ func parseConfig(args []string) (config, error) {
 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
 	fs.IntVar(&c.dbMaxConns, "db-max-conns", DefaultDBMaxConns, "PostgreSQL connections per broker (HOPPER_DB_MAX_CONNS)")
 	fs.IntVar(&c.confirmBatch, "confirm-batch", broker.DefaultConfirmBatch,
-		"most Acks, or Heartbeats, one statement applies; 1 (the default) applies each alone (HOPPER_CONFIRM_BATCH)")
+		"most Acks, or Heartbeats, one statement applies; 1 applies each alone; 64 (the default) batches them (HOPPER_CONFIRM_BATCH)")
 	fs.IntVar(&c.confirmFlights, "confirm-flights", broker.DefaultConfirmFlights,
 		"confirmation statements of each kind run at once (HOPPER_CONFIRM_FLIGHTS)")
 	fs.DurationVar(&c.leaseStreamMaxAge, "lease-stream-max-age", broker.DefaultLeaseStreamMaxAge,
