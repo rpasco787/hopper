@@ -329,3 +329,10 @@ func workJob(payload string, attempt int32) workersdk.Job {
 func TestDurationOverflowFixtureFitsInt64(t *testing.T) {
 	require.Less(t, int64(math.MaxInt64/int64(time.Millisecond)), int64(9223372036855))
 }
+
+func TestConfigReadsTheBenchmarkOwnershipSwitch(t *testing.T) {
+	t.Setenv("HOPPER_BENCH_SKIP_OWNERSHIP_CHECK", "1")
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	require.True(t, c.skipOwnershipCheck)
+}

@@ -89,6 +89,12 @@ type Options struct {
 	// DialOptions are appended after the SDK's defaults, so passing
 	// grpc.WithTransportCredentials replaces the plaintext default.
 	DialOptions []grpc.DialOption
+	// SkipOwnershipCheckForBenchmarks starts handlers without the Heartbeat
+	// that proves a delivery is still held (docs/semantics.md §4), so
+	// scripts/bench.sh can measure what that check costs. Never set it
+	// anywhere else: a delivery that waited in a buffer past its lease would
+	// run while the job's next holder runs it too.
+	SkipOwnershipCheckForBenchmarks bool
 }
 
 // Worker runs handlers against the brokers its target resolves to. Create it

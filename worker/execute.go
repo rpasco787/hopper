@@ -39,7 +39,11 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	// left a context hanging off the force context, and one per delivery adds up.
 	defer hb.stop()
 
-	if err := hb.acquire(d.acquisitionBudget()); err != nil {
+	if w.opts.SkipOwnershipCheckForBenchmarks {
+		// Unsafe by design: receipt is not evidence about the store, so this
+		// deadline is a guess. Benchmarks only.
+		hb.lease.establish(deadlineFrom(d.receivedAt, d.grant))
+	} else if err := hb.acquire(d.acquisitionBudget()); err != nil {
 		// Nothing was started and nothing is safe to mutate: without proven
 		// ownership a Nack would be a stale worker writing to someone else's
 		// job. The lease simply expires and the broker redelivers it.
