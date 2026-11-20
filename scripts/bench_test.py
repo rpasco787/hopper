@@ -57,6 +57,7 @@ elif args[0] == 'compose':
                 print('12:00:00.000|SAMPLE|-|0')
                 print('12:00:00.000|LWLock|LockManager|1')
                 print('12:00:00.000|CPU|running|3')
+        elif 'n_live_tup' in sql: print('12:00:00|10|5.0|3|4|0')
         elif 'with next as' in sql: print('0.500|12.0')
     elif 'config' in args:
         import json
@@ -132,6 +133,14 @@ def evidence_dir(root):
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_trace_samples_lease_cost_and_dead_tuples(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, scenario='steady', TRACE='1', TRACE_EVERY='0.05')
+            trace_file = evidence_dir(root) / 'trace.psv'
+            self.assertTrue(trace_file.exists(), result.stderr)
+            self.assertIn('12:00:00|10|5.0|3|4|0', trace_file.read_text())
+
     def test_row_carries_batch_size_and_fallback_share(self):
         # 100 Ack RPCs (the fake curl), 10 batch statements, 5 one-row Acks.
         with tempfile.TemporaryDirectory() as tmp:

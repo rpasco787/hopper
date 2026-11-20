@@ -25,6 +25,8 @@
 #                  space-separated NAME=value settings for every broker or worker,
 #                  e.g. WORKER_ENV="HOPPER_LOG_LEVEL=info". They override the stack's
 #                  own (settings.yaml), and a run stops if Compose wouldn't apply one
+#   TRACE          1 samples cumulative lease calls and time, and dead tuples, every
+#                  TRACE_EVERY seconds (default 10) into trace.psv, to see drift
 #   STATS_SETTLE   seconds to wait before each snapshot of cumulative statistics (default 11)
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
 #   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
@@ -306,6 +308,23 @@ waits_once() {
        group by 2, 3" >>"$dir/waits.psv" || true
 }
 waits() { until [ -e "$dir/samplers.stop" ]; do sleep 1; [ -e "$dir/samplers.stop" ] || waits_once; done; }
+# time|lease calls|lease total ms|n_dead_tup|n_live_tup|autovacuum_count
+trace_once() {
+  sql "select to_char(clock_timestamp(), 'HH24:MI:SS'), s.calls, round(s.total::numeric, 1),
+              t.n_dead_tup, t.n_live_tup, t.autovacuum_count
+       from (select coalesce(sum(calls), 0) as calls, coalesce(sum(total_exec_time), 0) as total
+             from pg_stat_statements
+             where ltrim(regexp_replace(query, '\s+', ' ', 'g')) like 'with next as%') s,
+            pg_stat_user_tables t where t.relname = 'jobs'" >>"$dir/trace.psv" || true
+}
+# The first sample is taken at once, so a run has its starting point and a
+# short run still leaves one row.
+tracer() {
+  trace_once
+  until [ -e "$dir/samplers.stop" ]; do
+    sleep "${TRACE_EVERY:-10}"; [ -e "$dir/samplers.stop" ] || trace_once
+  done
+}
 # Every broker's pool counters and confirmation latency histograms, before and
 # after the measured interval, so their deltas leave out the preload and
 # startup. A failed scrape is written down, not skipped: bench_hist.py then
@@ -341,6 +360,7 @@ drain)
   waits_once
   sample & samplers="$!"
   waits & samplers="$samplers $!"
+  if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
   start_workers
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
   deadline=$((SECONDS + 600))
@@ -378,6 +398,7 @@ steady)
   pool_snapshot before
   sample & samplers="$!"
   waits & samplers="$samplers $!"
+  if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
   loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${DURATION:-30s}" \
     -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" -json >"$dir/loadgen.json"
