@@ -1,0 +1,8 @@
+samples|6
+active_mean|4.17
+type|CPU|18|72.0
+type|LWLock|4|16.0
+type|Client|3|12.0
+event|Client|ClientRead|3|12.0
+event|LWLock|BufferContent|4|16.0
+event|CPU|running|18|72.0

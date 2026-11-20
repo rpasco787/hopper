@@ -1,0 +1,64 @@
+# before :16091
+hopper_db_pool_acquires_total 19039
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 4
+hopper_db_pool_empty_acquire_wait_seconds_total 0.033394208
+hopper_db_pool_empty_acquires_total 5
+hopper_db_pool_max_connections 16
+# before :16092
+hopper_db_pool_acquires_total 20010
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 5
+hopper_db_pool_empty_acquire_wait_seconds_total 0.026166376
+hopper_db_pool_empty_acquires_total 6
+hopper_db_pool_max_connections 16
+# before :16093
+hopper_db_pool_acquires_total 20036
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 5
+hopper_db_pool_empty_acquire_wait_seconds_total 0.044925501
+hopper_db_pool_empty_acquires_total 6
+hopper_db_pool_max_connections 16
+# before :16094
+hopper_db_pool_acquires_total 21021
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 4
+hopper_db_pool_empty_acquire_wait_seconds_total 0.047710958
+hopper_db_pool_empty_acquires_total 5
+hopper_db_pool_max_connections 16
+# after :16091
+hopper_db_pool_acquires_total 41122
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 15
+hopper_db_pool_empty_acquire_wait_seconds_total 39.743074287
+hopper_db_pool_empty_acquires_total 14205
+hopper_db_pool_max_connections 16
+# after :16092
+hopper_db_pool_acquires_total 42324
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 15
+hopper_db_pool_empty_acquire_wait_seconds_total 38.91734803
+hopper_db_pool_empty_acquires_total 14469
+hopper_db_pool_max_connections 16
+# after :16093
+hopper_db_pool_acquires_total 42254
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 15
+hopper_db_pool_empty_acquire_wait_seconds_total 37.922017185
+hopper_db_pool_empty_acquires_total 14217
+hopper_db_pool_max_connections 16
+# after :16094
+hopper_db_pool_acquires_total 43247
+hopper_db_pool_connections{state="acquired"} 2
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 14
+hopper_db_pool_empty_acquire_wait_seconds_total 36.563092188
+hopper_db_pool_empty_acquires_total 14230
+hopper_db_pool_max_connections 16

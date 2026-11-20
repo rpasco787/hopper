@@ -1,0 +1,15 @@
+samples|9
+active_mean|38.89
+type|IPC|1|0.3
+type|CPU|9|2.6
+type|Lock|15|4.3
+type|LWLock|295|84.3
+type|Client|23|6.6
+type|IO|7|2.0
+event|IPC|ProcArrayGroupUpdate|1|0.3
+event|Lock|transactionid|15|4.3
+event|IO|WALSync|7|2.0
+event|Client|ClientRead|23|6.6
+event|LWLock|WALWrite|243|69.4
+event|LWLock|BufferContent|52|14.9
+event|CPU|running|9|2.6

@@ -1,0 +1,44 @@
+{
+  "run": "lg-1795132326",
+  "brokers": [
+    "broker:9090"
+  ],
+  "queue": "sleep",
+  "producers": 4,
+  "batch": 500,
+  "work_ms": 0,
+  "payload_bytes": 300,
+  "offered_rate": 0,
+  "jobs": 40000,
+  "calls": 80,
+  "errors": 0,
+  "produce_seconds": 3.547216043,
+  "enqueue_rate": 11276.448774225393,
+  "enqueue": {
+    "n": 80,
+    "p50_ms": 161.886,
+    "p90_ms": 218.343,
+    "p99_ms": 300.89,
+    "max_ms": 300.89
+  },
+  "max_lag_ms": 0,
+  "waited": false,
+  "finished": 0,
+  "unfinished": 0,
+  "retried": 0,
+  "pickup": {
+    "n": 0,
+    "p50_ms": 0,
+    "p90_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "end_to_end": {
+    "n": 0,
+    "p50_ms": 0,
+    "p90_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "throughput": 0
+}

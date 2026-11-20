@@ -1,0 +1,16 @@
+05:12:12.517|SAMPLE|-|0
+05:12:13.694|SAMPLE|-|0
+05:12:13.694|CPU|running|2
+05:12:14.920|SAMPLE|-|0
+05:12:14.920|CPU|running|6
+05:12:16.102|SAMPLE|-|0
+05:12:16.102|CPU|running|3
+05:12:16.102|LWLock|BufferContent|1
+05:12:17.270|SAMPLE|-|0
+05:12:17.270|CPU|running|5
+05:12:17.270|Client|ClientRead|2
+05:12:17.270|LWLock|BufferContent|1
+05:12:18.426|SAMPLE|-|0
+05:12:18.426|CPU|running|2
+05:12:18.426|Client|ClientRead|1
+05:12:18.426|LWLock|BufferContent|2

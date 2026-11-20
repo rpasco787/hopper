@@ -1,0 +1,4 @@
+kind|calls|rows
+ack_batch|2049|40000
+heartbeat_batch|2049|39588
+heartbeat_one|412|412

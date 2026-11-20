@@ -1,0 +1,16 @@
+calls|total_ms|pct_of_total|mean_ms|rows_per_call|blks_per_call|query
+40000|40790|60.5|1.020|1.0|12.8|update jobs set lease_expires = now() + $3::interval, updated_at = now() where id = $1 and
+40000|14926|22.2|0.373|1.0|13.8|update jobs set state = $3, finished_at = now(), updated_at = now() where id = $1 and leas
+8553|10723|15.9|1.254|4.7|220.8|with next as ( select c.id from unnest($1::text[]) as q(queue), lateral ( select id, prior
+21|481|0.7|22.912|1.0|13887.7|select count(*) from jobs where state = $1
+20|374|0.6|18.699|1.0|2492.2|select queue, 'available' as state, count(*) as count from jobs where state = 'available' 
+9|56|0.1|6.207|4.7|3.0|select to_char(clock_timestamp(), $1), $2, $3, $4 union all select to_char(clock_timestamp
+1|23|0.0|22.628|1.0|6517.0|select round(count(*) / extract($1 from max(finished_at) - min(leased_at))), count(*) filt
+104|3|0.0|0.027|0.0|1.8|select id, queue, attempts, max_attempts from jobs where state = 'leased' and lease_expire
+104|2|0.0|0.024|0.0|1.0|with due as ( select id from jobs where state = 'scheduled' and run_at <= now() order by r
+2|0|0.0|0.228|1.0|22.0|select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup 
+1|0|0.0|0.196|1.0|0.0|select pg_stat_statements_reset()
+104|0|0.0|0.001|0.0|0.0|rollback
+104|0|0.0|0.001|0.0|0.0|begin
+1|0|0.0|0.013|1.0|0.0|select current_setting($1) || $2 || current_setting($3)
+total|statements=15|calls=89033|total_ms=67379

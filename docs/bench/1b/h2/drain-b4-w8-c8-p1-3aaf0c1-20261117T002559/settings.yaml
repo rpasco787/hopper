@@ -1,0 +1,14 @@
+# Written by scripts/bench.sh: the settings this run overrides.
+services:
+  broker:
+    environment:
+      HOPPER_CONFIRM_BATCH: "64"
+  broker-standby:
+    environment:
+      HOPPER_CONFIRM_BATCH: "64"
+  broker-3:
+    environment:
+      HOPPER_CONFIRM_BATCH: "64"
+  broker-4:
+    environment:
+      HOPPER_CONFIRM_BATCH: "64"

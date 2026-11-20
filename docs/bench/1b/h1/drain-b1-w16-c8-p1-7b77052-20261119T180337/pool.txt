@@ -1,0 +1,16 @@
+# before :16091
+hopper_db_pool_acquires_total 70052
+hopper_db_pool_connections{state="acquired"} 1
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 7
+hopper_db_pool_empty_acquire_wait_seconds_total 0.043683957
+hopper_db_pool_empty_acquires_total 8
+hopper_db_pool_max_connections 16
+# after :16091
+hopper_db_pool_acquires_total 92882
+hopper_db_pool_connections{state="acquired"} 10
+hopper_db_pool_connections{state="constructing"} 0
+hopper_db_pool_connections{state="idle"} 6
+hopper_db_pool_empty_acquire_wait_seconds_total 12.541291954
+hopper_db_pool_empty_acquires_total 6161
+hopper_db_pool_max_connections 16

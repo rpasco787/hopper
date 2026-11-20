@@ -1,0 +1,8 @@
+H4 prediction, written 2026-11-19 before any run (ref 7b77052).
+In a drain, handlers do no work, so few deliveries live long enough to renew; almost
+every Heartbeat is the ownership check. With skip:
+- heartbeat_batch and heartbeat_fallback_pct close to empty or zero;
+- commits per job fall by about the Heartbeat share: ~0.45 -> ~0.25 at 1 broker,
+  ~0.93 -> ~0.5 at 4 brokers;
+- the 4-broker Heartbeat fallbacks (35.5% of statement time in H2) vanish.
+Unknown: whether jobs/s follows. At 4 brokers, H2 cut commits without moving jobs/s.

@@ -17,7 +17,8 @@ renew their leases by heartbeat.
   across failover.
 - **Production-shaped operations:** Prometheus metrics, a Grafana dashboard, a
   Helm chart, KEDA autoscaling on queue depth, and a chaos suite.
-- **9,191 jobs/s** drained on one broker on a laptop ([Performance](#performance)).
+- **6,581 jobs/s** drained on one broker, on a laptop with an 8-vCPU Docker VM (1.74× the
+  pre-batching build in one loop; [Performance](#performance)).
 
 ## Quick start
 
@@ -566,21 +567,41 @@ Tear down with `kind delete cluster --name hopper`.
 
 ## Performance
 
-Measured on one laptop (Apple M2, everything in one Docker VM):
+![Drain throughput against broker count, before and after](docs/img/scaling-laptop.svg)
 
-| Scenario | Before | After |
+*Before and after were measured in one interleaved loop. The brokers share two
+CPUs at every count, so this shows what more brokers cost against one
+PostgreSQL, not capacity scaling.*
+
+Measured on one laptop (Apple M2, everything in one Docker VM with 8 vCPUs,
+5-run medians, 40,000 jobs of 300 bytes):
+
+| Scenario | Before (`e61ae1c`) | After (`4c4e37d`) |
 |---|---:|---:|
-| Drain 40,000 jobs, 1 broker | 2,131 jobs/s | 9,191 jobs/s |
-| Drain 40,000 jobs, 2 brokers | 1,851 jobs/s | 5,001 jobs/s |
-| Idle-queue pickup latency (p50) | 85 ms | 1.5 ms |
+| Drain, 1 broker | 3,773 jobs/s | 6,581 jobs/s |
+| Drain, 2 brokers | 3,617 jobs/s | 6,055 jobs/s |
+| Drain, 4 brokers | 2,923 jobs/s | 4,236 jobs/s |
+| Commits per job (1 / 2 / 4 brokers) | 2.24 | 0.45 / 0.63 / 0.93 |
 
-The gains came from three changes: the lease query was rewritten to read each
-queue through its index, the connection pool was sized, and idle lease streams
-are now woken on enqueue instead of waiting for the next poll.
+Adding brokers did not add throughput: every job cost about 2.24 commits, and
+PostgreSQL's commit flush limited the drain whatever the topology. Batching
+confirmations (on by default) cut that to 0.45 commits per job at one broker,
+and more brokers still cost throughput against one PostgreSQL. The diagnosis,
+every hypothesis tried, and what is left are in
+[docs/scaling.md](docs/scaling.md). Reproduce with
+`bash docs/bench/1b/final/loop.sh` (about 25 minutes). The 2026-10-13 numbers
+this section used to show (9,191 jobs/s) were taken on a different layout and
+could not be reproduced on today's setup; they stay, dated, in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-At a steady 3,000 jobs a second, the highest rate measured, every run kept up.
-Enqueue latency was 1.00 ms p50 / 24.5 ms p99 on one broker and 1.22 ms /
-121.5 ms on two.
+On 2026-10-13 the idle-queue pickup latency was 85 ms before the lease query
+was rewritten and idle lease streams were woken on enqueue, and 1.5 ms after.
+The same day, a 30-second steady run at 3,000 jobs a second on one broker with
+four workers kept up, with enqueue latency of 1.00 ms p50 / 24.5 ms p99. Longer
+runs have not kept up since: two 10-minute steady runs with 300-byte jobs on
+the pinned layout above, offered 1,000 and 4,000 jobs a second, fell behind
+(see "What's left" in [docs/scaling.md](docs/scaling.md)). Treat the 30-second
+figure as a short-run result.
 
 | Flag | Environment | Default | Meaning |
 |---|---|---:|---|

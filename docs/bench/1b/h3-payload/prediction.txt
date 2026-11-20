@@ -1,0 +1,7 @@
+H3 predictions, written 2026-11-20 before any run (ref cf2d835).
+- HOT stays at 0%: every per-job update changes an indexed column (lease and Ack change
+  state, which partial-index predicates read; Heartbeat changes lease_expires,
+  jobs_reap_idx). H2 already shows 0.0%, so fillfactor can only keep the new version
+  on the same page.
+- WAL per job grows with payload size: each update copies the whole row, including
+  payloads under the TOAST threshold (~2 KB).

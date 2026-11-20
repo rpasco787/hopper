@@ -1,0 +1,14 @@
+# Written by scripts/bench.sh: the settings this run overrides.
+services:
+  worker:
+    environment:
+      HOPPER_BENCH_SKIP_OWNERSHIP_CHECK: "1"
+  worker-b:
+    environment:
+      HOPPER_BENCH_SKIP_OWNERSHIP_CHECK: "1"
+  worker-c:
+    environment:
+      HOPPER_BENCH_SKIP_OWNERSHIP_CHECK: "1"
+  worker-d:
+    environment:
+      HOPPER_BENCH_SKIP_OWNERSHIP_CHECK: "1"

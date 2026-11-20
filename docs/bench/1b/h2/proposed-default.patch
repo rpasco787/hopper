@@ -1,0 +1,86 @@
+--- a/internal/broker/service.go
++++ b/internal/broker/service.go
+@@ -20,10 +20,10 @@
+ // without configuring anything.
+ const (
+ 	// DefaultConfirmBatch and DefaultConfirmFlights size the confirmation
+-	// batchers (docs/design/confirmation-batching.md). Batching is off (1)
+-	// until H2 measures that it helps and the user approves (docs/scaling.md);
+-	// 64 is the size to turn it on with.
+-	DefaultConfirmBatch   = 1
++	// batchers (docs/design/confirmation-batching.md). H2 measured that
++	// batching at 64 with two flights qualifies under the decision rule
++	// (docs/scaling.md); 1 disables batching.
++	DefaultConfirmBatch   = 64
+ 	DefaultConfirmFlights = 2
+ 
+ 	MaxMessageBytes      = 4 << 20 // explicit transport ceiling; not an atomicity guarantee
+@@ -77,7 +77,7 @@
+ 	MaxConnectionAge time.Duration
+ 	// ConfirmBatch caps how many Acks, or how many Heartbeats, one statement
+ 	// applies. 1 applies each on its own; zero takes DefaultConfirmBatch, which
+-	// is 1 (off). Batching needs a store that implements
++	// is 64. Batching needs a store that implements
+ 	// store.BatchConfirmer; NewService warns and confirms one call at a time
+ 	// with any other.
+ 	ConfirmBatch int
+--- a/internal/broker/confirm_test.go
++++ b/internal/broker/confirm_test.go
+@@ -177,12 +177,12 @@
+ 	st := &batchingStore{fakeStore: &fakeStore{
+ 		ackFn: func(context.Context, uuid.UUID, uuid.UUID) error { direct.Add(1); return nil },
+ 	}} // ackManyFn nil: batching would panic
+-	for _, cfg := range []Config{{ConfirmBatch: 1}, {}} { // explicitly off, and off by default
++	for _, cfg := range []Config{{ConfirmBatch: 1}} { // explicitly off
+ 		rpc := newTestClient(t, NewService(st, cfg))
+ 		_, err := rpc.Ack(t.Context(), &hopperv1.AckRequest{Id: uuid.NewString(), LeaseId: uuid.NewString()})
+ 		require.NoError(t, err)
+ 	}
+-	require.EqualValues(t, 2, direct.Load())
++	require.EqualValues(t, 1, direct.Load())
+ }
+ 
+ // TestBatchingIsAnnouncedOrRefusedOutLoud: a broker says when it batches,
+@@ -234,3 +234,9 @@
+ 	require.True(t, cancelled.Load(), "cancelled when its only caller left, not timed out at the cap")
+ 	require.Less(t, time.Since(start), 5*time.Second)
+ }
++
++func TestConfirmationsBatchByDefault(t *testing.T) {
++	svc := NewService(&batchingStore{fakeStore: &fakeStore{}}, Config{})
++	require.NotNil(t, svc.acks)
++	require.NotNil(t, svc.extends)
++}
+--- a/cmd/broker/main_test.go
++++ b/cmd/broker/main_test.go
+@@ -34,7 +34,7 @@
+ 	require.Equal(t, 30*time.Second, c.shutdownTimeout)
+ 	require.Equal(t, 32, c.maxLeaseBatch)
+ 	require.Equal(t, 16, c.dbMaxConns)
+-	require.Equal(t, 1, c.confirmBatch)
++	require.Equal(t, 64, c.confirmBatch)
+ 	require.Equal(t, 2, c.confirmFlights)
+ 	require.True(t, c.scheduler, "every broker contends for the scheduler unless told not to")
+ 	require.Equal(t, 5*time.Second, c.schedulerInterval)
+--- a/cmd/broker/main.go
++++ b/cmd/broker/main.go
+@@ -116,7 +116,7 @@
+ 	fs.IntVar(&c.maxLeaseBatch, "max-lease-batch", broker.DefaultLeaseBatch, "rows per lease query (HOPPER_MAX_LEASE_BATCH)")
+ 	fs.IntVar(&c.dbMaxConns, "db-max-conns", DefaultDBMaxConns, "PostgreSQL connections per broker (HOPPER_DB_MAX_CONNS)")
+ 	fs.IntVar(&c.confirmBatch, "confirm-batch", broker.DefaultConfirmBatch,
+-		"most Acks, or Heartbeats, one statement applies; 1 (the default) applies each alone (HOPPER_CONFIRM_BATCH)")
++		"most Acks, or Heartbeats, one statement applies; 1 applies each alone; 64 (the default) batches them (HOPPER_CONFIRM_BATCH)")
+ 	fs.IntVar(&c.confirmFlights, "confirm-flights", broker.DefaultConfirmFlights,
+ 		"confirmation statements of each kind run at once (HOPPER_CONFIRM_FLIGHTS)")
+ 	fs.DurationVar(&c.leaseStreamMaxAge, "lease-stream-max-age", broker.DefaultLeaseStreamMaxAge,
+--- a/README.md
++++ b/README.md
+@@ -585,7 +585,7 @@
+ | Flag | Environment | Default | Meaning |
+ |---|---|---:|---|
+ | `-db-max-conns` | `HOPPER_DB_MAX_CONNS` | `16` | PostgreSQL connections per broker; at least 2, or 3 with the scheduler. Brokers × this must fit `max_connections`. |
+-| `-confirm-batch` | `HOPPER_CONFIRM_BATCH` | `1` | Most Acks, or Heartbeats, one statement applies. `1` applies each on its own; `64` batches them. |
++| `-confirm-batch` | `HOPPER_CONFIRM_BATCH` | `64` | Most Acks, or Heartbeats, one statement applies. `1` applies each on its own; `64` batches them. |
+ | `-confirm-flights` | `HOPPER_CONFIRM_FLIGHTS` | `2` | Confirmation statements of each kind a broker runs at once. |
+ | `-poll-interval` | `HOPPER_POLL_INTERVAL` | `250ms` | How long an idle lease stream waits without a wakeup. |
+ | `-debug-listen` | `HOPPER_DEBUG_LISTEN` | empty | pprof profiles; never bind beyond loopback or a private network. |

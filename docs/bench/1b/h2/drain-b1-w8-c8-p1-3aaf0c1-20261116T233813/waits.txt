@@ -1,0 +1,9 @@
+samples|7
+active_mean|4.86
+type|CPU|6|17.6
+type|LWLock|23|67.6
+type|IO|5|14.7
+event|IO|WALWrite|1|2.9
+event|IO|WALSync|4|11.8
+event|LWLock|WALWrite|23|67.6
+event|CPU|running|6|17.6

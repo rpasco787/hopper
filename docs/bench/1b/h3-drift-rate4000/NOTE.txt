@@ -1,0 +1,5 @@
+Not a result. Started 2026-11-20T01:13:58Z at RATE=4000 and killed at ~02:03Z by the operator
+after run 1 of 4 (default) showed kept_up=no: offered 4000 jobs/s, enqueued 1,762 jobs/s,
+producers 762 s behind, ~23 min instead of 10, 2.4M-job backlog. The second run (tuned)
+was in progress and is incomplete. Overload is not steady state, so none of this feeds
+the H3 drift decision; the pair was rerun at RATE=1000 in docs/bench/1b/h3-drift.

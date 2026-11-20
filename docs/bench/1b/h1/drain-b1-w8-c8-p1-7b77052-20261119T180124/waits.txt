@@ -1,0 +1,11 @@
+samples|6
+active_mean|6.00
+type|CPU|6|16.7
+type|LWLock|26|72.2
+type|Timeout|1|2.8
+type|IO|3|8.3
+event|Timeout|SpinDelay|1|2.8
+event|IO|WALSync|3|8.3
+event|LWLock|WALWrite|22|61.1
+event|LWLock|BufferContent|4|11.1
+event|CPU|running|6|16.7

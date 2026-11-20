@@ -1,0 +1,4 @@
+# Written by scripts/bench.sh: the server settings for this run.
+services:
+  postgres:
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "synchronous_commit=on", "-c", "commit_delay=200", "-c", "commit_siblings=5"]

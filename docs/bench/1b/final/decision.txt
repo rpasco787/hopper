@@ -1,0 +1,6 @@
+b1 throughput: after 6,581 (5,012-7,436) vs before 3,773 (3,501-3,908)  n=5/5  1.744x  helps
+b2 throughput: after 6,055 (5,760-6,469) vs before 3,617 (3,572-3,793)  n=5/5  1.674x  helps
+b4 throughput: after 4,236 (3,817-4,303) vs before 2,923 (2,848-3,404)  n=5/5  1.449x  helps
+b1 commits_per_job: after 0.45 (0.44-0.46) vs before 2.24 (2.24-2.24)  n=5/5  4.978x  helps
+b2 commits_per_job: after 0.63 (0.63-0.63) vs before 2.24 (2.24-2.24)  n=5/5  3.556x  helps
+b4 commits_per_job: after 0.93 (0.91-0.95) vs before 2.24 (2.24-2.24)  n=5/5  2.409x  helps

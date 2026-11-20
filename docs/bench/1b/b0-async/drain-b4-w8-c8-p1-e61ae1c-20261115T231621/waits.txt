@@ -1,0 +1,14 @@
+samples|10
+active_mean|14.80
+type|IPC|1|0.7
+type|CPU|33|22.3
+type|Lock|37|25.0
+type|LWLock|74|50.0
+type|Client|3|2.0
+event|LWLock|XidGen|10|6.8
+event|Lock|transactionid|37|25.0
+event|LWLock|LockManager|1|0.7
+event|Client|ClientRead|3|2.0
+event|IPC|XactGroupUpdate|1|0.7
+event|LWLock|BufferContent|63|42.6
+event|CPU|running|33|22.3

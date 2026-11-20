@@ -158,7 +158,14 @@ returning j.*;
   was cancelled, or the local deadline expires, the SDK cancels the handler's
   `context`. A handler should stop, but Go context cancellation cannot forcibly
   stop code that ignores it. This initial validation costs one unary RPC for
-  every valid delivery.
+  every valid delivery. Measured on 2026-11-19 (H4 in [scaling.md](scaling.md)),
+  that check is 27.7% of statement time at one broker and 49.6% at four in a
+  drain; a benchmark-only switch that skipped it raised one-broker throughput
+  1.36× and cut commits per job from 0.44 to 0.28 (0.93 to 0.52 at four
+  brokers). It stays, because skipping it unconditionally would let a delivery
+  that waited in a buffer past its lease run beside its next holder. Bounding a
+  delivery's age from the worker's own clock and the credit it sent is the
+  planned way to skip it safely.
 - **Expiry.** The reaper runs on a ticker and applies the retry policy (§6) to
   every row with `state = 'leased' and lease_expires < now()`. Redelivery is
   therefore not instantaneous: worst-case latency is lease duration + reaper
@@ -179,6 +186,15 @@ Both take `(id, lease_id)` and both are guarded:
 update jobs set state = 'completed', finished_at = now(), updated_at = now()
 where id = $1 and lease_id = $2 and state = 'leased';
 ```
+
+Brokers apply concurrent `Ack`s, and concurrent `Heartbeat`s, one statement
+per batch (`-confirm-batch`, default 64; `1` turns batching off): the same guard
+for every `(id, lease_id)` pair, and one commit for all of them. Each call is
+answered only after the statement that applied it commits, with exactly the
+result listed below for its own pair. A pair the batch couldn't lock, or whose guard
+failed, is applied on its own by the same call once the batch has committed,
+and classified as above. Other calls in the batch don't wait for it. `Nack` is
+not batched.
 
 For `Ack`, if zero rows are updated the store looks at the row and returns one
 of:
@@ -446,6 +462,31 @@ lease is granted and not acked:
    `integration: TestAckRidesOutADatabaseOutage` and
    `TestHeartbeatRidesOutADatabaseOutage`; and the chaos runs below (§15).
 
+   Batching does not move this window. A confirmation is answered only after
+   the statement that applied it committed. A batch the database cannot
+   complete fails every call in it with the same status, so an outage is still
+   `UNAVAILABLE` to each call, and each call is retried under its own token. A
+   call whose deadline passes while it is queued is dropped before its batch
+   runs. A batch's statement runs while any of its calls still waits, for at
+   most 10 s, and is cancelled when the last one leaves. A call whose own
+   deadline passes while its batch runs is answered `DEADLINE_EXCEEDED`, may
+   still have been applied, and a retry treats that as the idempotent case.
+
+   **A batched `Ack` can be held, not answered `UNAVAILABLE`.** A batch's
+   flight is shared. If its statement is stuck obtaining a connection to a
+   database that has just gone (a dial with no answer), every later `Ack`
+   queues behind it, at the default two flights, until the database returns or
+   the 10 s cap ends the statement. The held calls then succeed, or fail,
+   without the fast `UNAVAILABLE` that an unbatched call gets from its own
+   failed dial. Nothing is lost or repeated, and no call is answered
+   `INTERNAL`; the hold is bounded by that cap and by each caller's deadline.
+   Measured on 2026-11-20 with the graceful PostgreSQL stop: 3 of 8 runs at a
+   batch of 64 and two flights held the gated `Ack`s (7 or 8 `UNAVAILABLE`
+   answers, against 36 to 50 in the passing runs), 0 of 8 at a batch of 1, and
+   0 of 8 at a batch of 64 with 16 flights. The chaos test that asserts every
+   gated `Ack` was answered `UNAVAILABLE` therefore fails intermittently with
+   batching on (§15).
+
    Measured on Compose (2026-09-30): PostgreSQL outages after which new
    sessions failed for between 2.95s and 3.41s, with six three-second handlers
    returning into the outage, re-executed nothing, by fast shutdown and by
@@ -591,13 +632,18 @@ under a new lease, and `attempts` accounts for every one (§15).
   worker Deployment serving a fixed list of queues; brokers run a fixed count.
 - **Production monitoring in the kind add-ons.** One Prometheus with a day of
   retention, no Alertmanager, no persistence.
-- **Batched confirmations.** Every delivery costs an ownership `Heartbeat` and
-  an `Ack` or `Nack`, each its own RPC and its own committed statement. After
-  Session 11 they are the broker's largest handlers: 32% of its CPU while two
-  brokers drain 40,000 jobs (Ack 20%, Heartbeat 12%, against 5% for leasing,
-  in a `scripts/bench.sh` profile).
-  - Batching them would change the confirmation path whose outage window
-    §11.3 states, so it is future work, not a setting.
+- **Confirmation costs that batching left.** Confirmation batching is on by
+  default (§5), but the ownership and confirmation path still costs:
+  - `Nack` is not batched; each one is its own RPC and committed statement.
+  - A locked or missed pair falls back to a one-row statement. In the H4 drain
+    at four brokers, 9.4% of Heartbeat statements were one-row fallbacks and
+    the median Heartbeat batch held 3.5 calls (10.4 and 3.8% at one broker).
+  - Leasing is still one query per stream. A lease coalescer was not built: H1
+    did not meet its gate at one broker (lease latency 1.25× from 4 to 16
+    streams), though jobs/s fell by half as the same 128 slots were split over
+    more streams, because each stream's query returns fewer rows.
+  - The ownership `Heartbeat` before every handler is the largest remaining
+    per-job cost (§4 gives the numbers).
 
 ## 13. Cron schedules and leader election
 
@@ -1186,3 +1232,30 @@ not in this table.
 | A client deadline cancels the broker's query | `integration: TestClientDeadlineCancelsTheQuery` (table lock; backend gone after the 500ms deadline) | 3 (`-count=3`, 2026-11-12) | pass |
 | Lease-stream age-outs strand no lease | `chaos: TestLeaseStreamAgeOutsStrandNothing` (3 workers, 2 brokers, 5s ages, 6,000 jobs) | 3 (2026-11-12) | pass; 33, 33, 33 age-outs; 0 extra leases |
 | Streams spread back after a broker returns, losing nothing | `chaos: TestStreamsSpreadBackAfterABrokerReturns` (8 workers, 2 brokers, 20s ages, 40,000 jobs) | 3 (2026-11-12) | pass; back in 9, 4, 20 s (3/5, 2/6, 3/5 streams); 0 lost, 0 repeated starts; run 3 redelivered 1 job whose lease the stopped broker's drain took and never sent (§11), reaped 30 s later |
+| `Ack` and `Heartbeat` find their row by primary key even when statistics say nothing is leased | `store: TestPerJobUpdatesUseThePrimaryKeyUnderStaleStatistics` (20,000 rows analyzed idle, 128 leased; custom and generic plans) | 2 (`-count=2`, 2026-11-16) | pass; fails on `e61ae1c`'s guard, which plans `jobs_reap_idx` in all four cases |
+| A PostgreSQL outage still loses no `Ack` or `Heartbeat`, and stale acks and cancellations still behave, with the H3a guard | `integration: TestAckRidesOutADatabaseOutage`, `TestHeartbeatRidesOutADatabaseOutage`, `TestMetricsMatchTheDatabase`, `TestStaleAckOverGRPC`, `TestCancelledLeasedJobTellsTheWorkerToStop` (`-race`) at `654c140` | 5 (`-count=5`, 2026-11-15) | pass |
+| An undisturbed run, a broker restart and a PostgreSQL restart lose nothing and repeat no handler with the H3a guard | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing` (graceful, crash), `TestPostgresRestartLosesNoAck` (graceful, crash) at `654c140` | 1 (2026-11-15) | pass: 162 s; 0 repeated starts, 0 redelivered, 0 lost leases in each; PostgreSQL outages answered `UNAVAILABLE` (45 and 35 Acks), never `INTERNAL` |
+| Batch confirmations apply held leases, skip locked rows, never deadlock on overlapping batches, honor individual extension durations, and retain primary-key plans under stale statistics | `postgres: TestAckManyAppliesHeldLeasesAndMarksTheRest`, `TestAckManyNeverWaitsForALockedRow`, `TestOverlappingBatchesNeverDeadlock`, `TestExtendLeaseManyMovesEachLeaseByItsOwnDuration`, `TestBatchConfirmationsUseThePrimaryKeyUnderStaleStatistics` (`-race`, included in the full suite) | 2 (`-count=2`, 2026-11-16) | pass; prior Task 8 full-suite run, not rerun at close-out |
+| Confirmation batchers start lone calls immediately, bound size/flights, preserve per-caller results, cancel abandoned statements and join running flights | Eleven tests in `internal/broker/batch_test.go` (`-race`, package/full suite) | 2 (`-count=2`, 2026-11-16) | pass; close-out's additional `-count=20` run was skipped at the user's request |
+| One locked row delays only its caller, and shutdown waits for an abandoned confirmation statement to finish | `broker: TestALockedRowDelaysOnlyItsOwnCaller`, `TestShutdownWaitsForAnAbandonedConfirmationStatement` (`-race`) | 2 (`-count=2`, 2026-11-16) | pass |
+| The integration suite runs with batching enabled and no store wrapper bypassing it | `HOPPER_TEST_CONFIRM_BATCH=64 go test -race -count=2 ./test/integration` | 2 (2026-11-16) | pass; six wrappers forward batch methods; both broker constructors honor the suite switch |
+| Batching preserves renewal outage recovery, lease-loss cancellation, rejection of stale buffered deliveries and confirmation-token reuse | `integration: TestHeartbeatRidesOutADatabaseOutage`, `TestWorkerLeaseLossCancelsHandler`, `TestWorkerInitialValidationRejectsDelayedStaleDelivery`, `TestWorkerConfirmationAmbiguityReusesLeaseToken`, with `HOPPER_TEST_CONFIRM_BATCH=64` (`-race`) | 3 (`-count=3`, 2026-11-16) | pass; fault wrappers assert positive batch-call counters |
+| A lone batched Ack's deadline cancels its PostgreSQL statement while the table lock is still held | `integration: TestClientDeadlineCancelsABatchedAck`, alongside `TestClientDeadlineCancelsTheQuery` (`-race`) | 3 (`-count=3`, 2026-11-16) | pass; disabling last-caller cancellation with a Go overlay made the new test fail because the backend remained waiting; normal source passed |
+| Database outages, metrics, stale Acks and cancellation retain their behavior with batching enabled | `integration: TestAckRidesOutADatabaseOutage`, `TestHeartbeatRidesOutADatabaseOutage`, `TestMetricsMatchTheDatabase`, `TestStaleAckOverGRPC`, `TestCancelledLeasedJobTellsTheWorkerToStop`, with `HOPPER_TEST_CONFIRM_BATCH=64` (`-race`) | 5 (`-count=5`, 2026-11-16) | pass |
+| Batching survives an undisturbed run and broker/PostgreSQL graceful and crash restarts without losing jobs or repeating handler starts | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing`, `TestPostgresRestartLosesNoAck`, with `HOPPER_CHAOS_CONFIRM_BATCH=64` | 1 invocation (2026-11-16) | pass; 0 repeated starts in all five cases; graceful broker restart redelivered 6 jobs whose leases were never received, with no repeated handler starts; all 10 broker logs announced batching |
+| The benchmark-only switch starts handlers without the ownership Heartbeat | `worker: TestTheBenchmarkSwitchStartsHandlersWithoutTheOwnershipCheck`, `cmd/worker: TestConfigReadsTheBenchmarkOwnershipSwitch` (`-race`) | 1 (2026-11-19) | pass; no Heartbeat calls reached the fake broker |
+| The race suite passes with batching on by default, and the integration suite passes with batching off | `go test -race -count=2 ./...`; `HOPPER_TEST_CONFIRM_BATCH=1 go test -race -count=1 ./test/integration` (2026-11-20) | 2; 1 | pass in every package both ways; no timestamp gaps |
+| With batching on by default (all broker logs announced it), an undisturbed run, a broker restart and a stopped worker lose nothing, and every repeat is attributed | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing` (graceful, crash), `TestEnqueueStormDeduplicates`, `TestLeaseStreamAgeOutsStrandNothing`, `TestStreamsSpreadBackAfterABrokerReturns`, `TestKilledWorkersLoseNothing`, `TestAnOutageLongerThanTheLeaseReexecutes` (full suite, `-count=2`, 2026-11-20, 02:37–02:57 UTC) | 2 each | pass in both passes: 0 repeated starts and 0 redelivered jobs undisturbed, after broker restarts and in the age-out and rebalance runs (streams 3/5 and 2/6, 8 s after the broker returned); the storm left 1,000 rows for 1,000 keys (16 and 13 answers in doubt); 10 and 9 worker kills repeated 36 and 32 handler starts, all `killed`; the 40 s outage repeated 12 starts in each pass, all `lost` |
+| A PostgreSQL restart with batching on by default loses no job, repeats no handler, and answers nothing `INTERNAL` | `chaos: TestPostgresRestartLosesNoAck/graceful`, `/crash` (full suite, `-count=2`, 2026-11-20) | 2 each | crash: pass twice (46 and 18 `Ack` plus 15 `Heartbeat` answered `UNAVAILABLE`); graceful: **1 of 2 failed**, 1 passed (39 `UNAVAILABLE`). The failure was the test's check that every gated `Ack` was answered `UNAVAILABLE`: 3,006 of 3,006 jobs completed, 0 repeated starts, 0 `INTERNAL`, but only 10 `Ack` answers, all at the moment of shutdown (§11.3) |
+| That failure is the batcher's shared flight, not the database or the test | `chaos: TestPostgresRestartLosesNoAck/graceful` with `HOPPER_CHAOS_CONFIRM_BATCH` and flights varied (2026-11-20) | 8 per setting | batch 64, 2 flights (default): 3 failed, 5 passed; batch 1: 0 failed; batch 64 with 16 flights: 0 failed (41 to 49 `UNAVAILABLE` answers, or 15 plus 17 `Heartbeat`). With the earlier full-suite run, the default setting failed 4 of 10 |
+
+Phase 1b-2 close-out (2026-11-17) reuses the completed runs above, recorded in
+[the verification note](bench/1b/h2-verification.md). At the user's request,
+no close-out tests, lint, formatting checks, additional focused store runs or
+20-repetition batcher run were performed. The rows report actual prior counts;
+they do not claim the skipped checks passed. Batching was enabled by default
+in `df19e76` on 2026-11-19, after the user approved the H2 recommendation in
+[scaling.md](scaling.md). The recheck was the full race suite once with
+batching on (one broker logging test configured for its non-batching fake) and
+the integration suite once with `HOPPER_TEST_CONFIRM_BATCH=1`. The Phase 1b-3
+rows above are the later, full runs.

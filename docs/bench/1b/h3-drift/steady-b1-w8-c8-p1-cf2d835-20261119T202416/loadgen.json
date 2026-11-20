@@ -1,0 +1,45 @@
+{
+  "run": "lg-1795141474",
+  "brokers": [
+    "broker:9090"
+  ],
+  "queue": "sleep",
+  "producers": 8,
+  "batch": 1,
+  "work_ms": 0,
+  "payload_bytes": 300,
+  "offered_rate": 500,
+  "jobs": 169129,
+  "calls": 169137,
+  "errors": 1,
+  "first_error": "producer 6 call 21142: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial tcp 172.18.0.3:9090: connect: connection refused\"",
+  "produce_seconds": 338.663743654,
+  "enqueue_rate": 499.400963844517,
+  "enqueue": {
+    "n": 169129,
+    "p50_ms": 1.57,
+    "p90_ms": 11.451,
+    "p99_ms": 272.059,
+    "max_ms": 649.984
+  },
+  "max_lag_ms": 633.991,
+  "waited": false,
+  "finished": 0,
+  "unfinished": 0,
+  "retried": 0,
+  "pickup": {
+    "n": 0,
+    "p50_ms": 0,
+    "p90_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "end_to_end": {
+    "n": 0,
+    "p50_ms": 0,
+    "p90_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "throughput": 0
+}
