@@ -34,4 +34,7 @@
 // goes through.
 // HOPPER_PROOF_DIR keeps the captured logs, timeline and report instead of
 // discarding them with the test's temp directory.
+// A failover run writes failover.json, lost.json when a job was lost, and,
+// under synchronous replication, standbys.json: the surviving instances
+// sampled from the crash until one had a synchronous standby streaming to it.
 package k8s

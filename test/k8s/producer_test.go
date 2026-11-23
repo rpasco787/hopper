@@ -200,3 +200,17 @@ func (p *producer) results(from, to time.Time) produced {
 	}
 	return r
 }
+
+// answeredBetween counts the calls answered in (from, to], and of those the
+// ones answered as deduplicated.
+func (p *producer) answeredBetween(from, to time.Time) (answered, dedup int) {
+	for _, c := range p.snapshot() {
+		if c.ok && c.end.After(from) && !c.end.After(to) {
+			answered++
+			if c.dedup {
+				dedup++
+			}
+		}
+	}
+	return answered, dedup
+}

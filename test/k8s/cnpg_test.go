@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,4 +250,95 @@ func (fl *follow) ended(t *testing.T) string {
 	b, err := os.ReadFile(fl.path)
 	require.NoError(t, err)
 	return string(b)
+}
+
+// instances lists the Cluster's instance pods, as its status names them.
+func (r *replicatedDB) instances() []string {
+	r.c.t.Helper()
+	names := strings.Fields(r.c.run("get", "clusters.postgresql.cnpg.io", r.name, "-o", "jsonpath={.status.instanceNames[*]}"))
+	require.NotEmpty(r.c.t, names, "Cluster/%s lists no status.instanceNames", r.name)
+	return names
+}
+
+// standbySample is one reading of an instance after the crash.
+type standbySample struct {
+	At      time.Time `json:"at"` // when the query was sent
+	Pod     string    `json:"pod"`
+	Primary bool      `json:"primary"` // not in recovery
+	Sync    int       `json:"sync"`    // standbys streaming to it as sync or quorum
+	Names   string    `json:"synchronous_standby_names"`
+	Err     string    `json:"err,omitempty"`
+}
+
+// standbyQuery reads what a standbySample holds.
+const standbyQuery = `select not pg_is_in_recovery(),
+  (select count(*) from pg_stat_replication where state = 'streaming' and sync_state in ('sync', 'quorum')),
+  current_setting('synchronous_standby_names')`
+
+// watchStandbys samples pods every interval, all at once, until a sample
+// finds a primary with a synchronous standby streaming to it, or timeout. A
+// new primary serves before any standby streams to it, and what it answers
+// then no standby has (docs/semantics.md §11 item 7). The function it
+// returns waits for the watch to end and returns the samples by time. It
+// never fails the test: it runs on its own goroutine.
+func (r *replicatedDB) watchStandbys(pods []string, interval, timeout time.Duration) func() []standbySample {
+	var (
+		mu      sync.Mutex
+		samples []standbySample
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(interval) {
+			var wg sync.WaitGroup
+			for _, pod := range pods {
+				wg.Go(func() {
+					s := r.sampleStandby(pod)
+					mu.Lock()
+					samples = append(samples, s)
+					mu.Unlock()
+				})
+			}
+			wg.Wait()
+			mu.Lock()
+			_, found := firstStandby(samples)
+			mu.Unlock()
+			if found {
+				return
+			}
+		}
+	}()
+	return func() []standbySample {
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		out := slices.Clone(samples)
+		slices.SortFunc(out, func(a, b standbySample) int { return a.At.Compare(b.At) })
+		return out
+	}
+}
+
+// sampleStandby reads one instance. An instance being recreated, or not yet
+// answering, gives a sample with Err set.
+func (r *replicatedDB) sampleStandby(pod string) standbySample {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s := standbySample{At: time.Now(), Pod: pod}
+	out, err := r.psql(ctx, pod, standbyQuery)
+	if err != nil {
+		s.Err = err.Error()
+		return s
+	}
+	f := strings.SplitN(out, "|", 3)
+	if len(f) != 3 {
+		s.Err = "unexpected psql output: " + out
+		return s
+	}
+	n, err := strconv.Atoi(f[1])
+	if err != nil {
+		s.Err = err.Error()
+		return s
+	}
+	s.Primary, s.Sync, s.Names = f[0] == "t", n, f[2]
+	return s
 }
