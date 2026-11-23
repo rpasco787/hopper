@@ -166,3 +166,42 @@ move, the conclusion is "no net gain from this implementation on this setup".
 It doesn't show that commits never limited throughput. The waits and
 statement times it leaves behind say where to look next, likely H4 (the
 ownership heartbeat).
+
+## A batch's wait for a connection
+
+Status: designed 2026-11-23, before code. Evidence in docs/semantics.md §11.3
+and §15.
+
+**Problem.** A flight is shared. Its statement first needs a connection, and
+after PostgreSQL stops the pool must dial. A dial to the stopped container's
+address gets no answer until the connect timeout (`DefaultDBConnectTimeout`,
+5 s), the same as the worker's per-attempt deadline (`confirmRPCTimeout`, 5 s).
+The calls queued behind that flight end with `DEADLINE_EXCEEDED` at the worker,
+or succeed once the database returns, instead of being answered `UNAVAILABLE`.
+`TestPostgresRestartLosesNoAck/graceful` failed 3 of 8 at a batch of 64 with
+two flights, and 0 of 8 at a batch of 1 or with 16 flights.
+
+**Rule.** A batch statement (`AckMany`, `ExtendLeaseMany`) waits at most
+`batchAcquireTimeout` = 1 s for its connection, including any dial it waits on.
+- If that bound passes first, every call in the batch is answered
+  `UNAVAILABLE`. Nothing was sent, so the retry is plainly safe.
+- If the caller's own deadline or cancellation ends first, it is reported as
+  before; it is not the database's absence.
+- The statement, once it has a connection, keeps the 10 s cap and the
+  cancellation when its last caller leaves.
+- The one-row paths are unchanged.
+
+**Why 1 s.** It is well inside the worker's 5 s attempt, so the answer arrives
+while the caller still waits. A healthy acquire takes well under a millisecond
+in a drain.
+
+**Cost.** When the pool stays full for over a second, as during a replication
+pause where acquires waited 13-14 s, batches answer `UNAVAILABLE` after 1 s and
+workers retry with backoff, where before they waited. Confirmations are
+idempotent under their lease token, so nothing is applied twice.
+
+**Rejected.**
+- More flights by default: they only make a hold less likely.
+- A shorter connect timeout for the whole pool: it also governs the wakeup
+  listener and the scheduler, and a dial still holds a flight for its length.
+- A watchdog per flight: more machinery for the same bound.
