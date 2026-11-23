@@ -3,15 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -374,4 +377,65 @@ func TestIsLoopback(t *testing.T) {
 	} {
 		require.Equal(t, want, isLoopback(addr), addr)
 	}
+}
+
+func TestPoolConfigBoundsConnectionAttempts(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "postgres://hopper@127.0.0.1:1/hopper")
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	pc, err := poolConfig(c)
+	require.NoError(t, err)
+	require.Equal(t, DefaultDBConnectTimeout, pc.ConnConfig.ConnectTimeout)
+	require.EqualValues(t, DefaultDBMaxConns, pc.MaxConns)
+
+	c.dsn += "?connect_timeout=2"
+	pc, err = poolConfig(c)
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Second, pc.ConnConfig.ConnectTimeout, "the DSN's own bound wins")
+}
+
+// A server that accepts a connection and never answers is what a stale
+// endpoint or a frozen primary looks like. An attempt with no deadline of its
+// own, as the wakeup listener's and the scheduler election's are, must still
+// end.
+func TestASilentServerEndsAConnectionAttemptWithNoDeadline(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	var mu sync.Mutex
+	var held []net.Conn
+	t.Cleanup(func() {
+		_ = lis.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+
+	t.Setenv("HOPPER_DSN", "postgres://hopper@"+lis.Addr().String()+"/hopper?sslmode=disable")
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	pc, err := poolConfig(c)
+	require.NoError(t, err)
+	p, err := pgxpool.NewWithConfig(context.Background(), pc)
+	require.NoError(t, err)
+	t.Cleanup(p.Close)
+
+	start := time.Now()
+	_, err = p.Acquire(context.Background())
+	took := time.Since(start)
+	require.Error(t, err)
+	require.GreaterOrEqual(t, took, DefaultDBConnectTimeout-time.Second)
+	require.Less(t, took, DefaultDBConnectTimeout+3*time.Second)
 }

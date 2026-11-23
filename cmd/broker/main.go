@@ -84,6 +84,29 @@ const MaxMetricsQueues = 100
 // default; two brokers use at most 32.
 const DefaultDBMaxConns = 16
 
+// DefaultDBConnectTimeout bounds every new PostgreSQL connection whose DSN
+// sets no connect_timeout. Without it an attempt lasts as long as its
+// caller's context, and the wakeup listener and the scheduler's election run
+// under the broker's lifetime: after a failover, an attempt that reached an
+// address nothing answers on (a stale endpoint, a frozen server) would wait
+// minutes for TCP to give up, with lease streams polling and no scheduler
+// elected meanwhile. RPCs are bounded by their callers' deadlines either way.
+const DefaultDBConnectTimeout = 5 * time.Second
+
+// poolConfig is the broker's pgxpool configuration: the DSN, the pool size,
+// and a connect bound when the DSN has none.
+func poolConfig(c config) (*pgxpool.Config, error) {
+	pc, err := pgxpool.ParseConfig(c.dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+	pc.MaxConns = int32(c.dbMaxConns)
+	if pc.ConnConfig.ConnectTimeout == 0 {
+		pc.ConnConfig.ConnectTimeout = DefaultDBConnectTimeout
+	}
+	return pc, nil
+}
+
 // minDBMaxConns is the smallest pool that still leaves a connection for
 // queries once the connections held for a whole term are taken: the wakeup
 // listener's in every broker, and the scheduler role's in whichever broker leads.
@@ -315,11 +338,10 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.dsn)
+	poolCfg, err := poolConfig(cfg)
 	if err != nil {
-		return fmt.Errorf("parse dsn: %w", err)
+		return err
 	}
-	poolCfg.MaxConns = int32(cfg.dbMaxConns)
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("open pool: %w", err)
