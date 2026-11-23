@@ -24,7 +24,8 @@ loop, but did not help at four, where the ownership Heartbeat (H4) is still
 half of statement time. H1, H3's payload sweep and H4 identified what remains:
 the Heartbeat before every handler, row copies for payloads of about 1,500
 bytes, and more lease calls as the same slots are split over more streams.
-Measured end to end in one loop, the `after` build drains 1.74×, 1.67× and
+(Update 2026-11-23: the Heartbeat before every handler is now skipped for
+fresh deliveries; see "Done" under H4.) Measured end to end in one loop, the `after` build drains 1.74×, 1.67× and
 1.45× faster than `before` at 1, 2 and 4 brokers, with 5.0×, 3.6× and 2.4× fewer
 commits per job, but more brokers still cost throughput against one
 PostgreSQL.
@@ -350,6 +351,52 @@ What the baseline says, as diagnostics rather than verdicts:
   within a fraction of the grant, which compares the worker's clock with the
   database's.
 
+- **Done (2026-11-23).** The design is
+  [design/credit-anchored-freshness.md](design/credit-anchored-freshness.md),
+  committed before any code, and the rule is in [semantics.md](semantics.md) §4.
+  A delivery read less than G/10 after the credit unit it was matched to was
+  sent starts at once, on `deadlineFrom(sent, G)`; any other takes the bounded
+  ownership Heartbeat. The broker half is pinned by two new tests and a guard
+  (a store returning more rows than asked ends the stream `INTERNAL`).
+  - **Setup:** `770fdb5` (`before`, the check on every delivery) against
+    `170c385` (`after`). 1 and 4 brokers; 8 workers × 16 slots, 40,000 jobs,
+    300-byte payloads, `PIN=1` on the eight-CPU Docker VM, batching at its
+    default. Five runs per configuration in one 20-run interleaved loop,
+    rotating the starting configuration each repetition, under
+    `caffeinate -dimsu`. Ran 2026-11-23, 22:26:27–22:42:51 UTC. Zero failed or
+    rejected runs. Evidence: [results](bench/1b/h4-credit/results.csv),
+    [prediction](bench/1b/h4-credit/prediction.txt),
+    [loop](bench/1b/h4-credit/loop.sh), [decision](bench/1b/h4-credit/decision.txt),
+    [summary](bench/1b/h4-credit/summary.md).
+  - **Prediction** (written before the first run): Heartbeat calls per job fall
+    from about 1.0 to under 0.01 at both broker counts; commits per job fall to
+    about 0.28–0.30 at 1 broker (before about 0.44) and 0.52–0.56 at 4 (before
+    about 0.93), `helps` at both; jobs/s `helps` at 1 broker and open at 4. If
+    commits per job at 1 broker stayed above 0.35, or Heartbeat calls per job
+    above 0.1, the matching would be wrong.
+  - **Result:**
+
+    | Metric | Brokers | `before` | `after` | Verdict |
+    |---|---:|---|---|---|
+    | jobs/s | 1 | 6,099 (5,717–6,879) | 8,937 (8,543–10,143) | **helps**, 1.465× (ranges separate) |
+    | jobs/s | 4 | 4,060 (3,956–4,297) | 6,031 (5,109–7,515) | **helps**, 1.485× (ranges separate) |
+    | commits/job | 1 | 0.45 (0.44–0.45) | 0.29 (0.28–0.29) | **helps**, 1.552× fewer |
+    | commits/job | 4 | 0.92 (0.91–0.92) | 0.51 (0.50–0.52) | **helps**, 1.804× fewer |
+    | Heartbeat calls/job | 1 and 4 | 1.000 | 0.000 | as predicted |
+    | Heartbeat share of statement time | 1 / 4 | 27.5% / 50.7% | 0.0% / 0.0% | as predicted |
+
+    Everything fell inside or beyond the prediction. The 4-broker commits per
+    job, 0.51, is just under the predicted 0.52–0.56, and 4-broker throughput,
+    left open, came out `helps`. Both variants still show four brokers slower
+    than one (0.67×), as in H4's own runs: this change doesn't touch that.
+  - **The benchmark switch is retired.** `HOPPER_BENCH_SKIP_OWNERSHIP_CHECK`
+    and `Options.SkipOwnershipCheckForBenchmarks` (`7b77052`) are gone. With
+    zero Heartbeat calls per job in a drain, the switch removed nothing the
+    normal path still does, and keeping an unsafe-by-design option in the SDK
+    surface the Java worker copies had no benefit. The old baseline stays
+    reproducible with `REF=770fdb5 WORKER_ENV=HOPPER_BENCH_SKIP_OWNERSHIP_CHECK=1
+    scripts/bench.sh drain` (or any ref from `7b77052` to the retiring commit).
+
 ### H1: lessor contention at the head of the index
 
 - **Setup:** `7b77052`, 1 broker, 128 slots split three ways: 4 workers × 32,
@@ -500,24 +547,30 @@ Against the improvement plan's bands:
 
 Separate-plan items that came out of Phase 1b:
 
-- **H4, the ownership Heartbeat (confirmed).** Skipping it helped one-broker
-  drain throughput 1.36× and cut commits per job from 0.44 to 0.28. The chosen
-  follow-up is credit-anchored freshness (see H4). It needs its own plan, and
-  should be decided **before** the Java worker SDK (improvement plan phase 3b)
-  implements the same check.
+- **H4, the ownership Heartbeat (done 2026-11-23).** Credit-anchored freshness
+  skips the check for a fresh delivery: in the same drain, Heartbeat calls per
+  job fell from 1.000 to 0.000, commits per job from 0.45 to 0.29 (1 broker)
+  and 0.92 to 0.51 (4), and jobs/s rose 1.47× and 1.49×, ranges separate
+  ([H4](#h4-the-ownership-heartbeat-before-every-handler),
+  [bench/1b/h4-credit/](bench/1b/h4-credit/)). The Java worker SDK (improvement
+  plan phase 3b) copies the rule from
+  [design/credit-anchored-freshness.md](design/credit-anchored-freshness.md).
 - **H3, a narrow state table (payload gate met).** Payloads of 1,500 bytes
   cost 34.5% of drain throughput against 0 bytes. A narrow state table beside
   an insert-only payload table is a schema change and needs its own plan.
-- **Batched confirmations held during an outage.** With batching on, a shared
-  flight stuck on a dial to a database that has gone can hold later `Ack`s
-  until it returns, instead of answering them `UNAVAILABLE`
-  ([semantics.md §11.3](semantics.md)). Nothing is lost, but
-  `TestPostgresRestartLosesNoAck/graceful` fails intermittently with batching
-  on (1 of 2 in the full suite; 3 of 8 in a focused rerun; 0 of 8 at a batch
-  of 1 or with 16 flights). The recommended fix is to bound the time a batch
-  statement may wait for a connection (an acquire or connect timeout), so a
-  hung dial frees its flight quickly. It was **not** made here: it changes the
-  delivery path, and the test was deliberately left as written.
+- **Batched confirmations held during an outage (fixed 2026-11-23).** With
+  batching on, a shared flight stuck on a dial to a database that had gone
+  could hold later `Ack`s until it returned, instead of answering them
+  `UNAVAILABLE` ([semantics.md §11.3](semantics.md)). Nothing was lost, but
+  `TestPostgresRestartLosesNoAck/graceful` failed intermittently (3 of 8 in a
+  focused run on 2026-11-20 and 1 of 5 on 2026-11-23; 0 of 8 at a batch of 1 or
+  with 16 flights). Batch statements now wait at most 1 s for a connection and
+  then answer `UNAVAILABLE` (`batchAcquireTimeout`; design in
+  [design/confirmation-batching.md](design/confirmation-batching.md)). The test
+  was left as written and passed **8 of 8** at the default batch, with 42 to 55
+  `Ack`s answered `UNAVAILABLE` per run
+  ([bench/1b/flight-bound/](bench/1b/flight-bound/graceful-8.txt)), and the full
+  chaos suite passed.
 - **Steady-state capacity at one broker is unresolved.** The H3 drift attempts
   enqueued 1,762 jobs/s when offered 4,000 and 850 jobs/s when offered 1,000
   (`kept_up=no` both times, 10-minute runs, 300-byte jobs, 8 workers, pinned),

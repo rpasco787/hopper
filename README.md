@@ -624,6 +624,13 @@ this section used to show (9,191 jobs/s) were taken on a different layout and
 could not be reproduced on today's setup; they stay, dated, in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+Since 2026-11-23 the worker skips its ownership check for a delivery that
+arrives within a tenth of its lease after the credit that bought it. In a
+separate interleaved loop, not comparable with the table above, that took
+commits per job from 0.45 to 0.29 and drain throughput from 6,099 to 8,937
+jobs/s at one broker, and from 0.92 to 0.51 and 4,060 to 6,031 jobs/s at four
+([H4 in docs/scaling.md](docs/scaling.md#h4-the-ownership-heartbeat-before-every-handler)).
+
 On 2026-10-13 the idle-queue pickup latency was 85 ms before the lease query
 was rewritten and idle lease streams were woken on enqueue, and 1.5 ms after.
 The same day, a 30-second steady run at 3,000 jobs a second on one broker with

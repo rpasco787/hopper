@@ -141,8 +141,9 @@ returning j.*;
 - **Flow control.** A worker holds one `LeaseJobs` stream and spends *credit*:
   its first message declares how many delivery slots are free, and every later
   message returns credit only after a delivery has stopped using its slot. A
-  token covers initial ownership validation, handler execution, and Ack/Nack
-  confirmation; handler return alone does not free it. The broker never leases
+  token covers the start (an ownership check, for a delivery the start rule of
+  the Extension bullet below does not vouch for), handler execution, and
+  Ack/Nack confirmation; handler return alone does not free it. The broker never leases
   more rows than the outstanding credit, and never more than
   `-max-lease-batch` at once. This is why the stream is bidirectional: a
   server-stream carries no capacity-return signal, and the broker cannot infer
@@ -157,28 +158,88 @@ returning j.*;
   as it does after a drain. `-max-connection-age` never cuts a stream: its
   grace is unlimited, so an aged connection closes only once its lease stream
   has ended.
+- **The credit invariant.** On a lease stream, the broker leases a row only
+  against credit it has already received on that stream and not yet spent.
+  Before each store call it asks for at most the credit received so far minus
+  the rows already sent, and it sends no row beyond what that call asked for.
+  It never leases ahead of credit, never holds leased rows for credit still to
+  come, and never carries credit from one stream to another. Consequence: the
+  k-th delivery on a stream, counting from the first, was leased by a store call
+  that started after the broker had received k units of that stream's credit,
+  counting the subscription's credit first. It is enforced in
+  `internal/broker/lease.go`: the call asks for `min(credit, -max-lease-batch)`,
+  credit falls only after a row is sent, and a store that returns more rows
+  than asked ends the stream `INTERNAL` without sending any of them. It is
+  pinned by `broker: TestLeaseStreamNeverExceedsCredit`,
+  `TestLeaseStreamLeasesOnlyAgainstCreditItHasReceived` and
+  `TestLeaseStreamSendsNoRowsBeyondWhatItAskedFor`. The worker's start rule
+  (Extension, below) rests on it, so any change to the lease path, including a
+  lease coalescer (H1), must keep it. The design is
+  [design/credit-anchored-freshness.md](design/credit-anchored-freshness.md).
 - **Extension.** `Heartbeat(id, lease_id, dur)` (store method: `ExtendLease`) sets
   `lease_expires = now() + dur` **only if** `state = 'leased' and lease_id = $2`.
   Each delivery carries valid `leased_at` and `lease_expires` timestamps; their
-  difference is the broker-granted duration. As an explicit SDK policy, the
-  worker performs one bounded Heartbeat before invoking user code, then renews
-  at one third of the granted duration. Every Heartbeat sends that original
-  grant explicitly; it does not reselect a broker default that may have changed
-  since delivery. A successful RPC creates a conservative local deadline from
-  the monotonic request-start instant with scheduling slack; that estimate is
-  neither a new store guard nor permission to revive an already expired local
-  lease. If ownership is definitively rejected, the job
-  was cancelled, or the local deadline expires, the SDK cancels the handler's
-  `context`. A handler should stop, but Go context cancellation cannot forcibly
-  stop code that ignores it. This initial validation costs one unary RPC for
-  every valid delivery. Measured on 2026-11-19 (H4 in [scaling.md](scaling.md)),
-  that check is 27.7% of statement time at one broker and 49.6% at four in a
-  drain; a benchmark-only switch that skipped it raised one-broker throughput
-  1.36× and cut commits per job from 0.44 to 0.28 (0.93 to 0.52 at four
-  brokers). It stays, because skipping it unconditionally would let a delivery
-  that waited in a buffer past its lease run beside its next holder. Bounding a
-  delivery's age from the worker's own clock and the credit it sent is the
-  planned way to skip it safely.
+  difference is the broker-granted duration G. As an explicit SDK policy, the
+  worker starts a handler under **the start rule**, then renews at one third of
+  G. Every Heartbeat sends that original grant explicitly; it does not
+  reselect a broker default that may have changed since delivery. A successful
+  RPC creates a conservative local deadline from the monotonic request-start
+  instant with scheduling slack; that estimate is neither a new store guard nor
+  permission to revive an already expired local lease. If ownership is
+  definitively rejected, the job was cancelled, or the local deadline expires,
+  the SDK cancels the handler's `context`. A handler should stop, but Go
+  context cancellation cannot forcibly stop code that ignores it. The start
+  rule is:
+
+  - **Stamp.** Each stream keeps, oldest first, the instant each unit of credit
+    was handed to the transport: one monotonic reading taken just before the
+    `Send` of the subscription or credit message that carries it. Units
+    reserved but never sent (the drain path) carry no instant.
+  - **Match.** Each arriving delivery is matched to the oldest unit not yet
+    matched on its stream. A delivery with no unit left is an over-delivery:
+    the stream ends and the job is neither started nor counted.
+  - **Decide.** Let s be the matched unit's send instant, r the instant the
+    delivery was read off the stream, and G its grant. If s exists and
+    0 ≤ r − s < G/10, the handler starts at once, with local deadline
+    s + G − min(0.5 s, G/10).
+  - **Otherwise check.** The SDK sends the bounded ownership Heartbeat before
+    the handler, as before.
+  - **Clocks.** Every instant is the worker's own monotonic clock. No instant
+    from the database is compared with one from the worker.
+  - **Reconnect.** A new stream starts with no units. Its subscription's credit
+    is stamped at that subscription's `Send`. Units left on an ended stream are
+    forgotten when its credit is reclaimed.
+
+  It is safe because of the credit invariant: delivery k was leased after the
+  broker held unit k, so its lease runs at least G from s_k, and s_k + G −
+  margin is at least the margin before the reaper may take the row, whatever
+  the delivery's age. This assumes the database clock advances at the real rate
+  over G, the same assumption every renewal makes, and that nothing but `Ack`,
+  `Nack`, `Cancel` and the reaper writes a leased row. The G/10 threshold only
+  decides whether skipping is worth it: at r − s < G/10 the deadline is at
+  least 0.8 G after receipt, so the renewals at G/3 and 2G/3 both fall before
+  it, and a stale delivery, whose credit sat on an idle stream, still takes the
+  check, which also buys a fresh grant. A delivery that skips the check learns
+  that its job was cancelled (§10), or under asynchronous replication that a
+  failover lost its lease (§11 item 6), at its first renewal, G/3 after start,
+  or at its `Ack` or `Nack`, not before the handler starts. The design, with
+  the rejected alternatives and what the Java SDK copies, is
+  [design/credit-anchored-freshness.md](design/credit-anchored-freshness.md).
+
+  History and cost. Until 2026-11-23 the SDK took that bounded Heartbeat before
+  every handler. Measured on 2026-11-19 (H4 in [scaling.md](scaling.md)), the
+  check was 27.7% of statement time at one broker and 49.6% at four in a
+  drain, and a benchmark-only switch that skipped it unconditionally raised
+  one-broker throughput 1.36× and cut commits per job from 0.44 to 0.28 (0.93
+  to 0.52 at four brokers). Skipping unconditionally was unsafe, so the switch
+  was retired once the start rule did the same safely. The rule, measured on
+  2026-11-23 in the same drain against `770fdb5` (5 runs each, interleaved, 8
+  workers, `PIN=1`, 300-byte payloads): Heartbeat calls per job fell from 1.000
+  to 0.000 at both broker counts; commits per job from 0.45 to 0.29 at one
+  broker and from 0.92 to 0.51 at four; jobs/s rose from 6,099 (5,717–6,879) to
+  8,937 (8,543–10,143), 1.47×, at one broker and from 4,060 (3,956–4,297) to
+  6,031 (5,109–7,515), 1.49×, at four, the ranges apart in each case
+  ([bench/1b/h4-credit/](bench/1b/h4-credit/)).
 - **Expiry.** The reaper runs on a ticker and applies the retry policy (§6) to
   every row with `state = 'leased' and lease_expires < now()`. Redelivery is
   therefore not instantaneous: worst-case latency is lease duration + reaper
@@ -397,7 +458,7 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
 | Current state | Effect |
 |---|---|
 | `scheduled`, `available` | → `cancelled`. Never runs. |
-| `leased` | → `cancelled` immediately in the store. The worker learns at its next heartbeat/ack (`ErrCancelled`) and the SDK cancels the handler context. Side effects already performed are **not** undone. |
+| `leased` | → `cancelled` immediately in the store. The worker learns at its next heartbeat/ack (`ErrCancelled`) and the SDK cancels the handler context. A handler may already be running: a delivery started under the credit rule (§4) learns at its first renewal, G/3 after start, or at its `Ack`/`Nack`. Side effects already performed are **not** undone. |
 | `completed`, `dead`, `cancelled` | No change; returns `ErrTerminal` with the current state. |
 
 Store method: `Cancel`, which returns the cancelled row. `ErrTerminal` is
@@ -440,8 +501,9 @@ lease is granted and not acked:
    I = G/3 and a safety margin of min(0.5s, G/10):
 
    - **The local deadline** D is the send time of the last *successful*
-     ownership check or renewal, plus G, less the margin. A failed call never
-     moves it. Once D passes, the worker gives the delivery up, whatever it was
+     ownership check or renewal, plus G, less the margin; for a fresh delivery,
+     which starts without a check, it is the send time of the credit unit the
+     delivery was matched to (§4). A failed call never moves it. Once D passes, the worker gives the delivery up, whatever it was
      doing.
    - **While the handler runs,** renewals are one interval I apart, counted
      from when the previous renewal *returned*, not when it was sent. A renewal
@@ -455,9 +517,10 @@ lease is granted and not acked:
      time it has is D minus the moment the handler returned: at most G less the
      margin, and close to nothing when the last renewal failed, because D is
      still where the last success put it.
-   - **Before the handler starts,** the ownership check is retried with the
-     same backoff until receipt + G − margin. Running out means a redelivery,
-     not a re-execution.
+   - **Before the handler starts,** a fresh delivery (§4) takes no check: its D
+     is the matched credit's send + G − margin, at least 0.8 G after receipt. A
+     stale one takes the ownership check, retried with the same backoff until
+     receipt + G − margin. Running out means a redelivery, not a re-execution.
 
    At G = 30s (I = 10s, D = last success + 29.5s), each row holding only under
    its assumption:
@@ -467,6 +530,7 @@ lease is granted and not acked:
    | Handler running | every renewal returns within milliseconds, and the last one before the outage succeeded | **I = 10s**: it fails at most one slot, and the next slot, about 20s after the last success, is before D |
    | Handler running | a failing renewal takes d to return | the next slot moves out by d. If d exceeds about I − 0.5s less the last success's round trip, the next slot falls after D and the lease is lost, even to an outage shorter than I |
    | Handler returned, short job | its ownership check was its last successful call, moments before | about 29s, less up to one backoff step (≤ 6.25s) before the next attempt |
+   | Handler returned, short job, a fresh delivery | no check; D is its credit's send + 29.5s and the delivery arrived less than 3s after that send | at least 26.5s after receipt (D is the credit's send + G − margin, not receipt + G − margin), less up to one backoff step |
    | Handler returned just before its next renewal | the last renewal succeeded; RPCs return within milliseconds | about 19.5s, less up to one backoff step |
    | Handler returned after a failed renewal | none | whatever is left of D, possibly nothing |
 
@@ -475,7 +539,13 @@ lease is granted and not acked:
    `worker: TestAFastFailedRenewalCostsOneInterval`,
    `TestASlowFailedRenewalCanSpendTheLease`,
    `TestAConfirmationHasOnlyWhatIsLeftOfTheLease` and
-   `TestALateConfirmationStillLandsBeforeTheDeadline`;
+   `TestALateConfirmationStillLandsBeforeTheDeadline`, which pin the check
+   path with an unexported option, since a fresh delivery takes none; the start
+   rule by `worker: TestFreshDeadlineCountsFromTheCreditSend`,
+   `TestAFreshDeliveryStartsWithoutTheOwnershipCheck`,
+   `TestAStaleDeliveryStillTakesTheCheck`,
+   `TestACancelledJobThatStartedStopsAtItsFirstRenewal` and
+   `TestACancelledJobThatFinishesFirstIsRefusedAtItsAck`;
    `integration: TestAckRidesOutADatabaseOutage` and
    `TestHeartbeatRidesOutADatabaseOutage`; and the chaos runs below (§15).
 
@@ -489,20 +559,47 @@ lease is granted and not acked:
    deadline passes while its batch runs is answered `DEADLINE_EXCEEDED`, may
    still have been applied, and a retry treats that as the idempotent case.
 
-   **A batched `Ack` can be held, not answered `UNAVAILABLE`.** A batch's
-   flight is shared. If its statement is stuck obtaining a connection to a
-   database that has just gone (a dial with no answer), every later `Ack`
-   queues behind it, at the default two flights, until the database returns or
-   the 10 s cap ends the statement. The held calls then succeed, or fail,
-   without the fast `UNAVAILABLE` that an unbatched call gets from its own
-   failed dial. Nothing is lost or repeated, and no call is answered
-   `INTERNAL`; the hold is bounded by that cap and by each caller's deadline.
-   Measured on 2026-11-20 with the graceful PostgreSQL stop: 3 of 8 runs at a
-   batch of 64 and two flights held the gated `Ack`s (7 or 8 `UNAVAILABLE`
-   answers, against 36 to 50 in the passing runs), 0 of 8 at a batch of 1, and
-   0 of 8 at a batch of 64 with 16 flights. The chaos test that asserts every
-   gated `Ack` was answered `UNAVAILABLE` therefore fails intermittently with
-   batching on (§15).
+   **A batched `Ack` could be held, not answered `UNAVAILABLE` (fixed
+   2026-11-23).** A batch's flight is shared. If its statement was stuck
+   obtaining a connection to a database that had just gone (a dial with no
+   answer), every later `Ack` queued behind it, at the default two flights,
+   until the database returned or the 10 s cap ended the statement. The held
+   calls then succeeded, or failed, without the fast `UNAVAILABLE` that an
+   unbatched call gets from its own failed dial. Nothing was lost or repeated,
+   and no call was answered `INTERNAL`; the hold was bounded by that cap and by
+   each caller's deadline. Measured on 2026-11-20 with the graceful PostgreSQL
+   stop: 3 of 8 runs at a batch of 64 and two flights held the gated `Ack`s (7
+   or 8 `UNAVAILABLE` answers, against 36 to 50 in the passing runs), 0 of 8 at
+   a batch of 1, and 0 of 8 at a batch of 64 with 16 flights. The chaos test
+   that asserts every gated `Ack` was answered `UNAVAILABLE` therefore failed
+   intermittently with batching on. On 2026-11-23 at `b553da7` it failed 1 of 5
+   (stopped at the first failure; 9 answers against 21 to 53): after the
+   brokers' last answer 100 ms into the outage, none came for 3 s, though other
+   callers' dials were failing fast, and the held `Ack`s completed about 0.1 s
+   after PostgreSQL listened again, which fits a dial into a torn-down
+   container network that got no reply. That is inferred from timing; the
+   store tests below hold a batch on a listener that never answers and measure
+   it directly (5.0 s, the connect timeout).
+
+   **The fix.** `AckMany` and `ExtendLeaseMany` acquire their connection within
+   `batchAcquireTimeout` = 1 s, a dial included. When that bound passes first,
+   every call in the batch is answered `UNAVAILABLE`; nothing was sent, so the
+   retry is plainly safe. A caller whose own deadline or cancellation comes
+   first still gets it back as its own. Once a statement has a connection it
+   keeps the 10 s cap and the last-caller cancellation, and the one-row paths
+   are unchanged. The cost: a pool that stays full for over a second answers
+   `UNAVAILABLE` after 1 s and the workers retry with backoff, where they used
+   to wait (the replication-pause runs saw acquires wait 13.3 to 14.2 s, §15);
+   confirmations are idempotent under their lease token. Pinned by
+   `postgres: TestABatchWhoseDialHangsAnswersUnavailableWithinTheBound`,
+   `TestABatchWithNoConnectionFreeAnswersUnavailableWithinTheBound` and
+   `TestACallerDeadlineInsideTheBoundStaysTheCallers`. Measured on 2026-11-23
+   at `bee4ca7`: `TestPostgresRestartLosesNoAck/graceful` at the default batch
+   passed 8 of 8, with 42 to 55 `Ack`s answered `UNAVAILABLE` per run (against
+   9 to 53 before), 0 `INTERNAL`, and the bound's own error in the brokers'
+   logs in 7 of the 8 runs, 2 `Ack`s each
+   ([bench/1b/flight-bound/](bench/1b/flight-bound/graceful-8.txt)). Design:
+   [design/confirmation-batching.md](design/confirmation-batching.md).
 
    Measured on Compose (2026-09-30): PostgreSQL outages after which new
    sessions failed for between 2.95s and 3.41s, with six three-second handlers
@@ -560,7 +657,10 @@ lease is granted and not acked:
    confirmation `ABORTED`. On kind, a crash with replication keeping up lost
    0 acknowledged jobs in 3 runs (of 21,175). With replication paused for 3 s
    first, each run lost everything acknowledged in those 3 s, 652 to 694 jobs
-   a run, and 10 to 22 acked jobs ran again (§15). Use synchronous
+   a run, and 10 to 22 acked jobs ran again (§15). Under asynchronous
+   replication a lease lost in a failover before a fresh delivery's handler
+   starts (§4) is learned at the first renewal or the confirmation, so that
+   handler can run beside the redelivery. Use synchronous
    replication (§1).
 7. **A synchronous wait that was cancelled.** PostgreSQL writes a commit,
    then waits for the standby, and the transaction stays invisible while it
@@ -716,8 +816,9 @@ under a new lease, and `attempts` accounts for every one (§15).
     did not meet its gate at one broker (lease latency 1.25× from 4 to 16
     streams), though jobs/s fell by half as the same 128 slots were split over
     more streams, because each stream's query returns fewer rows.
-  - The ownership `Heartbeat` before every handler is the largest remaining
-    per-job cost (§4 gives the numbers).
+  - The ownership `Heartbeat` before every handler was the largest remaining
+    per-job cost (§4 gives the numbers). Since 2026-11-23 a fresh delivery
+    skips it under the credit rule (§4).
 
 ## 13. Cron schedules and leader election
 
@@ -1317,7 +1418,7 @@ not in this table.
 | A lone batched Ack's deadline cancels its PostgreSQL statement while the table lock is still held | `integration: TestClientDeadlineCancelsABatchedAck`, alongside `TestClientDeadlineCancelsTheQuery` (`-race`) | 3 (`-count=3`, 2026-11-16) | pass; disabling last-caller cancellation with a Go overlay made the new test fail because the backend remained waiting; normal source passed |
 | Database outages, metrics, stale Acks and cancellation retain their behavior with batching enabled | `integration: TestAckRidesOutADatabaseOutage`, `TestHeartbeatRidesOutADatabaseOutage`, `TestMetricsMatchTheDatabase`, `TestStaleAckOverGRPC`, `TestCancelledLeasedJobTellsTheWorkerToStop`, with `HOPPER_TEST_CONFIRM_BATCH=64` (`-race`) | 5 (`-count=5`, 2026-11-16) | pass |
 | Batching survives an undisturbed run and broker/PostgreSQL graceful and crash restarts without losing jobs or repeating handler starts | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing`, `TestPostgresRestartLosesNoAck`, with `HOPPER_CHAOS_CONFIRM_BATCH=64` | 1 invocation (2026-11-16) | pass; 0 repeated starts in all five cases; graceful broker restart redelivered 6 jobs whose leases were never received, with no repeated handler starts; all 10 broker logs announced batching |
-| The benchmark-only switch starts handlers without the ownership Heartbeat | `worker: TestTheBenchmarkSwitchStartsHandlersWithoutTheOwnershipCheck`, `cmd/worker: TestConfigReadsTheBenchmarkOwnershipSwitch` (`-race`) | 1 (2026-11-19) | pass; no Heartbeat calls reached the fake broker |
+| The benchmark-only switch starts handlers without the ownership Heartbeat | `worker: TestTheBenchmarkSwitchStartsHandlersWithoutTheOwnershipCheck`, `cmd/worker: TestConfigReadsTheBenchmarkOwnershipSwitch` (`-race`) | 1 (2026-11-19) | pass; no Heartbeat calls reached the fake broker. Both tests were removed with the switch on 2026-11-23 (see the rows below) |
 | The race suite passes with batching on by default, and the integration suite passes with batching off | `go test -race -count=2 ./...`; `HOPPER_TEST_CONFIRM_BATCH=1 go test -race -count=1 ./test/integration` (2026-11-20) | 2; 1 | pass in every package both ways; no timestamp gaps |
 | With batching on by default (all broker logs announced it), an undisturbed run, a broker restart and a stopped worker lose nothing, and every repeat is attributed | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing` (graceful, crash), `TestEnqueueStormDeduplicates`, `TestLeaseStreamAgeOutsStrandNothing`, `TestStreamsSpreadBackAfterABrokerReturns`, `TestKilledWorkersLoseNothing`, `TestAnOutageLongerThanTheLeaseReexecutes` (full suite, `-count=2`, 2026-11-20, 02:37–02:57 UTC) | 2 each | pass in both passes: 0 repeated starts and 0 redelivered jobs undisturbed, after broker restarts and in the age-out and rebalance runs (streams 3/5 and 2/6, 8 s after the broker returned); the storm left 1,000 rows for 1,000 keys (16 and 13 answers in doubt); 10 and 9 worker kills repeated 36 and 32 handler starts, all `killed`; the 40 s outage repeated 12 starts in each pass, all `lost` |
 | A PostgreSQL restart with batching on by default loses no job, repeats no handler, and answers nothing `INTERNAL` | `chaos: TestPostgresRestartLosesNoAck/graceful`, `/crash` (full suite, `-count=2`, 2026-11-20) | 2 each | crash: pass twice (46 and 18 `Ack` plus 15 `Heartbeat` answered `UNAVAILABLE`); graceful: **1 of 2 failed**, 1 passed (39 `UNAVAILABLE`). The failure was the test's check that every gated `Ack` was answered `UNAVAILABLE`: 3,006 of 3,006 jobs completed, 0 repeated starts, 0 `INTERNAL`, but only 10 `Ack` answers, all at the moment of shutdown (§11.3) |
@@ -1340,6 +1441,16 @@ not in this table.
 | Before the fix, under the new checks | `k8s: TestPrimaryFailoverLosesNothing`, `HOPPER_FAILOVER_LAG=3s`, release at `a3fcbda`, harness at `de94830` | 3 (2026-11-23) | fails as measured, 3 of 3 runs: 12, 9 and 9 retries answered deduplicated during the pause, and the same 12, 9 and 9 lost (30 of 19,767); 16, 17 and 14 answered, all deduplicated, before the new primary had a synchronous standby, each run's first answer before its first standby; the producer's broker's pool had every connection acquired in 100% of samples during the pause, its acquires waiting 13.3–14.2 s, the other broker's in none: the pool hypothesis is supported |
 | A primary crash with replication paused 3 s loses no acknowledged job; nothing is answered during the pause or before the new primary has a synchronous standby | `k8s: TestPrimaryFailoverLosesNothing`, `HOPPER_FAILOVER_LAG=3s` at `de94830` | 3 (2026-11-23) | pass 3 of 3: 21,848 acknowledged, 0 lost; 0 answered during the pause; 0 answered or confirmed without a standby; old primary cancelled 16, 14 and 13 waits |
 | A primary crash under synchronous replication, with the window check | `k8s: TestPrimaryFailoverLosesNothing` at `de94830` | 5 (`-count=5`, 2026-11-23) | pass 5 of 5: 35,420 acknowledged, 0 lost; first synchronous standby after 19.9–26.0 s; answered again after 19.7–25.8 s (median 24.4) against 19.3–20.3 (19.5) before; 0 answered or confirmed without a standby; the new primary cancelled 14–46 waits |
+| The broker leases only against credit it has received, and sends no row beyond what the store was asked for | `broker: TestLeaseStreamNeverExceedsCredit`, `TestLeaseStreamLeasesOnlyAgainstCreditItHasReceived`, `TestLeaseStreamSendsNoRowsBeyondWhatItAskedFor`, at `70c376e` | 3 (`-count=3`, 2026-11-23) and the package under `-race` | pass. Before the guard the first passed (the invariant was already enforced at the lease call) and the third failed, the broker sending a row from a batch one larger than asked; a store that over-returns now ends the stream `INTERNAL` and sends none of that batch |
+| A fresh delivery starts without the ownership check; a stale one takes it; credit is matched oldest first and a reconnect resets it; a job cancelled before its handler starts stops at its first renewal, or is refused at its `Ack` | `worker: TestCreditIsMatchedToDeliveriesOldestFirst`, `TestReconcileForgetsTheSendInstants`, `TestAReconnectResetsTheCreditAccounting`, `TestFreshDeadlineCountsFromTheCreditSend`, `TestAFreshDeliveryStartsWithoutTheOwnershipCheck`, `TestAStaleDeliveryStillTakesTheCheck`, `TestACancelledJobThatStartedStopsAtItsFirstRenewal`, `TestACancelledJobThatFinishesFirstIsRefusedAtItsAck`, at `0735f49` and `170c385` | 3 and 5 (`-count=3`, `-count=5`, 2026-11-23) | pass, no flake. With only the deadline function written the start tests failed as predicted (a Heartbeat where none was expected; the first-renewal test timing out after 10 s); the stale test passed on both |
+| The tests that pin the ownership check still do, through an unexported option | `worker`: seven tests (`TestASuccessfulHandlerIsAcked`, `TestExecutionPinsHeartbeatsToTheDeliveredGrant`, `TestAnUnregisteredQueueIsNackedUnstarted`, `TestADeliveryThatLosesToShutdownIsNackedUnstarted`, `TestObserverNeverSeesUnstartedJobs`, `TestForcedShutdownCountsBlockedAcquisition`, `TestForcedShutdownCountsBlockedUnstartedNack`) with `checkEveryDelivery: true`, no assertion changed; `integration: TestWorkerInitialValidationRejectsDelayedStaleDelivery` with a real 300 ms delay in place of an edited `lease_expires` | 3 (`./worker -count=3`) and 5 (the integration test), 2026-11-23 | pass. The integration test failed unchanged: the delivery was 3.3 ms old, so the rule skipped the check and the handler ran; at 104 ms the same, at 406 ms it passed (the threshold, G/10 = 200 ms, is what separates them). Its setup had simulated age by rewriting `lease_expires`, which the rule assumes nothing does |
+| The race suite passes after the start rule | `go test -race -count=1 ./...` at `170c385`, and again at `8d26a73` after the switch was retired | 1 invocation each (2026-11-23) | pass: 15 of 15 packages each |
+| The chaos suite passes with the start rule | `go test -tags chaos -count=1 ./test/chaos` at `170c385` | 1 invocation (2026-11-23) | pass but for the known batcher-flight flake: 604.2 s; every test passed except `TestPostgresRestartLosesNoAck/graceful` (8 `Ack`s answered `UNAVAILABLE`, 3,006 of 3,006 completed, 0 repeats), which passed alone on its one allowed rerun (48). 0 repeated starts in the undisturbed run, the broker restarts, the age-outs (32 streams aged out) and the rebalance; the 40 s outage repeated 12, all `lost`; the worker kills repeated 36, all `killed` (9 kills); `INTERNAL` empty throughout |
+| The drain with the start rule against the check on every delivery | `scripts/bench.sh drain`, `170c385` against `770fdb5`, 1 and 4 brokers, 8 workers, `PIN=1`, 300-byte payloads | 5 each, interleaved (2026-11-23) | 1 broker: **helps**, 8,937 jobs/s (8,543–10,143) against 6,099 (5,717–6,879), 1.465×, commits per job 0.29 against 0.45; 4 brokers: **helps**, 6,031 (5,109–7,515) against 4,060 (3,956–4,297), 1.485×, 0.51 against 0.92. Heartbeat calls per job 0.000 against 1.000 at both; no failed or rejected run ([bench/1b/h4-credit/](bench/1b/h4-credit/)) |
+| The benchmark switch is retired without loss | `grep -rn 'SkipOwnershipCheck\|SKIP_OWNERSHIP'` outside `docs/` and `gen/`; `go test -race -count=1 ./...` at `8d26a73` | 1 each (2026-11-23) | no match; 15 of 15 packages pass. The two tests of the removed option went with it |
+| A batch waits at most 1 s for a connection and then answers `UNAVAILABLE`; a caller's own deadline stays its own | `postgres: TestABatchWhoseDialHangsAnswersUnavailableWithinTheBound`, `TestABatchWithNoConnectionFreeAnswersUnavailableWithinTheBound`, `TestACallerDeadlineInsideTheBoundStaysTheCallers` (each for `AckMany` and `ExtendLeaseMany`), at `bee4ca7` | 1 before the fix and 3 after (`-count=3`, 2026-11-23); with the broker and integration packages once | before: the dial test failed on time for both (5.005 s, 5.004 s; a hung dial was already `UNAVAILABLE`), the no-connection test failed on `ErrUnavailable` (it waited 5 s and got the caller's deadline), the caller test passed; after: all pass, and `TestEveryStoreErrorGoesThroughWrap`, `TestClientDeadlineCancelsABatchedAck` and `TestBatchRetryAfterTransientErrorDoesNotDuplicate` pass unchanged |
+| A graceful PostgreSQL stop answers the gated `Ack`s `UNAVAILABLE` at the default batch | `chaos: TestPostgresRestartLosesNoAck/graceful`, batch 64, two flights, at `bee4ca7`; before, `b553da7` | **8 of 8** after (`-count=8`); 1 of 5 failed before (`-failfast`, 2026-11-23) | pass 8 of 8: 42, 44, 49, 46, 55, 44, 42 and 45 `Ack`s answered `UNAVAILABLE`, 0 `INTERNAL`, 3,006 of 3,006 completed, 0 repeats each; the bound's error was in the brokers' logs in 7 runs, 2 `Ack`s each. Before: 51, 21, 42 and 53 answered in the four passes and 9 in the failure ([bench/1b/flight-bound/graceful-8.txt](bench/1b/flight-bound/graceful-8.txt)) |
+| The race suite and the chaos suite pass with the bound | `go test -race -count=1 ./...` and `go test -tags chaos -count=1 ./test/chaos` at `bee4ca7` | 1 invocation each (2026-11-23) | 15 of 15 packages pass; chaos passes in full, `graceful` included: 614.1 s. PostgreSQL restarts answered 44 `Ack`s `UNAVAILABLE` (graceful) and 51 (crash), 0 `INTERNAL`, 0 repeats; the 40 s outage repeated 12, all `lost`; the worker kills repeated 40, all `killed` (10 kills); 33 streams aged out with 0 repeats; the broker restarts repeated 0 (the SIGKILL one redelivered 3 jobs a stream had sent but no worker received, §11 item 5); the undisturbed run and the rebalance repeated 0; `INTERNAL` empty throughout |
 
 The Phase 2 rows are tabulated per run in [failover/summary.md](failover/summary.md).
 After a promotion the new primary has no synchronous standby for a few seconds,
