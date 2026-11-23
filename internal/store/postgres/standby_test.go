@@ -212,3 +212,31 @@ func TestARetriedNackWaitsForTheStandby(t *testing.T) {
 	g.release()
 	require.NoError(t, nack(ctx), "once a standby has it, the retry is the idempotent re-nack")
 }
+
+// TestARetriedCancelWaitsForTheStandby: a Cancel's commit waits, its deadline
+// cancels the wait, and the job is cancelled on the primary alone. The
+// broker answers a retry that finds it cancelled as success
+// (already_cancelled), so the store must not report it until a standby has
+// the cancellation, or a crash runs a job its client was told was called off.
+func TestARetriedCancelWaitsForTheStandby(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	j, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	require.NoError(t, err)
+	cancelJob := func(ctx context.Context) error {
+		_, err := s.Cancel(ctx, j.ID)
+		return err
+	}
+	g := ghostStandby(t)
+
+	stillWaiting(t, "the first Cancel's commit waits for the standby", cancelJob)
+	require.Eventually(t, func() bool { return stateNow(j.ID) == store.StateCancelled },
+		5*time.Second, 20*time.Millisecond, "the cancelled wait left the job cancelled on the primary")
+	stillWaiting(t, "the retried Cancel was answered already cancelled about a cancellation no standby has", cancelJob)
+
+	g.release()
+	_, err = s.Cancel(ctx, j.ID)
+	var terminal *store.TerminalStateError
+	require.ErrorAs(t, err, &terminal)
+	require.Equal(t, store.StateCancelled, terminal.State)
+}

@@ -46,16 +46,43 @@ func (s *Store) Cancel(ctx context.Context, id uuid.UUID) (store.Job, error) {
 		return store.Job{}, wrap("cancel", err)
 	}
 
-	var state store.State
-	err = s.pool.QueryRow(ctx, `select state from jobs where id = $1`, id).Scan(&state)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return store.Job{}, store.ErrNotFound
-	case err != nil:
-		return store.Job{}, wrap("cancel: classify", err)
+	state, err := s.cancelState(ctx, cancelStateSQL, id)
+	if err != nil {
+		return store.Job{}, err
+	}
+	if state == store.StateCancelled {
+		// The broker answers a retried Cancel that finds its job cancelled as
+		// success (already_cancelled), so this answer is a promise too. Read
+		// the row again under the lock that makes it wait for a standby, as
+		// classifyMiss does, and answer from that (docs/semantics.md §11
+		// item 7).
+		if state, err = s.cancelState(ctx, cancelStateLockedSQL, id); err != nil {
+			return store.Job{}, err
+		}
 	}
 	if !store.Terminal(state) {
 		return store.Job{}, fmt.Errorf("store: cancel: job %s changed state concurrently (now %s); retry", id, state)
 	}
 	return store.Job{}, &store.TerminalStateError{State: state}
+}
+
+// cancelStateSQL reads the state of a job Cancel's UPDATE missed.
+// cancelStateLockedSQL reads it under the lock that makes an
+// already-cancelled answer wait for a standby.
+var (
+	cancelStateSQL       = `select state from jobs where id = $1`
+	cancelStateLockedSQL = cancelStateSQL + ` for key share`
+)
+
+// cancelState runs one of Cancel's classifying reads.
+func (s *Store) cancelState(ctx context.Context, sql string, id uuid.UUID) (store.State, error) {
+	var state store.State
+	err := s.pool.QueryRow(ctx, sql, id).Scan(&state)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", store.ErrNotFound
+	case err != nil:
+		return "", wrap("cancel: classify", err)
+	}
+	return state, nil
 }
