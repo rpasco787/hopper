@@ -5,6 +5,7 @@ package k8s
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
@@ -77,8 +79,11 @@ func (c *cluster) forward(target, remotePort string) string {
 	return ""
 }
 
-// database connects through a port-forward, using the broker's own DSN with
-// the password from the chart's Secret.
+// database connects through a port-forward to the Service the broker's DSN
+// names, with the password from the chart's Secret. kubectl port-forward to a
+// Service picks one of its pods and stays on it, so a pool from here dies with
+// that pod: after a failover, call database again for one that reaches the new
+// primary.
 func (c *cluster) database() *pgxpool.Pool {
 	c.t.Helper()
 	dsn := c.run("get", "configmap", c.release+"-broker", "-o", "jsonpath={.data.HOPPER_DSN}")
@@ -88,7 +93,7 @@ func (c *cluster) database() *pgxpool.Pool {
 	u, err := url.Parse(dsn)
 	require.NoError(c.t, err)
 	u.User = url.UserPassword(u.User.Username(), string(password))
-	u.Host = c.forward("svc/"+c.release+"-postgres", "5432")
+	u.Host = c.forward("svc/"+u.Hostname(), cmp.Or(u.Port(), "5432"))
 	pool, err := pgxpool.New(context.Background(), u.String())
 	require.NoError(c.t, err)
 	c.t.Cleanup(pool.Close)
@@ -371,13 +376,17 @@ func intSetting(t *testing.T, name string, def int) int {
 func loadRows(t *testing.T, pool *pgxpool.Pool, run string) []accounting.Row {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
-		`select id, state::text, attempts from jobs where idempotency_key like $1 || '-%'`, run)
+		`select id, state::text, attempts, lease_id from jobs where idempotency_key like $1 || '-%'`, run)
 	require.NoError(t, err)
 	defer rows.Close()
 	var out []accounting.Row
 	for rows.Next() {
 		var r accounting.Row
-		require.NoError(t, rows.Scan(&r.ID, &r.State, &r.Attempts))
+		var lease *uuid.UUID
+		require.NoError(t, rows.Scan(&r.ID, &r.State, &r.Attempts, &lease))
+		if lease != nil {
+			r.LeaseID = *lease
+		}
 		out = append(out, r)
 	}
 	require.NoError(t, rows.Err())
