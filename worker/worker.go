@@ -95,6 +95,11 @@ type Options struct {
 	// anywhere else: a delivery that waited in a buffer past its lease would
 	// run while the job's next holder runs it too.
 	SkipOwnershipCheckForBenchmarks bool
+
+	// checkEveryDelivery makes every delivery take the ownership check, as
+	// if none were fresh. Tests that pin the check itself set it; it is
+	// unexported, so it is not part of the API.
+	checkEveryDelivery bool
 }
 
 // Worker runs handlers against the brokers its target resolves to. Create it

@@ -518,6 +518,12 @@ func TestWorkerInitialValidationRejectsDelayedStaleDelivery(t *testing.T) {
 	require.NotEqual(t, *old.LeaseID, *newOwner[0].LeaseID)
 	require.NoError(t, base.Ack(ctx, newOwner[0].ID, *newOwner[0].LeaseID))
 
+	// The delivery must really be old. The start rule
+	// (docs/design/credit-anchored-freshness.md) skips the ownership check for a
+	// delivery read less than G/10 = 200 ms after the credit that bought it, and
+	// rests on a lease lasting at least G from that credit. Rewriting
+	// lease_expires above does not make a delivery old; waiting does.
+	time.Sleep(300 * time.Millisecond)
 	release()
 	select {
 	case err := <-delayed.extended:

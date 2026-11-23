@@ -109,7 +109,7 @@ func TestObserverNeverSeesUnstartedJobs(t *testing.T) {
 			return gate.wait(hctx)
 		}
 	})
-	r, stream := runHandler(t, ctx, f, Options{Observer: observer, ShutdownTimeout: 5 * time.Second}, "known",
+	r, stream := runHandler(t, ctx, f, Options{Observer: observer, ShutdownTimeout: 5 * time.Second, checkEveryDelivery: true}, "known",
 		func(context.Context, Job) error { t.Error("unstarted handler ran"); return nil })
 
 	require.NoError(t, stream.deliver(ctx, newFixture("unknown").proto()))

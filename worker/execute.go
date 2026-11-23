@@ -39,16 +39,25 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	// left a context hanging off the force context, and one per delivery adds up.
 	defer hb.stop()
 
-	if w.opts.SkipOwnershipCheckForBenchmarks {
+	switch deadline, fresh := w.startDeadline(d); {
+	case w.opts.SkipOwnershipCheckForBenchmarks:
 		// Unsafe by design: receipt is not evidence about the store, so this
 		// deadline is a guess. Benchmarks only.
 		hb.lease.establish(deadlineFrom(d.receivedAt, d.grant))
-	} else if err := hb.acquire(d.acquisitionBudget()); err != nil {
-		// Nothing was started and nothing is safe to mutate: without proven
-		// ownership a Nack would be a stale worker writing to someone else's
-		// job. The lease simply expires and the broker redelivers it.
-		log.Warn("lease not confirmed; leaving the job to be redelivered", "err", err)
-		return
+	case fresh:
+		// The credit rule: the broker leased this row after the credit it
+		// was matched to was sent, so the lease runs at least until then plus
+		// the grant. A cancellation since is learned at the first renewal or
+		// the confirmation (docs/semantics.md §10).
+		hb.lease.establish(deadline)
+	default:
+		if err := hb.acquire(d.acquisitionBudget()); err != nil {
+			// Nothing was started and nothing is safe to mutate: without proven
+			// ownership a Nack would be a stale worker writing to someone else's
+			// job. The lease simply expires and the broker redelivers it.
+			log.Warn("lease not confirmed; leaving the job to be redelivered", "err", err)
+			return
+		}
 	}
 
 	c := &confirmer{
@@ -107,6 +116,15 @@ func (w *Worker) execute(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClie
 	}
 	outcome, cerr := c.nack(message)
 	logConfirmation(log, "nack", outcome, cerr)
+}
+
+// startDeadline applies the start rule (docs/design/credit-anchored-freshness.md),
+// unless a test has pinned the ownership check.
+func (w *Worker) startDeadline(d *delivery) (time.Time, bool) {
+	if w.opts.checkEveryDelivery {
+		return time.Time{}, false
+	}
+	return freshDeadline(d.creditSentAt, d.receivedAt, d.grant)
 }
 
 // nackUnstarted returns a job the SDK knows never started: an unregistered

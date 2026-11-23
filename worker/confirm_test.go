@@ -100,7 +100,7 @@ func TestASuccessfulHandlerIsAcked(t *testing.T) {
 	sink := &logSink{}
 
 	ran := make(chan Job, 1)
-	r, s := runHandler(t, ctx, f, Options{Logger: slog.New(sink)}, "q",
+	r, s := runHandler(t, ctx, f, Options{Logger: slog.New(sink), checkEveryDelivery: true}, "q",
 		func(_ context.Context, j Job) error { ran <- j; return nil })
 
 	fx := newFixture("q")
@@ -362,7 +362,7 @@ func TestAHeartbeatCancelledByNormalCompletionStillAcks(t *testing.T) {
 func TestExecutionPinsHeartbeatsToTheDeliveredGrant(t *testing.T) {
 	ctx := waitCtx(t)
 	f := startFake(t)
-	r, s := runHandler(t, ctx, f, Options{LeaseDuration: 12 * time.Second}, "q",
+	r, s := runHandler(t, ctx, f, Options{LeaseDuration: 12 * time.Second, checkEveryDelivery: true}, "q",
 		func(context.Context, Job) error { return nil })
 
 	fx := newFixture("q")
@@ -382,7 +382,7 @@ func TestAnUnregisteredQueueIsNackedUnstarted(t *testing.T) {
 	f := startFake(t)
 
 	ran := make(chan struct{}, 1)
-	r, s := runHandler(t, ctx, f, Options{}, "known",
+	r, s := runHandler(t, ctx, f, Options{checkEveryDelivery: true}, "known",
 		func(context.Context, Job) error { ran <- struct{}{}; return nil })
 
 	fx := newFixture("unknown")
@@ -419,7 +419,7 @@ func TestADeliveryThatLosesToShutdownIsNackedUnstarted(t *testing.T) {
 	})
 
 	ran := make(chan struct{}, 1)
-	r, s := runHandler(t, ctx, f, Options{ShutdownTimeout: 5 * time.Second}, "q",
+	r, s := runHandler(t, ctx, f, Options{ShutdownTimeout: 5 * time.Second, checkEveryDelivery: true}, "q",
 		func(context.Context, Job) error { ran <- struct{}{}; return nil })
 
 	require.NoError(t, s.deliver(ctx, newFixture("q").proto()))

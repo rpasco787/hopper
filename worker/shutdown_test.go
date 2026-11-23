@@ -148,7 +148,7 @@ func TestForcedShutdownCountsBlockedAcquisition(t *testing.T) {
 
 	const budget = 250 * time.Millisecond
 	ran := make(chan struct{}, 1)
-	w := New(f.addr, Options{Concurrency: 1, ShutdownTimeout: budget, Logger: quietLogger()})
+	w := New(f.addr, Options{Concurrency: 1, ShutdownTimeout: budget, Logger: quietLogger(), checkEveryDelivery: true})
 	w.Handle("q", func(context.Context, Job) error { ran <- struct{}{}; return nil })
 	r := runWorker(t, w)
 	s := f.awaitStream(t, ctx)
@@ -201,7 +201,7 @@ func TestForcedShutdownCountsBlockedUnstartedNack(t *testing.T) {
 
 	const budget = 300 * time.Millisecond
 	ran := make(chan struct{}, 1)
-	w := New(f.addr, Options{Concurrency: 1, ShutdownTimeout: budget, Logger: quietLogger()})
+	w := New(f.addr, Options{Concurrency: 1, ShutdownTimeout: budget, Logger: quietLogger(), checkEveryDelivery: true})
 	w.Handle("q", func(context.Context, Job) error { ran <- struct{}{}; return nil })
 	r := runWorker(t, w)
 	s := f.awaitStream(t, ctx)

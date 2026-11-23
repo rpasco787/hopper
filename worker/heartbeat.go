@@ -198,13 +198,16 @@ func (h *heartbeat) notifyLost(cause error) {
 	h.lostOnce.Do(func() { h.onLost(cause) })
 }
 
-// acquire proves the lease is still ours before any handler runs.
+// acquire proves the lease is still ours before a handler runs, for a
+// delivery the start rule can't vouch for (docs/design/credit-anchored-freshness.md):
+// one whose credit was sent G/10 or more before it arrived, typically on an
+// idle stream. It costs one unary RPC, and buys evidence about *now* plus a
+// fresh grant.
 //
-// This is an SDK policy, not something docs/semantics.md requires. It costs one
-// unary RPC per delivery and buys the one thing the delivery message cannot
-// provide: evidence about *now*. A job that sat in a transport buffer while the
-// reaper took it back is rejected here instead of running a second copy of a
-// handler whose first copy may still be going.
+// This is an SDK policy, not something docs/semantics.md requires. A job that
+// sat in a transport buffer while the reaper took it back is rejected here
+// instead of running a second copy of a handler whose first copy may still be
+// going.
 //
 // The budget is fixed at receipt and bounds the waiting. It is not a claim of
 // ownership; only a successful response is that.
