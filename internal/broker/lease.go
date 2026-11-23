@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sync/atomic"
@@ -180,6 +181,11 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 			return stopped()
 		}
 		gen := s.wakes.generation() // before the lease, so park can tell if a wake slipped past it
+		// The credit invariant (docs/design/credit-anchored-freshness.md): ask
+		// only for credit already received, and send nothing beyond what was
+		// asked. Workers start fresh deliveries without an ownership check on
+		// the strength of it, so any change here, a lease coalescer included,
+		// must keep it.
 		n := min(credit.Load(), uint64(s.cfg.MaxLeaseBatch))
 		jobs, err := s.store.Lease(ctx, sub.GetQueues(), int(n), leaseDur, sub.GetWorkerId())
 		if ctx.Err() != nil {
@@ -187,6 +193,13 @@ func (s *Service) LeaseJobs(stream hopperv1.HopperService_LeaseJobsServer) error
 		}
 		if err != nil {
 			return s.fail(ctx, "LeaseJobs", err)
+		}
+		if uint64(len(jobs)) > n {
+			// A broken store. Sending any of these would lease past credit;
+			// their leases expire and the reaper takes them back, as after any
+			// failed stream (docs/semantics.md §11.5).
+			return s.fail(ctx, "LeaseJobs",
+				fmt.Errorf("broker: the store returned %d rows for a lease of %d", len(jobs), n))
 		}
 		for i, job := range jobs {
 			if checkStop() != nil {

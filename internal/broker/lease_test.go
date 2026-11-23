@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -151,6 +152,94 @@ func TestLeaseStreamNeverExceedsCredit(t *testing.T) {
 	rec.mu.Unlock()
 	require.Equal(t, 3, totalRequested)
 	require.LessOrEqual(t, rec.maxRequested(), 3, "and it never asked the store for more than the credit")
+}
+
+// TestLeaseStreamLeasesOnlyAgainstCreditItHasReceived pins the invariant
+// credit-anchored freshness rests on (docs/design/credit-anchored-freshness.md):
+// every row the broker asks the store for is covered by credit the worker had
+// already sent. A broker that leased ahead of credit would fail here.
+func TestLeaseStreamLeasesOnlyAgainstCreditItHasReceived(t *testing.T) {
+	t.Parallel()
+
+	var sent atomic.Int64 // units handed to Send, counted before each Send
+	var mu sync.Mutex
+	asked := 0
+	var violations []string
+	leaseFn := func(_ context.Context, queues []string, n int, _ time.Duration, _ string) ([]store.Job, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked += n
+		if have := sent.Load(); int64(asked) > have {
+			violations = append(violations, fmt.Sprintf("asked for %d rows in all with %d credit sent", asked, have))
+		}
+		jobs := make([]store.Job, n)
+		for i := range jobs {
+			jobs[i] = sampleJob(queues[0])
+		}
+		return jobs, nil
+	}
+	client, _ := newTestService(t, &fakeStore{leaseFn: leaseFn})
+
+	streamCtx, cancelStream := context.WithCancel(ctxT(t))
+	defer cancelStream()
+	stream, err := client.LeaseJobs(streamCtx)
+	require.NoError(t, err)
+	recv := func(n int) {
+		for i := range n {
+			resp, err := stream.Recv()
+			require.NoErrorf(t, err, "row %d", i)
+			require.NotEmpty(t, resp.GetJob().GetId())
+		}
+	}
+
+	sent.Add(2)
+	require.NoError(t, stream.Send(&hopperv1.LeaseJobsRequest{
+		Msg: &hopperv1.LeaseJobsRequest_Subscribe{Subscribe: &hopperv1.Subscription{
+			Queues: []string{"q"}, WorkerId: "w", Credit: 2,
+		}},
+	}))
+	recv(2)
+	for _, c := range []uint32{1, 3, 1} {
+		time.Sleep(20 * time.Millisecond) // the broker sits with no credit
+		sent.Add(int64(c))
+		require.NoError(t, stream.Send(&hopperv1.LeaseJobsRequest{
+			Msg: &hopperv1.LeaseJobsRequest_Credit{Credit: c},
+		}))
+		recv(int(c))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Empty(t, violations, "the broker leased ahead of the credit it had received")
+	require.Equal(t, 7, asked)
+}
+
+// TestLeaseStreamSendsNoRowsBeyondWhatItAskedFor: a store that returns more
+// rows than the lease asked for must not make the broker spend credit it was
+// never given. The stream ends INTERNAL and sends none of that batch; their
+// leases expire and the reaper takes them back (docs/semantics.md §11.5).
+func TestLeaseStreamSendsNoRowsBeyondWhatItAskedFor(t *testing.T) {
+	t.Parallel()
+
+	leaseFn := func(_ context.Context, queues []string, n int, _ time.Duration, _ string) ([]store.Job, error) {
+		jobs := make([]store.Job, n+1)
+		for i := range jobs {
+			jobs[i] = sampleJob(queues[0])
+		}
+		return jobs, nil
+	}
+	client, _ := newTestService(t, &fakeStore{leaseFn: leaseFn})
+
+	stream, err := client.LeaseJobs(ctxT(t))
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&hopperv1.LeaseJobsRequest{
+		Msg: &hopperv1.LeaseJobsRequest_Subscribe{Subscribe: &hopperv1.Subscription{
+			Queues: []string{"q"}, WorkerId: "w", Credit: 2,
+		}},
+	}))
+	resp, err := stream.Recv()
+	require.Error(t, err, "the broker sent %v; it must send nothing from a batch larger than it asked for", resp.GetJob().GetId())
+	require.Equal(t, codes.Internal, status.Code(err))
 }
 
 // TestLeaseStreamResumesOnCredit: after the worker returns credit, delivery
