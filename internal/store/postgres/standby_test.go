@@ -240,3 +240,50 @@ func TestARetriedCancelWaitsForTheStandby(t *testing.T) {
 	require.ErrorAs(t, err, &terminal)
 	require.Equal(t, store.StateCancelled, terminal.State)
 }
+
+// TestRefusalsDoNotWaitForTheStandby: only an answer that reports work as
+// done waits (docs/design/cancelled-waits.md). A refusal promises nothing a
+// crash could take back, so a stale Ack, Nack and Heartbeat, and a Cancel
+// that came too late, are answered at once even while every commit waits.
+func TestRefusalsDoNotWaitForTheStandby(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	stale := leaseOne(t, ctx, s, "q", "w1")
+	forceState(t, stale.ID, store.StateAvailable) // the reaper took it back
+	got, err := s.Lease(ctx, []string{"q"}, 1, 30*time.Second, "w2")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	done := leaseOne(t, ctx, s, "done", "w3")
+	require.NoError(t, s.Ack(ctx, done.ID, *done.LeaseID))
+	ghostStandby(t)
+
+	answersAtOnce(t, "a stale Ack", store.ErrLeaseLost,
+		func(ctx context.Context) error { return s.Ack(ctx, stale.ID, *stale.LeaseID) })
+	answersAtOnce(t, "a stale Nack", store.ErrLeaseLost,
+		func(ctx context.Context) error { return s.Nack(ctx, stale.ID, *stale.LeaseID, "x") })
+	answersAtOnce(t, "a stale Heartbeat", store.ErrLeaseLost,
+		func(ctx context.Context) error { return s.ExtendLease(ctx, stale.ID, *stale.LeaseID, time.Minute) })
+	answersAtOnce(t, "a Cancel of a completed job", store.ErrTerminal,
+		func(ctx context.Context) error { _, err := s.Cancel(ctx, done.ID); return err })
+}
+
+// TestALeaseOfARowNoStandbyHasWaitsForTheStandby: a cancelled wait leaves an
+// enqueued row on the primary alone, and a lease can take it there. But a
+// lease is a write, so its own commit waits for a standby, and WAL order
+// covers the insert it read: no worker is handed the job until a standby has
+// it (docs/semantics.md §11 item 7).
+func TestALeaseOfARowNoStandbyHasWaitsForTheStandby(t *testing.T) {
+	s := newStore(t)
+	ghostStandby(t)
+
+	stillWaiting(t, "the Enqueue's commit waits for the standby", func(ctx context.Context) error {
+		_, _, err := s.Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+		return err
+	})
+	require.Eventually(t, func() bool { return countNow(`select count(*) from jobs where queue = 'q'`) == 1 },
+		5*time.Second, 20*time.Millisecond, "the cancelled wait left the row on the primary")
+	stillWaiting(t, "the lease was answered before a standby had the job", func(ctx context.Context) error {
+		_, err := s.Lease(ctx, []string{"q"}, 1, time.Minute, "w")
+		return err
+	})
+}
