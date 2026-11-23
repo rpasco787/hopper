@@ -53,6 +53,7 @@ func TestUnavailableClassifiesConnectionFailures(t *testing.T) {
 		{"server crashing", &pgconn.PgError{Code: "57P02"}, true},
 		{"server starting up", &pgconn.PgError{Code: "57P03"}, true},
 		{"too many connections", &pgconn.PgError{Code: "53300"}, true},
+		{"read-only server, as a standby is", &pgconn.PgError{Code: "25006"}, true},
 		{"connection failure", &pgconn.PgError{Code: "08006"}, true},
 		{"network error", &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, true},
 		{"unexpected EOF", fmt.Errorf("failed to receive message: %w", io.ErrUnexpectedEOF), true},
@@ -138,4 +139,28 @@ func TestARejectedStatementIsNotUnavailable(t *testing.T) {
 	_, _, err := s.Enqueue(ctxT(t), store.EnqueueParams{Queue: "q", Payload: []byte(`{"x":"\u0000"}`)})
 	require.Error(t, err)
 	require.NotErrorIs(t, err, store.ErrUnavailable)
+}
+
+// TestAReadOnlyServerIsUnavailable stands in for a standby: every session's
+// transactions are read-only, as they are on a server in recovery. Writes are
+// refused as unavailable, and nothing takes effect.
+func TestAReadOnlyServerIsUnavailable(t *testing.T) {
+	ctx := ctxT(t)
+	writable := newStore(t) // truncates
+	job, _, err := writable.Enqueue(ctx, store.EnqueueParams{Queue: "standby"})
+	require.NoError(t, err)
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	require.NoError(t, err)
+	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+	p, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(p.Close)
+	standby := New(p)
+
+	_, _, err = standby.Enqueue(ctx, store.EnqueueParams{Queue: "standby"})
+	require.ErrorIs(t, err, store.ErrUnavailable)
+	_, err = standby.Lease(ctx, []string{"standby"}, 1, time.Minute, "w")
+	require.ErrorIs(t, err, store.ErrUnavailable)
+	require.Equal(t, store.StateAvailable, readJob(t, job.ID).State, "the refused lease took nothing")
 }

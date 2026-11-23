@@ -31,8 +31,10 @@ func wrap(op string, err error) error {
 //   - A failed connection attempt, for any reason, including a server that is
 //     starting up, shutting down or refusing connections. Nothing was sent.
 //   - A server error in class 08 (connection exception), 57P01-57P03 (the
-//     server is terminating this session, crashing, or cannot accept it yet)
-//     or 53300 (too many connections).
+//     server is terminating this session, crashing, or cannot accept it yet),
+//     53300 (too many connections) or 25006 (read-only: a standby, or a
+//     server still in recovery during a failover, which refuses every write
+//     before it takes effect).
 //   - A transport failure on an open connection: a network error, EOF, or a
 //     connection pgx has already closed.
 //
@@ -54,7 +56,7 @@ func unavailable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "57P01", "57P02", "57P03", "53300":
+		case "57P01", "57P02", "57P03", "53300", "25006":
 			return true
 		}
 		return len(pgErr.Code) == 5 && pgErr.Code[:2] == "08"
