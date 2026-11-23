@@ -49,6 +49,9 @@ const defaultMaxAttempts int32 = 5
 // level; under REPEATABLE READ the same wait can surface as a serialization
 // failure instead.
 //
+// The lookup also takes a row lock, which is what makes "deduplicated" a
+// promise a crash can't break: see dedupSQL.
+//
 // The loop covers one narrow case: the row we deferred to is deleted by
 // retention or Purge in the microseconds between the insert and the lookup. The
 // key is free again, so the insert can now succeed. Three passes is already
@@ -111,9 +114,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 
 		// Zero rows means DO NOTHING fired, so a row with this (queue, key) is
 		// committed. New statement, new snapshot, so we can see it.
-		rows, err = s.pool.Query(ctx,
-			`select `+jobColumns+` from jobs where queue = $1 and idempotency_key = $2`,
-			p.Queue, p.IdempotencyKey)
+		rows, err = s.pool.Query(ctx, dedupSQL, p.Queue, p.IdempotencyKey)
 		if err != nil {
 			return store.Job{}, false, wrap("enqueue: lookup", err)
 		}
@@ -130,3 +131,19 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 		"store: enqueue: queue %q: the conflicting row for this idempotency key was deleted three times mid-insert",
 		p.Queue)
 }
+
+// dedupSQL is Enqueue's lookup of the row its insert deferred to.
+//
+// It reads under FOR KEY SHARE, the weakest row lock, and the lock is the
+// point. "Deduplicated" tells the caller its job exists, and the row found
+// may be one whose own commit stopped waiting for the synchronous standby
+// when its caller's deadline cancelled the statement: PostgreSQL keeps such
+// a commit and makes it visible on the primary alone (docs/semantics.md §11
+// item 7). A plain read writes no WAL, so its commit waits for nothing, and
+// a crash could then lose a job the caller was told about. The lock gives
+// this read a transaction ID and a WAL record, so its commit waits for the
+// standby as a write's does, and WAL is one ordered stream: a standby that
+// has this commit has the row's. The lock conflicts only with FOR UPDATE and
+// DELETE, so Ack and Heartbeat never wait for it, and Lease skips the row
+// for the length of one commit (docs/design/cancelled-waits.md).
+var dedupSQL = `select ` + jobColumns + ` from jobs where queue = $1 and idempotency_key = $2 for key share`

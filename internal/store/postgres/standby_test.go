@@ -144,3 +144,33 @@ func TestWhatASynchronousCommitWaitsFor(t *testing.T) {
 	stillWaiting(t, "a row lock writes WAL, so its commit waits",
 		exec(`select id from jobs where id = $1 for key share`, j.ID))
 }
+
+// TestARetriedEnqueueWaitsForTheStandby is docs/semantics.md §11 item 7 in
+// one process. An Enqueue's commit waits for a standby that has fallen
+// behind. Its deadline cancels the wait, and PostgreSQL keeps the commit, so
+// the row is on this server alone. The producer's retry under the same key
+// finds it. It must not be answered deduplicated until a standby has the row,
+// or a crash now loses a job its producer was told exists.
+func TestARetriedEnqueueWaitsForTheStandby(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	key := "in-doubt"
+	p := store.EnqueueParams{Queue: "q", IdempotencyKey: &key}
+	enqueue := func(ctx context.Context) error {
+		_, _, err := s.Enqueue(ctx, p)
+		return err
+	}
+	g := ghostStandby(t)
+
+	stillWaiting(t, "the first call's commit waits for the standby", enqueue)
+	require.Eventually(t, func() bool {
+		return countNow(`select count(*) from jobs where idempotency_key = $1`, key) == 1
+	}, 5*time.Second, 20*time.Millisecond, "the cancelled wait left the row visible on the primary")
+	stillWaiting(t, "the retry was answered about a row no standby has", enqueue)
+
+	g.release()
+	_, inserted, err := s.Enqueue(ctx, p)
+	require.NoError(t, err)
+	require.False(t, inserted, "once a standby has the row, the retry finds the first call's job")
+	require.Equal(t, 1, countNow(`select count(*) from jobs where idempotency_key = $1`, key))
+}
