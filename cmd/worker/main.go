@@ -26,9 +26,6 @@ type config struct {
 	metricsListen                  string
 	concurrency                    int
 	leaseDuration, shutdownTimeout time.Duration
-	// skipOwnershipCheck is environment-only on purpose: no flag, no envVars
-	// entry. It exists so scripts/bench.sh can measure the ownership check.
-	skipOwnershipCheck bool
 }
 
 var envVars = [][2]string{
@@ -66,7 +63,6 @@ func parseConfig(args []string) (config, error) {
 			}
 		}
 	}
-	c.skipOwnershipCheck = os.Getenv("HOPPER_BENCH_SKIP_OWNERSHIP_CHECK") == "1"
 	if c.broker == "" {
 		return c, errors.New("broker address is required")
 	}
@@ -137,9 +133,6 @@ func runWithContext(ctx context.Context, args []string, stdout io.Writer, start 
 	if err != nil {
 		return err
 	}
-	if cfg.skipOwnershipCheck {
-		logger.Warn("HOPPER_BENCH_SKIP_OWNERSHIP_CHECK is set: handlers start without proving ownership; benchmarks only")
-	}
 	if cfg.id == "" {
 		cfg.id = resolvedWorkerID()
 	}
@@ -186,7 +179,6 @@ func runWithContext(ctx context.Context, args []string, stdout io.Writer, start 
 	w := workersdk.New(cfg.broker, workersdk.Options{
 		ID: cfg.id, Concurrency: cfg.concurrency, LeaseDuration: cfg.leaseDuration,
 		ShutdownTimeout: cfg.shutdownTimeout, Logger: logger, Observer: observer,
-		SkipOwnershipCheckForBenchmarks: cfg.skipOwnershipCheck,
 	})
 	for _, registered := range workerHandlers {
 		w.Handle(registered.queue, registered.handler)

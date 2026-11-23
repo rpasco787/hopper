@@ -580,17 +580,3 @@ func TestConfirmationStopsAtTheLocalLeaseDeadline(t *testing.T) {
 
 	require.NoError(t, r.stopAndWait(t), "and the worker still drains cleanly")
 }
-
-func TestTheBenchmarkSwitchStartsHandlersWithoutTheOwnershipCheck(t *testing.T) {
-	ctx := waitCtx(t)
-	f := startFake(t)
-	r, s := runHandler(t, ctx, f, Options{SkipOwnershipCheckForBenchmarks: true}, "q",
-		func(context.Context, Job) error { return nil })
-
-	require.NoError(t, s.deliver(ctx, newFixture("q").proto()))
-	awaitCalls(t, ctx, f, "Ack", 1)
-	require.NoError(t, r.stopAndWait(t))
-
-	beats, _ := f.counts("Heartbeat")
-	require.Zero(t, beats, "the handler started without proving ownership")
-}
