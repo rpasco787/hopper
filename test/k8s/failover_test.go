@@ -74,6 +74,10 @@ type failoverResult struct {
 	AnsweredWithoutStandby  int     `json:"answered_without_standby"`
 	DedupedWithoutStandby   int     `json:"of_which_deduplicated_without_standby"`
 	ConfirmedWithoutStandby int     `json:"confirmed_without_standby"`
+	// During a pause, per broker: the share of pool samples with every
+	// connection acquired, and the seconds acquires waited (pools.json).
+	PoolFullWhilePaused map[string]float64 `json:"pool_full_share_while_paused,omitempty"`
+	PoolWaitWhilePaused map[string]float64 `json:"pool_acquire_wait_s_while_paused,omitempty"`
 }
 
 // TestPrimaryFailoverLosesNothing crashes the primary of a database that
@@ -188,7 +192,13 @@ func failover(t *testing.T, wantSync bool) (failoverResult, accounting.Durabilit
 	require.NoError(t, pool.QueryRow(bg, `select next_run_at from cron_schedules where name = $1`, failoverTick).Scan(&pending),
 		"the release must declare the %s schedule: %s", failoverTick, install)
 	var paused time.Time
+	var pools func() []poolSample
 	if lag > 0 {
+		// The brokers' pools across the pause: whether statements waiting for
+		// the standby held every connection (docs/semantics.md §11 item 7). A
+		// second of samples first is the baseline.
+		pools = samplePools(c, bpods, 250*time.Millisecond)
+		time.Sleep(time.Second)
 		t.Cleanup(db.pauseReplication(st.Primary, st.Instances-1))
 		paused = time.Now()
 		time.Sleep(lag)
@@ -198,6 +208,11 @@ func failover(t *testing.T, wantSync bool) (failoverResult, accounting.Durabilit
 	var standbys func() []standbySample
 	if wantSync {
 		standbys = db.watchStandbys(survivors, 250*time.Millisecond, 3*time.Minute)
+	}
+	if pools != nil {
+		ps := pools()
+		writeJSON(t, filepath.Join(dir, "pools.json"), ps)
+		res.PoolFullWhilePaused, res.PoolWaitWhilePaused = poolWhile(ps, paused, crashed)
 	}
 	newPrimary, promoted, routed := db.awaitPromotion(st.Primary, 3*time.Minute)
 	firstFailure, recovered, ok := p.awaitRecovery(crashed, 3*time.Minute)
