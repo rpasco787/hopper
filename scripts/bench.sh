@@ -444,6 +444,7 @@ printf '%s\n%s\n' "$counters_before" "$counters_after" >"$dir/counters.txt"
                   when q like 'with mine as ( select j.id, c.dur_us %' then 'heartbeat_batch'
                   when q like 'update jobs set state = %, finished_at = now(), updated_at = now() where id = % and lease_id = %' then 'ack_one'
                   when q like 'update jobs set lease_expires = now() + %' then 'heartbeat_one'
+                  when q like '% for key share' then 'locked_read'
                 end as kind, calls, rows
          from (select ltrim(regexp_replace(query, '\s+', ' ', 'g')) as q, calls, rows from pg_stat_statements) s
        ) k where kind is not null group by kind order by kind"
