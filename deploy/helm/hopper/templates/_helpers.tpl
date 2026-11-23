@@ -73,3 +73,27 @@ capabilities:
 {{- fail (printf "%s: terminationGracePeriodSeconds (%d) must be at least preStopSleepSeconds + shutdownTimeoutSeconds + 5 = %d" .name $grace $need) -}}
 {{- end -}}
 {{- end }}
+
+{{/* The host brokers connect to: the bundled StatefulSet's Service, or the
+     CloudNativePG Cluster's read-write Service, which follows its primary. */}}
+{{- define "hopper.databaseHost" -}}
+{{- if eq .Values.postgres.mode "cloudnativepg" -}}
+{{ include "hopper.fullname" . }}-db-rw
+{{- else -}}
+{{ include "hopper.fullname" . }}-postgres
+{{- end -}}
+{{- end }}
+
+{{/* Fails the render on a database mode or replication that cannot keep
+     its promise (docs/semantics.md §1). */}}
+{{- define "hopper.checkPostgres" -}}
+{{- $mode := .Values.postgres.mode -}}
+{{- if not (has $mode (list "bundled" "cloudnativepg")) }}{{ fail (printf "postgres.mode (%q) must be bundled or cloudnativepg" $mode) }}{{- end -}}
+{{- if eq $mode "cloudnativepg" -}}
+{{- $c := .Values.postgres.cloudnativepg -}}
+{{- $n := $c.instances | int -}}{{- $s := $c.synchronousStandbys | int -}}
+{{- if lt $n 2 }}{{ fail (printf "postgres.cloudnativepg.instances (%d) must be at least 2: one instance has nothing to fail over to" $n) }}{{- end -}}
+{{- if lt $s 0 }}{{ fail (printf "postgres.cloudnativepg.synchronousStandbys (%d) must be 0 or more" $s) }}{{- end -}}
+{{- if and (gt $s 0) (lt $n (add $s 2 | int)) }}{{ fail (printf "postgres.cloudnativepg.instances (%d) must be at least synchronousStandbys + 2 = %d, or after a failover every commit waits for the lost instance to return" $n (add $s 2 | int)) }}{{- end -}}
+{{- end -}}
+{{- end }}

@@ -8,6 +8,12 @@ image:
 # A development PostgreSQL: one replica, no replication, no backups. Its volume
 # outlives `helm uninstall`.
 postgres:
+  # bundled: a development PostgreSQL, one StatefulSet replica with no
+  # replication and no backups (the settings below). cloudnativepg: a
+  # replicated CloudNativePG Cluster named <release>-db (postgres.cloudnativepg),
+  # which needs the operator (scripts/kind-cnpg.sh). The two share no data:
+  # changing an installed release's mode starts from an empty database.
+  mode: bundled
   image: postgres:16-alpine
   user: hopper
   database: hopper
@@ -23,6 +29,19 @@ postgres:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 512Mi}
+  cloudnativepg:
+    image: ghcr.io/cloudnative-pg/postgresql:16.16-standard-bookworm
+    instances: 3
+    # Standbys that must have flushed a commit before it returns, any of the
+    # others. 0 is asynchronous replication: a failover can then lose commits
+    # that were acknowledged (docs/semantics.md §1). Above 0, instances must
+    # be at least this plus 2, so that a failover leaves enough standbys for
+    # commits to keep returning.
+    synchronousStandbys: 1
+    storage: 1Gi
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 512Mi}
 
 broker:
   image: ghcr.io/rpasco787/hopper-broker

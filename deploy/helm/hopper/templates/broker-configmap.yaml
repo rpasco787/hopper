@@ -7,7 +7,7 @@ metadata:
 data:
   # No password here: the broker reads it from the Secret as PGPASSWORD, which
   # pgx uses for any connection string that does not carry one.
-  HOPPER_DSN: {{ printf "postgres://%s@%s-postgres:5432/%s?sslmode=disable" .Values.postgres.user (include "hopper.fullname" .) .Values.postgres.database | quote }}
+  HOPPER_DSN: {{ printf "postgres://%s@%s:5432/%s?sslmode=disable" .Values.postgres.user (include "hopper.databaseHost" .) .Values.postgres.database | quote }}
   HOPPER_LISTEN: ":9090"
   HOPPER_METRICS_LISTEN: ":9091"
   HOPPER_METRICS_QUEUES: {{ join "," .Values.broker.metricsQueues | quote }}

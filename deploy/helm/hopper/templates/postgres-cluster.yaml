@@ -1,0 +1,34 @@
+{{- if eq .Values.postgres.mode "cloudnativepg" }}
+{{- $c := .Values.postgres.cloudnativepg }}
+# A replicated PostgreSQL run by the CloudNativePG operator. Brokers reach the
+# primary through <name>-rw, which the operator moves on failover.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "hopper.fullname" . }}-db
+  labels:
+    {{- include "hopper.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  instances: {{ $c.instances }}
+  imageName: {{ $c.image }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgres.database | quote }}
+      owner: {{ .Values.postgres.user | quote }}
+      secret:
+        name: {{ include "hopper.fullname" . }}-postgres
+  {{- if gt ($c.synchronousStandbys | int) 0 }}
+  # A commit returns only after this many standbys have flushed it, so a
+  # failover to the most advanced standby keeps every acknowledged commit.
+  # required: with too few standbys, commits wait rather than go asynchronous.
+  postgresql:
+    synchronous:
+      method: any
+      number: {{ $c.synchronousStandbys }}
+      dataDurability: required
+  {{- end }}
+  storage:
+    size: {{ $c.storage }}
+  resources:
+    {{- toYaml $c.resources | nindent 4 }}
+{{- end }}

@@ -297,7 +297,7 @@ func TestSelectorsNeverIncludeChangingLabels(t *testing.T) {
 
 func TestPasswordLivesOnlyInTheSecret(t *testing.T) {
 	const canary = "canary-7f3a"
-	for _, extra := range [][]string{nil, {"--namespace", "hopper", "-f", kindAutoscaling}} {
+	for _, extra := range [][]string{nil, {"--namespace", "hopper", "-f", kindAutoscaling}, {"--set", "postgres.mode=cloudnativepg"}} {
 		objects := render(t, append([]string{"--set", "postgres.password=" + canary}, extra...)...)
 		secret := object(t, objects, "Secret/hopper-postgres")
 		require.Equal(t, canary, dig(secret, "stringData", "password"))
@@ -710,4 +710,62 @@ func TestWorkersDialEveryBrokerThroughAHeadlessService(t *testing.T) {
 	require.Nil(t, dig(svc, "spec", "publishNotReadyAddresses"), "DNS must return only ready brokers")
 	require.Equal(t, "hopper-broker-headless:9090",
 		dig(object(t, objects, "ConfigMap/hopper-worker"), "data", "HOPPER_BROKER"))
+}
+
+// cloudnativepg renders the chart with the replicated database.
+func cloudnativepg(t *testing.T, args ...string) map[string]map[string]any {
+	t.Helper()
+	return render(t, append([]string{"--set", "postgres.mode=cloudnativepg"}, args...)...)
+}
+
+func TestCloudNativePGReplacesTheBundledDatabase(t *testing.T) {
+	bundled := render(t)
+	require.NotContains(t, bundled, "Cluster/hopper-db", "the bundled database is the default")
+	require.Equal(t, "Opaque", object(t, bundled, "Secret/hopper-postgres")["type"])
+
+	objects := cloudnativepg(t)
+	for _, key := range []string{"StatefulSet/hopper-postgres", "Service/hopper-postgres"} {
+		require.NotContains(t, objects, key)
+	}
+	cl := object(t, objects, "Cluster/hopper-db")
+	require.Equal(t, "postgresql.cnpg.io/v1", cl["apiVersion"])
+	require.EqualValues(t, 3, dig(cl, "spec", "instances"))
+	require.Equal(t, map[string]any{"method": "any", "number": 1, "dataDurability": "required"},
+		dig(cl, "spec", "postgresql", "synchronous"))
+	require.Equal(t, map[string]any{"database": "hopper", "owner": "hopper",
+		"secret": map[string]any{"name": "hopper-postgres"}}, dig(cl, "spec", "bootstrap", "initdb"))
+
+	// One password, in the chart's Secret, in the shape the operator reads.
+	secret := object(t, objects, "Secret/hopper-postgres")
+	require.Equal(t, "kubernetes.io/basic-auth", secret["type"])
+	require.Equal(t, "hopper", dig(secret, "stringData", "username"))
+
+	dsn := dig(object(t, objects, "ConfigMap/hopper-broker"), "data", "HOPPER_DSN").(string)
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	require.Equal(t, "hopper-db-rw:5432", u.Host, "brokers follow the primary through the read-write Service")
+	broker := container(t, podSpec(t, object(t, objects, "Deployment/hopper-broker")), "broker")
+	require.Equal(t, map[string]any{"name": "hopper-postgres", "key": "password"},
+		dig(env(broker)["PGPASSWORD"], "valueFrom", "secretKeyRef"))
+}
+
+func TestAsynchronousReplicationIsExplicit(t *testing.T) {
+	cl := object(t, cloudnativepg(t, "--set", "postgres.cloudnativepg.synchronousStandbys=0"), "Cluster/hopper-db")
+	require.Nil(t, dig(cl, "spec", "postgresql", "synchronous"))
+}
+
+func TestChartRejectsUnsafeReplication(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--set", "postgres.mode=replicated"}, "postgres.mode"},
+		{[]string{"--set", "postgres.mode=cloudnativepg", "--set", "postgres.cloudnativepg.instances=1"}, "at least 2"},
+		{[]string{"--set", "postgres.mode=cloudnativepg", "--set", "postgres.cloudnativepg.instances=2"}, "synchronousStandbys + 2"},
+		{[]string{"--set", "postgres.mode=cloudnativepg", "--set", "postgres.cloudnativepg.synchronousStandbys=-1"}, "0 or more"},
+	} {
+		_, stderr, err := helmTemplate(tc.args...)
+		require.Error(t, err, "%v rendered", tc.args)
+		require.Contains(t, stderr, tc.want, "%v", tc.args)
+	}
 }
