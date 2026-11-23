@@ -404,8 +404,9 @@ func TestReconcileReturnsUnspentCreditExactlyOnce(t *testing.T) {
 	s := &session{pool: pool, log: quietLogger()}
 
 	require.Equal(t, 4, pool.takeAll())
-	s.reserve(4)
-	require.True(t, s.spend(), "one delivery arrived against the credit")
+	s.reserve(4, time.Now())
+	_, ok := s.spend()
+	require.True(t, ok, "one delivery arrived against the credit")
 
 	s.reconcile()
 	require.Equal(t, 3, len(pool.free), "the delivery's own token is returned by its runner, not by reconcile")
@@ -417,9 +418,86 @@ func TestReconcileReturnsUnspentCreditExactlyOnce(t *testing.T) {
 
 func TestSpendRefusesCreditItDoesNotHave(t *testing.T) {
 	s := &session{pool: newCapacity(1, quietLogger()), log: quietLogger()}
-	s.reserve(1)
-	require.True(t, s.spend())
-	require.False(t, s.spend(), "a delivery past the credit is a protocol violation, not a token")
+	s.reserve(1, time.Now())
+	_, ok := s.spend()
+	require.True(t, ok)
+	_, ok = s.spend()
+	require.False(t, ok, "a delivery past the credit is a protocol violation, not a token")
+}
+
+// TestCreditIsMatchedToDeliveriesOldestFirst: across partial credit, each
+// delivery is matched to the oldest unit not yet matched
+// (docs/design/credit-anchored-freshness.md). A unit reserved but never sent
+// carries no instant.
+func TestCreditIsMatchedToDeliveriesOldestFirst(t *testing.T) {
+	s := &session{pool: newCapacity(4, quietLogger()), log: quietLogger()}
+	t0 := time.Now()
+	t1 := t0.Add(time.Second)
+	s.reserve(2, t0)
+	s.reserve(1, t1)
+	s.reserve(1, time.Time{}) // the drain path: reserved, never sent
+
+	for i, want := range []time.Time{t0, t0, t1, {}} {
+		got, ok := s.spend()
+		require.Truef(t, ok, "delivery %d", i)
+		require.Truef(t, got.Equal(want), "delivery %d matched to %v, want %v", i, got, want)
+	}
+	_, ok := s.spend()
+	require.False(t, ok, "a delivery past the credit is still refused")
+}
+
+// TestReconcileForgetsTheSendInstants: credit a stream will never spend takes
+// its instants with it.
+func TestReconcileForgetsTheSendInstants(t *testing.T) {
+	s := &session{pool: newCapacity(2, quietLogger()), log: quietLogger()}
+	require.Equal(t, 2, s.pool.takeAll())
+	s.reserve(2, time.Now())
+	s.reconcile()
+	_, ok := s.spend()
+	require.False(t, ok, "nothing is left to match after reconcile")
+}
+
+// TestAReconnectResetsTheCreditAccounting: each stream matches deliveries
+// only to its own credit. Credit left unspent on a stream that ended is not
+// carried over, so the first delivery on the next stream is matched to that
+// stream's subscription, sent after the old one ended.
+func TestAReconnectResetsTheCreditAccounting(t *testing.T) {
+	ctx := waitCtx(t)
+	f := startFake(t)
+	sp := newSpy(t, false)
+
+	breakFirst := make(chan struct{})
+	var once sync.Once
+	f.set(func() {
+		f.onLease = func(ctx context.Context, s *fakeStream) error {
+			first := false
+			once.Do(func() { first = true })
+			if first {
+				select {
+				case <-breakFirst:
+					return status.Error(codes.Unavailable, "broker draining")
+				case <-ctx.Done():
+					return status.FromContextError(ctx.Err()).Err()
+				}
+			}
+			return s.idle(ctx)
+		}
+	})
+
+	w := newTestWorker(t, f.addr, Options{Concurrency: 2}, sp.run, "q")
+	r := runWorker(t, w)
+	f.awaitStream(t, ctx) // its credit of 2 is never spent
+	ended := time.Now()
+	close(breakFirst)
+
+	s2 := f.awaitStream(t, ctx)
+	require.Equal(t, uint32(2), s2.sub.GetCredit(), "the old stream's unspent credit came back")
+	require.NoError(t, s2.deliver(ctx, newFixture("q").proto()))
+	d := sp.await(t, ctx)
+	require.Truef(t, d.creditSentAt.After(ended),
+		"matched to the new stream's credit, not the old one's (sent %s after the old stream ended)",
+		d.creditSentAt.Sub(ended))
+	require.NoError(t, r.stopAndWait(t))
 }
 
 func TestParseDeliveryRejectsMalformedRows(t *testing.T) {

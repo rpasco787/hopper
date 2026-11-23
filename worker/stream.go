@@ -85,12 +85,18 @@ type delivery struct {
 	// grant is lease_expires - leased_at: how long the broker gave this
 	// delivery. It is clock-skew independent because both instants come from
 	// the same database clock. It is *not* the time remaining at receipt —
-	// nothing in the message can say that — which is why the SDK confirms
-	// ownership with a heartbeat before starting a handler.
+	// nothing in the message can say that — which is why the SDK either
+	// matches the delivery to the credit that bought it or confirms ownership
+	// with a heartbeat before starting a handler.
 	grant time.Duration
 	// receivedAt is the local monotonic instant this delivery was read off the
 	// stream. Acquisition is budgeted from here.
 	receivedAt time.Time
+	// creditSentAt is the local monotonic instant the credit unit this
+	// delivery was matched to was handed to the transport; zero if that unit
+	// was never sent. The broker leased this row after receiving that unit
+	// (docs/design/credit-anchored-freshness.md).
+	creditSentAt time.Time
 	// handler is nil when nothing is registered for this queue. Such a job is
 	// nacked unstarted rather than dropped.
 	handler HandlerFunc
@@ -108,6 +114,13 @@ func (d *delivery) acquisitionBudget() time.Time {
 // Worker so tests can substitute a controlled runner without a fake broker
 // having to stage a whole execution.
 type deliveryRunner func(lc *lifecycle, wk *work, rpc hopperv1.HopperServiceClient, d *delivery)
+
+// creditSend is n units of credit and the instant just before the message
+// carrying them was handed to Send; zero for units reserved but never sent.
+type creditSend struct {
+	at time.Time
+	n  int
+}
 
 // session is one lease stream and its accounting. A new stream is a new
 // session; deliveries from the old one keep running and keep their tokens.
@@ -127,6 +140,10 @@ type session struct {
 	outstanding int
 	delivered   int
 	reconciled  bool
+	// sends holds, oldest first, the send instant of every unit of credit
+	// reserved on this stream and not yet matched to a delivery. It always
+	// totals outstanding.
+	sends []creditSend
 }
 
 // run holds one stream until it ends, then returns the reason.
@@ -148,7 +165,7 @@ func (s *session) run() error {
 	// minus the handlers still running from the previous stream, whose leases
 	// this new stream does not revoke.
 	initial := s.pool.takeAll()
-	s.reserve(initial)
+	s.reserve(initial, time.Now())
 	sub := &hopperv1.Subscription{
 		Queues:   s.w.queues(),
 		WorkerId: s.w.opts.ID,
@@ -229,7 +246,8 @@ func (s *session) read() error {
 // It never makes a network call: the reader must stay free to observe the next
 // message, including the EOF that ends the stream.
 func (s *session) accept(p *hopperv1.Job) error {
-	if !s.spend() {
+	sentAt, ok := s.spend()
+	if !ok {
 		return fmt.Errorf("%w: job %q arrived with no credit outstanding", errOverDelivery, p.GetId())
 	}
 	d, err := parseDelivery(p)
@@ -241,6 +259,7 @@ func (s *session) accept(p *hopperv1.Job) error {
 		s.pool.release()
 		return nil
 	}
+	d.creditSentAt = sentAt
 	d.handler = s.w.handlers[d.job.Queue]
 	s.dispatch(d)
 	return nil
@@ -279,7 +298,7 @@ func (s *session) write(ctx context.Context) error {
 		// more work: check drain again now that we hold them.
 		select {
 		case <-s.lc.drainSignal:
-			s.reserve(taken)
+			s.reserve(taken, time.Time{}) // never sent
 			return s.halfClose()
 		default:
 		}
@@ -288,7 +307,7 @@ func (s *session) write(ctx context.Context) error {
 		// answers it, the accounting is already there; if it fails, the
 		// reservation stays and teardown returns it exactly once. Refunding
 		// here as well would hand the pool a token it still holds.
-		s.reserve(taken)
+		s.reserve(taken, time.Now())
 		if err := s.stream.Send(&hopperv1.LeaseJobsRequest{
 			Msg: &hopperv1.LeaseJobsRequest_Credit{Credit: uint32(taken)},
 		}); err != nil {
@@ -304,25 +323,35 @@ func (s *session) halfClose() error {
 	return nil
 }
 
-func (s *session) reserve(n int) {
+// reserve adds n units of outstanding credit, sent at at. Callers take at
+// immediately before the Send that carries them, so it can never be later
+// than the broker's receipt; units that will never be sent pass the zero time.
+func (s *session) reserve(n int, at time.Time) {
 	if n == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.outstanding += n
+	s.sends = append(s.sends, creditSend{at: at, n: n})
 }
 
-// spend accounts one arriving delivery against outstanding credit.
-func (s *session) spend() bool {
+// spend accounts one arriving delivery against outstanding credit and returns
+// the send instant of the unit it is matched to: the oldest not yet matched.
+func (s *session) spend() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.outstanding == 0 {
-		return false
+		return time.Time{}, false
 	}
 	s.outstanding--
 	s.delivered++
-	return true
+	head := &s.sends[0]
+	at := head.at
+	if head.n--; head.n == 0 {
+		s.sends = s.sends[1:]
+	}
+	return at, true
 }
 
 func (s *session) deliveryCount() int {
@@ -344,6 +373,7 @@ func (s *session) reconcile() {
 	s.reconciled = true
 	n := s.outstanding
 	s.outstanding = 0
+	s.sends = nil
 	s.mu.Unlock()
 
 	for range n {

@@ -61,7 +61,7 @@ func TestMalformedDeliveryLogsRawLeaseID(t *testing.T) {
 	pool := newCapacity(1, logger)
 	require.Equal(t, 1, pool.takeAll())
 	s := &session{pool: pool, log: logger}
-	s.reserve(1)
+	s.reserve(1, time.Now())
 	job := newFixture("q").proto()
 	badLeaseID := "not-a-uuid"
 	job.LeaseId = &badLeaseID
