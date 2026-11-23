@@ -1,0 +1,7 @@
+# Layered over replicated.yaml for the contrast proof: the same Cluster, with
+# no standby confirming commits.
+#
+#   scripts/kind-up.sh -f deploy/kind/replicated.yaml -f deploy/kind/asynchronous.yaml --timeout 10m
+postgres:
+  cloudnativepg:
+    synchronousStandbys: 0

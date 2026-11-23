@@ -769,3 +769,19 @@ func TestChartRejectsUnsafeReplication(t *testing.T) {
 		require.Contains(t, stderr, tc.want, "%v", tc.args)
 	}
 }
+
+// The values files the failover proofs install.
+const (
+	kindReplicated   = "../../deploy/kind/replicated.yaml"
+	kindAsynchronous = "../../deploy/kind/asynchronous.yaml"
+)
+
+func TestTheFailoverProofsValuesRender(t *testing.T) {
+	sync := render(t, "-f", kindReplicated)
+	require.EqualValues(t, 1, dig(object(t, sync, "Cluster/hopper-db"), "spec", "postgresql", "synchronous", "number"))
+	cron := dig(object(t, sync, "ConfigMap/hopper-broker-cron"), "data", "schedules.json").(string)
+	require.Contains(t, cron, `"name": "failover-tick"`, "test/k8s follows this schedule's tick")
+
+	async := render(t, "-f", kindReplicated, "-f", kindAsynchronous)
+	require.Nil(t, dig(object(t, async, "Cluster/hopper-db"), "spec", "postgresql", "synchronous"))
+}

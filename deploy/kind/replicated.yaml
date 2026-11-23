@@ -1,0 +1,16 @@
+# The failover proofs' release (test/k8s): a CloudNativePG Cluster of three
+# instances with one synchronous standby, three workers, and a one-second
+# cron schedule whose pending tick the proofs follow across the crash.
+# Needs the operator:
+#
+#   scripts/kind-cnpg.sh
+#   scripts/kind-up.sh -f deploy/kind/replicated.yaml --timeout 10m
+postgres:
+  mode: cloudnativepg
+  cloudnativepg:
+    synchronousStandbys: 1
+worker:
+  replicas: 3
+broker:
+  cronSchedules:
+    - {name: failover-tick, queue: sleep, cron: "@every 1s", payload: {ms: 10}}
