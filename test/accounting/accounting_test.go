@@ -320,6 +320,7 @@ func TestAnAckedLeaseThatRanAgainIsALostAck(t *testing.T) {
 			logOf(t, "w2", append([]string{workerStarting}, ran(id, second)...)...),
 		})
 	requireProblem(t, rep.AttemptProblems(), "was acked, yet the job ran again")
+	require.Equal(t, accounting.CauseAcked, rep.Repeats[0].Cause, "named, and still a problem")
 }
 
 func TestARepeatNothingExplainsIsAProblem(t *testing.T) {

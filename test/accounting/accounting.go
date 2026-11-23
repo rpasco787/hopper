@@ -170,6 +170,11 @@ const (
 	// came first. A lease the reaper took back while its process still ran,
 	// and that a later kill merely ended, is not explained by the kill.
 	CauseKilled = "killed"
+	// CauseAcked: the worker logged this lease's ack confirmed, yet the job
+	// ran again. Only a lost commit explains it, which synchronous
+	// replication rules out, so AttemptProblems still reports it; the cause
+	// lets a run where commits may be lost count it.
+	CauseAcked = "acked"
 )
 
 // Report is the reconciliation of one run.
@@ -362,6 +367,7 @@ func (rep *Report) judgeLeases(r Row, started []string, leases map[leaseKey]*lea
 			StartedAt: ls.startedAt, NextStartedAt: nextStart(r.ID, ls.startedAt, started, leases)}
 		switch {
 		case ls.acked:
+			rp.Cause = CauseAcked
 			rep.leaseProblems = append(rep.leaseProblems, fmt.Sprintf(
 				"job %s: lease %s was acked, yet the job ran again and completed under lease %s", r.ID, lease, final))
 		case ls.nacked:
