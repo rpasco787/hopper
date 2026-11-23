@@ -3,14 +3,42 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rpasco787/hopper/internal/store"
 )
 
 var _ store.BatchConfirmer = (*Store)(nil)
+
+// batchAcquireTimeout bounds how long a batch statement waits for its
+// connection: for one to come free, or for a dial to answer. A batch's flight
+// is shared, so without it a dial to a database that has gone would hold every
+// call queued behind it for the 5 s connect timeout, the worker's own attempt
+// deadline, instead of answering them UNAVAILABLE
+// (docs/design/confirmation-batching.md, docs/semantics.md §11.3). Nothing has
+// been sent when it fires, so the retry is plainly safe.
+const batchAcquireTimeout = time.Second
+
+// errNoConnection marks a batch that got no connection within the bound.
+// unavailable reports it as the database's absence.
+var errNoConnection = errors.New("no connection within the batch's acquire bound")
+
+// acquireForBatch acquires a connection within batchAcquireTimeout. The
+// caller's own deadline or cancellation, if it comes first, is returned as it
+// is: it belongs to the caller.
+func (s *Store) acquireForBatch(ctx context.Context) (*pgxpool.Conn, error) {
+	actx, cancel := context.WithTimeoutCause(ctx, batchAcquireTimeout, errNoConnection)
+	defer cancel()
+	conn, err := s.pool.Acquire(actx)
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(actx), errNoConnection) {
+		return nil, fmt.Errorf("%w: %w", errNoConnection, err)
+	}
+	return conn, err
+}
 
 // ackManySQL is AckMany's statement: $1 job ids and $2 lease ids, paired by
 // position. It is Ack's guarded UPDATE (docs/semantics.md §5) for every pair
@@ -51,7 +79,12 @@ func (s *Store) AckMany(ctx context.Context, refs []store.LeaseRef) []error {
 		return errs
 	}
 	ids, leases := pairs(refs)
-	rows, err := s.pool.Query(ctx, ackManySQL, ids, leases)
+	conn, err := s.acquireForBatch(ctx)
+	if err != nil {
+		return fill(errs, wrap("ack many", err))
+	}
+	defer conn.Release()
+	rows, err := conn.Query(ctx, ackManySQL, ids, leases)
 	if err != nil {
 		return fill(errs, wrap("ack many", err))
 	}
@@ -157,7 +190,12 @@ func (s *Store) ExtendLeaseMany(ctx context.Context, exts []store.Extension) []e
 	if len(ids) == 0 {
 		return errs
 	}
-	rows, err := s.pool.Query(ctx, extendManySQL, ids, leases, durs)
+	conn, err := s.acquireForBatch(ctx)
+	if err != nil {
+		return fill(errs, wrap("extend lease many", err))
+	}
+	defer conn.Release()
+	rows, err := conn.Query(ctx, extendManySQL, ids, leases, durs)
 	if err != nil {
 		return fill(errs, wrap("extend lease many", err))
 	}

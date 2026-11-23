@@ -37,6 +37,8 @@ func wrap(op string, err error) error {
 //     before it takes effect).
 //   - A transport failure on an open connection: a network error, EOF, or a
 //     connection pgx has already closed.
+//   - A batch that got no connection within its acquire bound
+//     (errNoConnection). Nothing was sent.
 //
 // Cancellation and deadlines are not unavailability: they belong to the
 // caller, and the broker reports them as such. Everything else — a constraint,
@@ -45,6 +47,11 @@ func wrap(op string, err error) error {
 func unavailable(err error) bool {
 	if err == nil {
 		return false
+	}
+	// Before the cancellation check below: the bound's error also wraps
+	// context.DeadlineExceeded.
+	if errors.Is(err, errNoConnection) {
+		return true
 	}
 	var connect *pgconn.ConnectError
 	if errors.As(err, &connect) {
