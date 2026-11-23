@@ -11,9 +11,11 @@ renew their leases by heartbeat.
 - **At-least-once delivery.** A job is never lost once `Enqueue` returns and is
   never held by two workers at once. It can be redelivered after a lease
   expires, so handlers must be idempotent. The promise holds across a
-  PostgreSQL primary crash with synchronous replication (5 of 5 on kind, see
-  [Replicated PostgreSQL](#replicated-postgresql)), with one window,
-  [docs/semantics.md §11 item 7](docs/semantics.md#11-where-duplicates-come-from-the-honest-list).
+  PostgreSQL primary crash with synchronous replication (5 of 5 on
+  kind, and 3 of 3 with the standbys paused 3 s first; see
+  [Replicated PostgreSQL](#replicated-postgresql)). A retry is answered only
+  once a standby has what it found
+  ([docs/semantics.md §11 item 7](docs/semantics.md#11-where-duplicates-come-from-the-honest-list)).
 - **Stateless, replicated brokers** in front of PostgreSQL: one development instance, or a replicated CloudNativePG Cluster.
 - **Retries, dead-lettering, priorities, delayed jobs and idempotency keys.**
 - **Cron schedules**, run by one leader-elected broker with no double-fires
@@ -493,8 +495,7 @@ failover loses acknowledged jobs ([docs/semantics.md §1](docs/semantics.md#1-gu
 On kind, crashing the primary under 200 enqueues a second lost no acknowledged
 job in 5 of 5 runs (31,355 acknowledged), with producers answered again about
 19.5 s later; the same crash under asynchronous replication, with replication
-paused 3 s first, lost 652 to 694 jobs a run. The one window synchronous
-replication leaves is §11 item 7. Per-run tables: [docs/failover/summary.md](docs/failover/summary.md).
+paused 3 s first, lost 652 to 694 jobs a run. Paused 3 s first, the synchronous crash lost nothing in 3 of 3 runs once retries waited for a standby (§11 item 7; [docs/failover/cancelled-wait/summary.md](docs/failover/cancelled-wait/summary.md)). Per-run tables: [docs/failover/summary.md](docs/failover/summary.md).
 
 ### Autoscaling
 

@@ -1,0 +1,226 @@
+[
+  {
+    "at": "2026-11-23T01:47:07.638509-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 4,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:07.638548-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 1,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:07.943331-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 8,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:07.943358-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 5,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:08.278232-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 9,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:08.278221-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 5,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:08.661028-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 4,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:08.660994-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:08.983895-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:08.983921-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 3,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:09.311226-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:09.311198-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:09.623796-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:09.623795-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.038346849
+  },
+  {
+    "at": "2026-11-23T01:47:09.93869-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:09.93863-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:10.260697-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:10.260693-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:10.58184-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:10.581816-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:10.914944-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 142.357016817
+  },
+  {
+    "at": "2026-11-23T01:47:10.914945-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 6,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:11.231544-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 7,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:11.231497-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 156.528312321
+  },
+  {
+    "at": "2026-11-23T01:47:11.527736-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 7,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:11.527736-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 156.528312321
+  },
+  {
+    "at": "2026-11-23T01:47:11.856469-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 156.528312321
+  },
+  {
+    "at": "2026-11-23T01:47:11.856466-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 7,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:12.162113-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 7,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  },
+  {
+    "at": "2026-11-23T01:47:12.16209-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 16,
+    "empty_acquire_wait_seconds_total": 156.528312321
+  },
+  {
+    "at": "2026-11-23T01:47:12.47825-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-kh729",
+    "max_connections": 16,
+    "acquired": 1,
+    "empty_acquire_wait_seconds_total": 156.528312321
+  },
+  {
+    "at": "2026-11-23T01:47:12.47825-08:00",
+    "pod": "hopper-broker-7d9ffc8cdb-j4bmc",
+    "max_connections": 16,
+    "acquired": 0,
+    "empty_acquire_wait_seconds_total": 27.057591308
+  }
+]

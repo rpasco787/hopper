@@ -1,0 +1,12 @@
+b1 throughput: after 5,685 (4,577-6,244) vs before 5,602 (4,692-6,399)  n=5/5  1.015x  no measurable effect
+b1 commits_per_job: after 0.44 (0.44-0.45) vs before 0.45 (0.44-0.45)  n=5/5  1.023x  no measurable effect
+drain-b1-w8-c8-p1-1f128c5-20261123T011725 
+drain-b1-w8-c8-p1-1f128c5-20261123T012002 
+drain-b1-w8-c8-p1-1f128c5-20261123T012052 
+drain-b1-w8-c8-p1-1f128c5-20261123T012314 
+drain-b1-w8-c8-p1-1f128c5-20261123T012403 
+drain-b1-w8-c8-p1-a3fcbda-20261123T011821 
+drain-b1-w8-c8-p1-a3fcbda-20261123T011912 
+drain-b1-w8-c8-p1-a3fcbda-20261123T012139 
+drain-b1-w8-c8-p1-a3fcbda-20261123T012226 
+drain-b1-w8-c8-p1-a3fcbda-20261123T012449 

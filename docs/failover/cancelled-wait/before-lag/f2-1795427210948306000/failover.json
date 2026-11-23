@@ -1,0 +1,57 @@
+{
+  "run": "f2-1795427210948306000",
+  "broker_image": "ghcr.io/rpasco787/hopper-broker:dev-1795427057",
+  "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")",
+  "replication_paused_for": "3s",
+  "old_primary": "hopper-db-1",
+  "new_primary": "hopper-db-2",
+  "promoted_after_s": 18.075060541,
+  "routed_after_s": 18.394875416,
+  "first_failed_enqueue_after_s": 0.089974875,
+  "first_acknowledged_enqueue_after_s": 19.838679833,
+  "acknowledged_while_paused": 9,
+  "of_which_deduplicated": 9,
+  "acknowledged": 6418,
+  "lost_acknowledged": 9,
+  "lost_answered_only_as_deduplicated": 9,
+  "lost_answered_from_s": -1.055698875,
+  "lost_answered_to_s": -1.018122959,
+  "answers_that_found_their_job": 32,
+  "failed_enqueues_by_code": {
+    "DeadlineExceeded": 183,
+    "Unavailable": 73
+  },
+  "jobs": 6409,
+  "completed": 6409,
+  "repeated_starts_by_cause": {},
+  "attempt_problems": 0,
+  "broker_unavailable_by_rpc": {
+    "Ack": 25,
+    "Enqueue": 73,
+    "Heartbeat": 12,
+    "LeaseJobs": 18
+  },
+  "broker_internal_by_rpc": {},
+  "brokers": 2,
+  "listeners_reconnected": 2,
+  "scheduler_terms_won": 1,
+  "pending_tick_jobs": 1,
+  "later_ticks": 4,
+  "old_primary_logged_a_shutdown": false,
+  "old_primary_cancelled_sync_waits": 16,
+  "new_primary_cancelled_sync_waits": 24,
+  "new_primary_seen_without_standby": true,
+  "first_standby_after_s": 24.757080166,
+  "new_primary_synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")",
+  "answered_without_standby": 14,
+  "of_which_deduplicated_without_standby": 14,
+  "confirmed_without_standby": 0,
+  "pool_full_share_while_paused": {
+    "hopper-broker-7d9ffc8cdb-j4bmc": 0,
+    "hopper-broker-7d9ffc8cdb-kh729": 1
+  },
+  "pool_acquire_wait_s_while_paused": {
+    "hopper-broker-7d9ffc8cdb-j4bmc": 0.01924445899999938,
+    "hopper-broker-7d9ffc8cdb-kh729": 14.171295504
+  }
+}

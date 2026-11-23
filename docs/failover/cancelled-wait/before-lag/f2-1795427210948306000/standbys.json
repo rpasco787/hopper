@@ -1,0 +1,828 @@
+[
+  {
+    "at": "2026-11-23T01:47:12.600629-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:12.600647-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:13.141463-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:13.141537-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:13.645052-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:13.645059-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.054378-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.054446-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.439564-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.439565-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.815385-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:14.815399-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.19317-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.193214-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.542339-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.542353-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.914459-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:15.914466-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:16.274053-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:16.274089-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:16.643229-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:16.643246-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.045517-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.045531-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.438194-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.438204-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.924645-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:17.924667-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:18.437731-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:18.437781-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:18.826029-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:18.826072-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:19.247737-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:19.247795-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:19.667437-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:19.667448-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.046249-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.046268-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.423705-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.423709-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.885191-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:20.885194-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:21.29182-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:21.291908-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:21.682197-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:21.682207-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.062399-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.062402-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.437048-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.437195-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.852765-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:22.852778-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.231778-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.231785-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.606168-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.606183-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.968562-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:23.968564-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:24.354-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:24.354012-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:24.724426-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:24.72443-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.090354-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.090364-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.506796-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.506811-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.895954-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:25.895962-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:26.253476-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:26.253494-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:26.701987-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:26.702012-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.097478-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.097486-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.526276-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.526288-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.891445-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:27.89147-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:28.309724-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:28.309744-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:28.760971-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:28.760979-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.135258-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.135393-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.517184-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.517191-08:00",
+    "pod": "hopper-db-2",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.937675-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:29.937711-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-2\",\"hopper-db-3\",\"hopper-db-1\")"
+  },
+  {
+    "at": "2026-11-23T01:47:30.410692-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:30.410787-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:30.858016-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:30.85866-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:31.305834-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:31.305834-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:31.760196-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:31.760275-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:32.167289-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:32.167291-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:32.554133-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:32.556429-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.061045-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.061063-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.550106-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.55018-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.980034-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:33.980045-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:34.493379-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:34.493385-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:34.865897-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:34.865933-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:35.304118-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:35.30414-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:35.955132-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:35.955181-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:36.423086-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:36.42309-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:36.987262-08:00",
+    "pod": "hopper-db-3",
+    "primary": false,
+    "sync": 0,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  },
+  {
+    "at": "2026-11-23T01:47:36.98729-08:00",
+    "pod": "hopper-db-2",
+    "primary": true,
+    "sync": 1,
+    "synchronous_standby_names": "ANY 1 (\"hopper-db-3\",\"hopper-db-1\",\"hopper-db-2\")"
+  }
+]

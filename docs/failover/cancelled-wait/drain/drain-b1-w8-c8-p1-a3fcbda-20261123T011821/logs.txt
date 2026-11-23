@@ -1,0 +1,73 @@
+broker-1    | {"time":"2026-11-23T09:18:25.019467632Z","level":"INFO","msg":"metrics queues","count":3}
+broker-1    | {"time":"2026-11-23T09:18:25.027266965Z","level":"WARN","msg":"listening beyond loopback: the API is plaintext and unauthenticated, so anyone who can connect can read and mutate every job, including lease tokens","addr":"0.0.0.0:9090"}
+broker-1    | {"time":"2026-11-23T09:18:25.027359382Z","level":"INFO","msg":"confirmation batching on","batch":64,"flights":2}
+broker-1    | {"time":"2026-11-23T09:18:25.028198424Z","level":"INFO","msg":"scheduler configured","enabled":false,"interval":"5s","definitions":2}
+broker-1    | {"time":"2026-11-23T09:18:25.02825159Z","level":"INFO","msg":"metrics listening","addr":"[::]:9091"}
+postgres-1  | The files belonging to this database system will be owned by user "postgres".
+postgres-1  | This user must also own the server process.
+postgres-1  | 
+postgres-1  | The database cluster will be initialized with locale "en_US.utf8".
+postgres-1  | The default database encoding has accordingly been set to "UTF8".
+broker-1    | {"time":"2026-11-23T09:18:25.02873834Z","level":"WARN","msg":"debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect","addr":"[::]:6060"}
+broker-1    | {"time":"2026-11-23T09:18:25.028754757Z","level":"INFO","msg":"broker listening","addr":"[::]:9090","lease_duration":"30s","reaper_interval":"1s","retention":"24h0m0s","db_max_conns":16,"lease_stream_max_age":"5m0s","max_connection_age":"5m0s"}
+broker-1    | {"time":"2026-11-23T09:18:46.050377669Z","level":"INFO","msg":"lease stream opened","worker_id":"2146e716eaeb-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:46.404502295Z","level":"INFO","msg":"lease stream opened","worker_id":"1e027dcc6903-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:46.607470378Z","level":"INFO","msg":"lease stream opened","worker_id":"cfffed608b97-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:46.999969837Z","level":"INFO","msg":"lease stream opened","worker_id":"4ac08dabbea2-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:47.173641045Z","level":"INFO","msg":"lease stream opened","worker_id":"0a3aa432a463-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:47.391532837Z","level":"INFO","msg":"lease stream opened","worker_id":"0472c13ef60c-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:47.708559129Z","level":"INFO","msg":"lease stream opened","worker_id":"71ab72404e20-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+broker-1    | {"time":"2026-11-23T09:18:48.05121317Z","level":"INFO","msg":"lease stream opened","worker_id":"cbffd858e24d-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+postgres-1  | The default text search configuration will be set to "english".
+postgres-1  | 
+postgres-1  | Data page checksums are disabled.
+postgres-1  | 
+postgres-1  | fixing permissions on existing directory /var/lib/postgresql/data ... ok
+postgres-1  | creating subdirectories ... ok
+postgres-1  | selecting dynamic shared memory implementation ... posix
+postgres-1  | selecting default max_connections ... 100
+postgres-1  | selecting default shared_buffers ... 128MB
+postgres-1  | selecting default time zone ... UTC
+postgres-1  | creating configuration files ... ok
+postgres-1  | running bootstrap script ... ok
+postgres-1  | sh: locale: not found
+postgres-1  | 2026-11-23 09:18:23.571 UTC [34] WARNING:  no usable system locales were found
+postgres-1  | performing post-bootstrap initialization ... ok
+postgres-1  | initdb: warning: enabling "trust" authentication for local connections
+postgres-1  | initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+postgres-1  | syncing data to disk ... ok
+postgres-1  | 
+postgres-1  | 
+postgres-1  | Success. You can now start the database server using:
+postgres-1  | 
+postgres-1  |     pg_ctl -D /var/lib/postgresql/data -l logfile start
+postgres-1  | 
+postgres-1  | waiting for server to start....2026-11-23 09:18:23.897 UTC [40] LOG:  starting PostgreSQL 16.16 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+postgres-1  | 2026-11-23 09:18:23.897 UTC [40] LOG:  listening on Unix socket "/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2026-11-23 09:18:23.900 UTC [43] LOG:  database system was shut down at 2026-11-23 09:18:23 UTC
+postgres-1  | 2026-11-23 09:18:23.905 UTC [40] LOG:  database system is ready to accept connections
+postgres-1  |  done
+postgres-1  | server started
+postgres-1  | CREATE DATABASE
+postgres-1  | 
+postgres-1  | 
+postgres-1  | /usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*
+postgres-1  | 
+postgres-1  | waiting for server to shut down...2026-11-23 09:18:24.032 UTC [40] LOG:  received fast shutdown request
+postgres-1  | .2026-11-23 09:18:24.033 UTC [40] LOG:  aborting any active transactions
+postgres-1  | 2026-11-23 09:18:24.036 UTC [40] LOG:  background worker "logical replication launcher" (PID 46) exited with exit code 1
+postgres-1  | 2026-11-23 09:18:24.036 UTC [41] LOG:  shutting down
+postgres-1  | 2026-11-23 09:18:24.037 UTC [41] LOG:  checkpoint starting: shutdown immediate
+postgres-1  | 2026-11-23 09:18:24.065 UTC [41] LOG:  checkpoint complete: wrote 935 buffers (5.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.012 s, sync=0.016 s, total=0.029 s; sync files=301, longest=0.007 s, average=0.001 s; distance=4355 kB, estimate=4355 kB; lsn=0/1949C50, redo lsn=0/1949C50
+postgres-1  | 2026-11-23 09:18:24.070 UTC [40] LOG:  database system is shut down
+postgres-1  |  done
+postgres-1  | server stopped
+postgres-1  | 
+postgres-1  | PostgreSQL init process complete; ready for start up.
+postgres-1  | 
+postgres-1  | 2026-11-23 09:18:24.148 UTC [1] LOG:  starting PostgreSQL 16.16 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+postgres-1  | 2026-11-23 09:18:24.148 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+postgres-1  | 2026-11-23 09:18:24.148 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+postgres-1  | 2026-11-23 09:18:24.149 UTC [1] LOG:  listening on Unix socket "/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2026-11-23 09:18:24.152 UTC [62] LOG:  database system was shut down at 2026-11-23 09:18:24 UTC
+postgres-1  | 2026-11-23 09:18:24.154 UTC [1] LOG:  database system is ready to accept connections

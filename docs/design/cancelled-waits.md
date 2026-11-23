@@ -1,6 +1,6 @@
 # Answers a cancelled synchronous wait can't take back
 
-Status: designed 2026-11-22, before any code (ground rule 1). Read this before
+Status: designed 2026-11-22, before any code (ground rule 1); measured 2026-11-23 (docs/semantics.md §15). Read this before
 `Enqueue`'s `dedupSQL`, `classifyMiss` in `internal/store/postgres/ack.go`, or
 `Cancel`'s classify. The evidence is in `docs/failover/summary.md` and
 `docs/failover/post-promotion-waits.txt`. Results go in `docs/semantics.md` §15.
