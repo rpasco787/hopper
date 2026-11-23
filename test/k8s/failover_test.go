@@ -219,8 +219,8 @@ func failover(t *testing.T, wantSync bool) (failoverResult, accounting.Durabilit
 	res.AttemptProblems = len(rep.AttemptProblems())
 	res.Unavailable, res.Internal = bv.unavailable, bv.internal
 	res.ListenersReconnected, res.SchedulerTermsWon = len(bv.listeners), bv.terms
-	res.ShutdownLogged = strings.Contains(old, "shutdown request")
-	res.CancelledSyncWaits = strings.Count(old, "canceling wait for synchronous replication")
+	res.ShutdownLogged = countSince(old, begun, "shutdown request") > 0
+	res.CancelledSyncWaits = countSince(old, begun, "canceling wait for synchronous replication")
 
 	// Evidence first, so a failed requirement below still leaves it.
 	writeJSON(t, filepath.Join(dir, "failover.json"), res)
@@ -245,6 +245,19 @@ func failover(t *testing.T, wantSync bool) (failoverResult, accounting.Durabilit
 	require.Equal(t, 1, res.PendingTickJobs, "the tick pending at the crash (%s) must fire exactly once", pending)
 	require.Positive(t, res.LaterTicks, "the schedule never advanced past the tick pending at the crash")
 	return res, dur, rep
+}
+
+// TestCountSinceSkipsEarlierRuns needs no cluster: the old primary's log runs
+// from its pod's start, which can be a run ago, when it was promoted.
+func TestCountSinceSkipsEarlierRuns(t *testing.T) {
+	since := time.Date(2026, 11, 23, 6, 41, 15, 0, time.UTC)
+	log := `{"ts":"2026-11-23T06:40:52.882696758Z","record":{"message":"canceling wait for synchronous replication due to user request"}}
+{"ts":"2026-11-23T06:41:30.000000001Z","record":{"message":"canceling wait for synchronous replication due to user request"}}
+{"ts":"2026-11-23T06:41:31Z","record":{"message":"checkpoint starting"}}
+not json, but canceling wait for synchronous replication
+`
+	require.Equal(t, 2, countSince(log, since, "canceling wait for synchronous replication"),
+		"the line before since is an earlier run's; a line with no time can't be placed, so it counts")
 }
 
 // brokerView is what the brokers logged from a time on.
@@ -289,6 +302,26 @@ func readBrokerView(t *testing.T, dir string, since time.Time) brokerView {
 		}
 	}
 	return v
+}
+
+// countSince counts the lines of an instance's log that hold s and were logged
+// at or after since. The old primary's log runs from its pod's start, and the
+// pod may have been promoted in an earlier run, so its lines from before since
+// are that run's. A line with no time can't be placed, so it counts.
+func countSince(log string, since time.Time, s string) int {
+	n := 0
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, s) {
+			continue
+		}
+		var e struct {
+			TS time.Time `json:"ts"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil || !e.TS.Before(since) {
+			n++
+		}
+	}
+	return n
 }
 
 // restarts sums the restart counts of every container in the pods matching
