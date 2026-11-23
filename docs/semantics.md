@@ -17,6 +17,17 @@ across jobs and no exactly-once execution; the latter is a property your handler
 must supply, using the stable job ID (or a stable business ID in the payload) as
 its dedup key. `job.Attempt` is delivery history, not an idempotency key.
 
+**Where "never lost" comes from.** `Enqueue` returns once PostgreSQL has
+committed the row, so the promise lasts as long as the commit does. A single
+PostgreSQL keeps it while its disk survives. A replicated one keeps it across
+a failover only when every commit waits for a synchronous standby before it
+returns, and the failover promotes the standby that received the most WAL.
+The chart's `postgres.mode=cloudnativepg` does both (`synchronousStandbys: 1`).
+Under asynchronous replication a failover can lose commits that were
+acknowledged: enqueued jobs vanish, and acked jobs run again (§11, item 6).
+Synchronous replication leaves one window, a commit whose wait for the standby
+was cancelled (§11, item 7). Measured in §15.
+
 ## 2. Job states
 
 ```
@@ -535,6 +546,41 @@ lease is granted and not acked:
    the SDK Nacks that known-unstarted delivery immediately. Its lease already
    consumed an attempt, so the Nack schedules the normal retry and can move the
    row to `dead` on its final attempt.
+6. **A failover under asynchronous replication.** A commit returns before any
+   standby has it, so the WAL the primary had not yet streamed dies with it.
+   A lost `Enqueue` is a job that no longer exists, although its producer was
+   told it did. A lost `Ack` puts a completed job back to `leased`, so the
+   reaper takes it back and it runs again. A lost lease makes the worker's
+   confirmation `ABORTED`. On kind, a crash with replication keeping up lost
+   0 acknowledged jobs in 3 runs (of 21,175). With replication paused for 3 s
+   first, each run lost everything acknowledged in those 3 s, 652 to 694 jobs
+   a run, and 10 to 22 acked jobs ran again (§15). Use synchronous
+   replication (§1).
+7. **A synchronous wait that was cancelled.** PostgreSQL writes a commit,
+   then waits for the standby, and the transaction stays invisible while it
+   waits. If the wait is cancelled, PostgreSQL keeps the commit and makes it
+   visible with only a warning, though no standby has it. hopper runs every
+   statement under its caller's context, and pgx cancels a statement whose
+   context ends. So when standbys fall behind for longer than a caller's
+   deadline, an `Enqueue` that timed out leaves a row only the primary has.
+   The producer's retry under the same key finds that row and is answered
+   `deduplicated`, and a retried `Ack` is answered as already applied. If the
+   primary is then lost, the acknowledged job is gone, or the acked job runs
+   again. With replication paused 3 s before a crash, 0, 5 and 9 acknowledged
+   jobs a run were lost this way (14 of 19,478 in 3 runs), every one answered
+   only as deduplicated (§15). That is far fewer than the pause's rate would
+   suggest, because the measuring producer is closed-loop: 16 senders with a
+   2 s call deadline cancel at most 16 waits per deadline. An open-loop
+   producer could lose more.
+
+   The window also opens after every promotion, with no pause. The new primary
+   has no synchronous standby attached for a few seconds, so commits wait,
+   callers' 2 s deadlines cancel those waits, and the rows become visible on
+   the new primary only. Ten unpaused promotions logged 0 to 43 such waits
+   (mostly `INSERT`), all within 6.3 s of the promotion
+   (`docs/failover/post-promotion-waits.txt`). Nothing was lost, because a
+   standby attached before the next crash, but a second fault inside that
+   window would lose acknowledged jobs. Closing it is a separate design (§12).
 
 Worker-facing error text is made valid UTF-8, stripped of NUL bytes, and bounded
 to 4,096 bytes (including its truncation suffix) before logging or persistence
@@ -602,6 +648,21 @@ under a new lease, and `attempts` accounts for every one (§15).
 - **A production database in the Helm chart.** The bundled PostgreSQL is one
   replica with no replication and no backups, a PVC that outlives
   `helm uninstall`, and a default development password.
+  `postgres.mode=cloudnativepg` adds replication and failover through the
+  CloudNativePG operator 1.30.2, still with no backups, no connection
+  pooler, no monitoring and `sslmode=disable`.
+- **A leader whose database session goes silent.** A scheduler leader's
+  `Check` has no deadline of its own. A session that stops answering without
+  being reset (a partition, not a crash) keeps the role, and the server keeps
+  its lock, until TCP gives up, so cron pauses meanwhile. Nothing fires twice.
+  Phase 5 measures it.
+- **Closing the cancelled-wait window (§11, item 7).** Two candidate designs:
+  a deduplicating `Enqueue` and an already-applied confirmation take a
+  transaction ID, so their own commit waits for the standby past the row they
+  read; or a write's commit is never cancelled, so the row stays invisible
+  until a standby has it. The first also covers the window after a promotion,
+  since a retry that reads such a row would wait for the standby that the new
+  primary gains.
 - **Password rotation.** `postgres.password` is bootstrap-only: PostgreSQL
   reads it only when it initializes an empty volume. Changing it later updates
   the Secret but not the database, so brokers fail to authenticate on their
@@ -1248,6 +1309,32 @@ not in this table.
 | With batching on by default (all broker logs announced it), an undisturbed run, a broker restart and a stopped worker lose nothing, and every repeat is attributed | `chaos: TestUndisturbedRunIsClean`, `TestBrokerRestartLosesNothing` (graceful, crash), `TestEnqueueStormDeduplicates`, `TestLeaseStreamAgeOutsStrandNothing`, `TestStreamsSpreadBackAfterABrokerReturns`, `TestKilledWorkersLoseNothing`, `TestAnOutageLongerThanTheLeaseReexecutes` (full suite, `-count=2`, 2026-11-20, 02:37–02:57 UTC) | 2 each | pass in both passes: 0 repeated starts and 0 redelivered jobs undisturbed, after broker restarts and in the age-out and rebalance runs (streams 3/5 and 2/6, 8 s after the broker returned); the storm left 1,000 rows for 1,000 keys (16 and 13 answers in doubt); 10 and 9 worker kills repeated 36 and 32 handler starts, all `killed`; the 40 s outage repeated 12 starts in each pass, all `lost` |
 | A PostgreSQL restart with batching on by default loses no job, repeats no handler, and answers nothing `INTERNAL` | `chaos: TestPostgresRestartLosesNoAck/graceful`, `/crash` (full suite, `-count=2`, 2026-11-20) | 2 each | crash: pass twice (46 and 18 `Ack` plus 15 `Heartbeat` answered `UNAVAILABLE`); graceful: **1 of 2 failed**, 1 passed (39 `UNAVAILABLE`). The failure was the test's check that every gated `Ack` was answered `UNAVAILABLE`: 3,006 of 3,006 jobs completed, 0 repeated starts, 0 `INTERNAL`, but only 10 `Ack` answers, all at the moment of shutdown (§11.3) |
 | That failure is the batcher's shared flight, not the database or the test | `chaos: TestPostgresRestartLosesNoAck/graceful` with `HOPPER_CHAOS_CONFIRM_BATCH` and flights varied (2026-11-20) | 8 per setting | batch 64, 2 flights (default): 3 failed, 5 passed; batch 1: 0 failed; batch 64 with 16 flights: 0 failed (41 to 49 `UNAVAILABLE` answers, or 15 plus 17 `Heartbeat`). With the earlier full-suite run, the default setting failed 4 of 10 |
+| A read-only server's refusals are unavailable, and a write to one takes no effect | `postgres: TestUnavailableClassifiesConnectionFailures`, `TestAReadOnlyServerIsUnavailable` (`-race`) | 1 full suite (2026-11-22) | pass |
+| A connection attempt with no deadline of its own ends at 5 s when the DSN sets none; the DSN's bound wins | `broker: TestPoolConfigBoundsConnectionAttempts`, `TestASilentServerEndsAConnectionAttemptWithNoDeadline` (`-race`) | 1 full suite (2026-11-22) | pass: ended after 5.01 s (the test's own run time, from a rerun with `-v`) |
+| The wakeup listener logs its reconnect at info, with its downtime; the first connect is not a reconnect | `broker: TestTheListenerLogsItsReconnectAtInfo` (`-race`) | 1 full suite (2026-11-22) | pass |
+| Accounting finds acknowledged jobs missing from the rows, by first answer, and names a repeat that followed an acked lease | `accounting: TestEveryAcknowledgedJobPresentIsDurable`, `TestAMissingAcknowledgedJobIsLostAtItsFirstAnswer`, `TestAnAckedLeaseThatRanAgainIsALostAck` (`-race`) | 1 full suite (2026-11-22) | pass |
+| `postgres.mode=cloudnativepg` replaces the bundled database with a three-instance Cluster replicating synchronously to any one standby; brokers use its `-rw` Service; unsafe replication refuses to render; the default renders unchanged | `chart: TestCloudNativePGReplacesTheBundledDatabase`, `TestAsynchronousReplicationIsExplicit`, `TestChartRejectsUnsafeReplication`, `TestTheFailoverProofsValuesRender`, `TestRenderedManifestsAreCurrent` | 1 full suite (2026-11-22) | pass |
+| The chaos suite passes with the failover fixes | `go test -tags chaos -count=1 ./test/chaos` at `7da5f07` | 1 invocation (2026-11-22) | pass: 613.9 s; PostgreSQL restarts answered `UNAVAILABLE` (44 Acks in the graceful case, 52 in the crash case), never `INTERNAL` |
+| A pod delete stops PostgreSQL with a shutdown; SIGKILL through the runtime is a crash | `docs/failover/kill-modes.txt` (CloudNativePG 1.30.2, kind) | 1 each (2026-11-22) | delete: 1 `received smart shutdown request` line; crash: no shutdown line |
+| A primary crash under synchronous replication loses no acknowledged job; every repeat is explained and none follows an ack; brokers answer `UNAVAILABLE`, never `INTERNAL`; every wakeup listener reconnects; a new scheduler term fires the pending tick once | `k8s: TestPrimaryFailoverLosesNothing` (200 enqueues/s, 50 ms jobs, 3 workers, 2 brokers, 3 instances, `ANY 1`) at `12d598e` | 5 (`-count=5`, 2026-11-22) | pass: 31,355 acknowledged, 0 lost; promoted after 17.8–18.2 s, routed after 17.9–18.6 s; producers answered again after 19.3–20.3 s (median 19.5); 149 retries found their job; no repeats, 0 attempt problems, `INTERNAL` empty |
+| The same crash with replication paused 3 s first | `k8s: TestPrimaryFailoverLosesNothing`, `HOPPER_FAILOVER_LAG=3s` at `12d598e` | 3 (2026-11-22) | fails as measured, 2 of 3 runs: 0, 5 and 9 lost a run (14 of 19,478), all answered only as deduplicated; 0 new jobs acknowledged during the pause; 12, 12 and 13 cancelled waits logged, all `INSERT` |
+| A primary crash under asynchronous replication | `k8s: TestAsynchronousFailoverCountsWhatItLoses` at `12d598e` | 3 (2026-11-22) | 0 lost of 21,175 acknowledged; recovered after 19.1–19.8 s |
+| The same with replication paused 3 s first | `k8s: TestAsynchronousFailoverCountsWhatItLoses`, `HOPPER_FAILOVER_LAG=3s` at `ab24dec` | 3 (2026-11-22) | 689, 652 and 694 lost a run (of 657, 633 and 661 acknowledged during the pause); answered from −3.3 to +0.2 s around the crash; 10, 22 and 11 acked deliveries ran again |
+
+The Phase 2 rows are tabulated per run in [failover/summary.md](failover/summary.md).
+After a promotion the new primary has no synchronous standby for a few seconds,
+and 0 to 43 `INSERT` and `UPDATE` waits were cancelled in that window in ten
+unpaused promotions ([failover/post-promotion-waits.txt](failover/post-promotion-waits.txt),
+§11 item 7). Three details of the runs:
+
+- The scheduler fires an `@every 1s` schedule on its 5 s poll, so a run saw
+  2 to 5 later ticks, not one a second.
+- Promotion takes about 18 s, almost all of it the operator's "Waiting for the
+  new primary to notice the promotion request". One paused run promoted in
+  4.3 s; why was not investigated.
+- A producer's retry found its job already there 16 to 43 times per
+  synchronous plain crash (10 to 34 in the paused runs) and 0 times per
+  asynchronous one.
 
 Phase 1b-2 close-out (2026-11-17) reuses the completed runs above, recorded in
 [the verification note](bench/1b/h2-verification.md). At the user's request,

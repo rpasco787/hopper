@@ -1,0 +1,6 @@
+# Task 7 Step 6: a force-delete versus a crictl SIGKILL of the primary's postgres container
+# 2026-11-22 (local; logs are 2026-11-23 06:21-06:23 UTC), kind cluster hopper, CloudNativePG chart 0.29.2 (operator 1.30.2), commit d8dbdb4, image ghcr.io/cloudnative-pg/postgresql:16.16-standard-bookworm
+# delete: kubectl delete pod --grace-period=0 --force on hopper-db-1. crash: crictl stop --timeout 0 on hopper-db-2's postgres container, then the same force-delete.
+delete: 1 shutdown-request lines
+{"level":"info","ts":"2026-11-23T06:21:45.475448213Z","logger":"postgres","msg":"record","logging_pod":"hopper-db-1","record":{"log_time":"2026-11-23 06:21:45.474 UTC","process_id":"29","session_id":"6b03db14.1d","session_line_num":"16","session_start_time":"2026-11-23 06:20:04 UTC","transaction_id":"0","error_severity":"LOG","sql_state_code":"00000","message":"received smart shutdown request","backend_type":"postmaster","query_id":"0"}}
+crash: 0 shutdown-request lines

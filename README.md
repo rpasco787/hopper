@@ -10,8 +10,11 @@ renew their leases by heartbeat.
 
 - **At-least-once delivery.** A job is never lost once `Enqueue` returns and is
   never held by two workers at once. It can be redelivered after a lease
-  expires, so handlers must be idempotent.
-- **Stateless, replicated brokers** in front of a single PostgreSQL.
+  expires, so handlers must be idempotent. The promise holds across a
+  PostgreSQL primary crash with synchronous replication (5 of 5 on kind, see
+  [Replicated PostgreSQL](#replicated-postgresql)), with one window,
+  [docs/semantics.md §11 item 7](docs/semantics.md#11-where-duplicates-come-from-the-honest-list).
+- **Stateless, replicated brokers** in front of PostgreSQL: one development instance, or a replicated CloudNativePG Cluster.
 - **Retries, dead-lettering, priorities, delayed jobs and idempotency keys.**
 - **Cron schedules**, run by one leader-elected broker with no double-fires
   across failover.
@@ -448,6 +451,9 @@ with a reachable broker, a writable database and a worker serving `sleep`.
 | `worker.concurrency` | `8` | Active deliveries per worker |
 | `worker.{preStopSleep,shutdownTimeout,terminationGracePeriod}Seconds` | `5`, `45`, `60` | Shutdown budget (below) |
 | `postgres.password` | `hopper` | **Bootstrap-only.** PostgreSQL applies it only when it initializes an empty volume, and the volume outlives upgrades and `helm uninstall`. A later change reaches the Secret but not the database, and brokers then fail to authenticate. Changing it means deleting the PVC. |
+| `postgres.mode` | `bundled` | `bundled`: one development PostgreSQL. `cloudnativepg`: a replicated CloudNativePG Cluster `<release>-db`; needs the operator (`scripts/kind-cnpg.sh`) |
+| `postgres.cloudnativepg.instances` | `3` | Primary plus standbys; at least `synchronousStandbys + 2` |
+| `postgres.cloudnativepg.synchronousStandbys` | `1` | Standbys that must flush each commit before it returns; `0` is asynchronous, and a failover can then lose acknowledged jobs |
 
 **Shutdown budgets.** Kubernetes counts the grace period from pod deletion, and
 the preStop hook runs inside it, so
@@ -466,6 +472,29 @@ container. Workers have no probes; the SDK reconnects on its own.
 default values and no test hook. Its header gives the commands to apply it into
 a namespace of your choosing. Regenerate it with `scripts/render-k8s.sh`; a
 test fails if it drifts from the chart.
+
+### Replicated PostgreSQL
+
+`postgres.mode=cloudnativepg` replaces the bundled PostgreSQL with a
+three-instance [CloudNativePG](https://cloudnative-pg.io/) Cluster named
+`<release>-db`, replicating synchronously to any one standby, and points the
+brokers at its `-rw` Service. It needs the operator, which `scripts/kind-cnpg.sh`
+installs on the kind cluster (chart 0.29.2, operator 1.30.2):
+
+```bash
+scripts/kind-cnpg.sh
+scripts/kind-up.sh -f deploy/kind/replicated.yaml --timeout 10m
+```
+
+Synchronous replication is the default because a commit that returns before
+any standby has it dies with the primary; with `synchronousStandbys: 0` a
+failover loses acknowledged jobs ([docs/semantics.md §1](docs/semantics.md#1-guarantees-in-one-paragraph)).
+
+On kind, crashing the primary under 200 enqueues a second lost no acknowledged
+job in 5 of 5 runs (31,355 acknowledged), with producers answered again about
+19.5 s later; the same crash under asynchronous replication, with replication
+paused 3 s first, lost 652 to 694 jobs a run. The one window synchronous
+replication leaves is §11 item 7. Per-run tables: [docs/failover/summary.md](docs/failover/summary.md).
 
 ### Autoscaling
 
@@ -677,6 +706,8 @@ its release set up its own way:
 | `TestRolloutRestartDuplicatesNothing` | Restarting three workers mid-run under 1,200 three-second jobs starts no job's handler twice. |
 | `TestAutoscalingRedeliversNothing` | A 20,000-job scale cycle has no duplicate starts and no redeliveries. |
 | `TestUnknownDepthHoldsTheFallback` | With the brokers refused at the database, KEDA holds the fallback. |
+| `TestPrimaryFailoverLosesNothing` | Crashing the CloudNativePG primary under load, with synchronous replication, loses no acknowledged job. With `HOPPER_FAILOVER_LAG=3s` it finds the cancelled-wait window. |
+| `TestAsynchronousFailoverCountsWhatItLoses` | The same crash under asynchronous replication counts the acknowledged jobs it loses. |
 
 ```bash
 # A fixed worker count; --force-conflicts takes it back from the HPA if
@@ -689,6 +720,14 @@ scripts/kind-addons.sh
 scripts/kind-up.sh -f deploy/kind/autoscaling.yaml
 go test -tags k8s -count=1 -timeout 30m -v -run TestAutoscalingRedeliversNothing ./test/k8s
 go test -tags k8s -count=1 -timeout 15m -v -run TestUnknownDepthHoldsTheFallback ./test/k8s
+
+# The failover proofs need the operator and the replicated database.
+# HOPPER_PROOF_DIR must be absolute: go test runs in test/k8s.
+scripts/kind-cnpg.sh
+scripts/kind-up.sh -f deploy/kind/replicated.yaml --timeout 10m
+go test -tags k8s -count=5 -timeout 90m -v -run TestPrimaryFailoverLosesNothing ./test/k8s
+scripts/kind-up.sh -f deploy/kind/replicated.yaml -f deploy/kind/asynchronous.yaml --timeout 10m
+go test -tags k8s -count=3 -timeout 60m -v -run TestAsynchronousFailoverCountsWhatItLoses ./test/k8s
 ```
 
 ## Repository layout
