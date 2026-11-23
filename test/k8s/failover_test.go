@@ -153,16 +153,20 @@ func failover(t *testing.T, wantSync bool) (failoverResult, accounting.Durabilit
 		"the producer never reached 15s of load")
 
 	oldLog := db.follow(st.Primary, filepath.Join(logs, st.Primary+".log"))
+	// The tick pending now is one §13 promises fires once, whoever leads. It is
+	// read before any pause: a tick fired during the pause advances the
+	// schedule on the old primary alone, and under asynchronous replication
+	// that advance dies with it, so the new leader rightly never fires the
+	// tick the old primary had moved on to.
+	var pending time.Time
+	require.NoError(t, pool.QueryRow(bg, `select next_run_at from cron_schedules where name = $1`, failoverTick).Scan(&pending),
+		"the release must declare the %s schedule: %s", failoverTick, install)
 	var paused time.Time
 	if lag > 0 {
 		t.Cleanup(db.pauseReplication(st.Primary, st.Instances-1))
 		paused = time.Now()
 		time.Sleep(lag)
 	}
-	// The tick pending now is one §13 promises fires once, whoever leads.
-	var pending time.Time
-	require.NoError(t, pool.QueryRow(bg, `select next_run_at from cron_schedules where name = $1`, failoverTick).Scan(&pending),
-		"the release must declare the %s schedule: %s", failoverTick, install)
 	require.True(t, oldLog.live(), "the primary's log stream ended before the crash, so it proves nothing about it")
 	crashed := db.crash(st.Primary)
 	newPrimary, promoted, routed := db.awaitPromotion(st.Primary, 3*time.Minute)
