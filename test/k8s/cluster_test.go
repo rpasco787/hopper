@@ -301,12 +301,55 @@ func (cp *capture) ended(pods []string, timeout time.Duration) error {
 	return nil
 }
 
-// snapshot re-reads the whole log of pods that are still running, so a line
-// still in flight on a follow stream when the capture stopped is not lost.
+// snapshot re-reads the log of pods that are still running, so a line still
+// in flight on a follow stream when the capture stopped is not lost. The
+// kubelet serves only a container's current log file, so once it has rotated
+// the file (10 MiB on kind) the re-read starts mid-log. It is merged into the
+// followed capture, never written over it.
 func (cp *capture) snapshot(pods []string) {
 	for _, pod := range pods {
+		path := filepath.Join(cp.dir, pod+".log")
+		followed, err := os.ReadFile(path)
+		if !errors.Is(err, os.ErrNotExist) {
+			require.NoError(cp.c.t, err)
+		}
 		out := cp.c.run("logs", "pod/"+pod)
-		require.NoError(cp.c.t, os.WriteFile(filepath.Join(cp.dir, pod+".log"), []byte(out+"\n"), 0o644))
+		require.NoError(cp.c.t, os.WriteFile(path, mergeLog(followed, []byte(out+"\n")), 0o644))
+	}
+}
+
+// mergeLog returns followed's complete lines, then every line of reread that
+// followed lacks, in reread's order. An unterminated last line in followed was
+// cut off mid-stream, and reread holds it whole. Every log line carries a
+// nanosecond timestamp, so equal lines are the same line.
+func mergeLog(followed, reread []byte) []byte {
+	followed = followed[:bytes.LastIndexByte(followed, '\n')+1]
+	seen := map[string]bool{}
+	for line := range bytes.Lines(followed) {
+		seen[string(line)] = true
+	}
+	out := bytes.Clone(followed)
+	for line := range bytes.Lines(reread) {
+		if len(bytes.TrimSpace(line)) > 0 && !seen[string(line)] {
+			out = append(out, line...)
+		}
+	}
+	return out
+}
+
+// TestMergeLogKeepsWhatARotationHid needs no cluster: a re-read that starts
+// mid-log, because the kubelet rotated the file, must not drop what the
+// follower captured before the rotation, and nothing may appear twice.
+func TestMergeLogKeepsWhatARotationHid(t *testing.T) {
+	for _, tc := range []struct{ name, followed, reread, want string }{
+		{"no rotation, a line in flight", "a\nb\n", "a\nb\nc\n", "a\nb\nc\n"},
+		{"rotated after b", "a\nb\nc\n", "c\nd\n", "a\nb\nc\nd\n"},
+		{"rotated, follow cut mid-line", "a\nb\nc", "c-whole\nd\n", "a\nb\nc-whole\nd\n"},
+		{"nothing followed", "", "a\n", "a\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, string(mergeLog([]byte(tc.followed), []byte(tc.reread))))
+		})
 	}
 }
 
