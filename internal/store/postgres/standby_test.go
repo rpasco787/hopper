@@ -174,3 +174,41 @@ func TestARetriedEnqueueWaitsForTheStandby(t *testing.T) {
 	require.False(t, inserted, "once a standby has the row, the retry finds the first call's job")
 	require.Equal(t, 1, countNow(`select count(*) from jobs where idempotency_key = $1`, key))
 }
+
+// TestARetriedAckWaitsForTheStandby: an Ack's commit waits, its deadline
+// cancels the wait, and the row is completed on the primary alone. The
+// worker's retry must not be answered "already applied" until a standby has
+// the completion, or a crash runs the acked job again.
+func TestARetriedAckWaitsForTheStandby(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	j := leaseOne(t, ctx, s, "q", "w")
+	ack := func(ctx context.Context) error { return s.Ack(ctx, j.ID, *j.LeaseID) }
+	g := ghostStandby(t)
+
+	stillWaiting(t, "the first Ack's commit waits for the standby", ack)
+	require.Eventually(t, func() bool { return stateNow(j.ID) == store.StateCompleted },
+		5*time.Second, 20*time.Millisecond, "the cancelled wait left the row completed on the primary")
+	stillWaiting(t, "the retried Ack was answered as already applied about a completion no standby has", ack)
+
+	g.release()
+	require.NoError(t, ack(ctx), "once a standby has it, the retry is the idempotent re-ack")
+}
+
+// TestARetriedNackWaitsForTheStandby is the same for a Nack, whose
+// already-applied case is the row scheduled under the same lease.
+func TestARetriedNackWaitsForTheStandby(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	j := leaseOne(t, ctx, s, "q", "w")
+	nack := func(ctx context.Context) error { return s.Nack(ctx, j.ID, *j.LeaseID, "boom") }
+	g := ghostStandby(t)
+
+	stillWaiting(t, "the first Nack's commit waits for the standby", nack)
+	require.Eventually(t, func() bool { return stateNow(j.ID) == store.StateScheduled },
+		5*time.Second, 20*time.Millisecond, "the cancelled wait left the row scheduled on the primary")
+	stillWaiting(t, "the retried Nack was answered as already applied about a retry no standby has", nack)
+
+	g.release()
+	require.NoError(t, nack(ctx), "once a standby has it, the retry is the idempotent re-nack")
+}
