@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -586,4 +587,44 @@ func TestOnlyAnEnqueueNoLocalStreamTookIsAnnounced(t *testing.T) {
 	svc.announceIfLeasable(sampleJob("q"), true)
 	require.Eventually(t, func() bool { return announced.Load() == 1 }, 3*time.Second, 5*time.Millisecond,
 		"with no idle stream left here, the other brokers are told")
+}
+
+// A reconnect after a failure is logged at info, with how long the listener
+// was down, so an operator, and the failover proof, can see the brokers came
+// back. The first connect is not a reconnect.
+func TestTheListenerLogsItsReconnectAtInfo(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int64
+	back := make(chan struct{})
+	wakes := &fakeWakeups{
+		announceFn: func(context.Context, []string) error { return nil },
+		listenFn: func(ctx context.Context, wake func(string)) error {
+			wake("")
+			if calls.Add(1) == 1 {
+				return errors.New("connection lost")
+			}
+			close(back)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	logger, buf := captureJSONLogs(slog.LevelInfo)
+	svc := NewService(&fakeStore{}, Config{Wakeups: wakes, Logger: logger})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.RunWakeups(ctx) }()
+	select {
+	case <-back:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the listener never reconnected")
+	}
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	lines := decodeJSONLogs(t, buf) // RunWakeups has returned: nothing writes buf now
+	require.Len(t, logMessages(lines, "wakeup listener stopped; lease streams poll until it reconnects"), 1)
+	reconnected := logMessages(lines, "wakeup listener reconnected")
+	require.Len(t, reconnected, 1, "only the connect after a failure is a reconnect")
+	require.Equal(t, "INFO", reconnected[0]["level"])
+	require.NotEmpty(t, reconnected[0]["down_for"])
 }

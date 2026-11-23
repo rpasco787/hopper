@@ -216,17 +216,30 @@ func (s *Service) announceLoop(ctx context.Context) {
 
 func (s *Service) listenLoop(ctx context.Context) {
 	delay := listenRetryMin
+	// lost is when the listener last went down; zero while it has never
+	// failed or is back. Listen calls wake on this goroutine, so the callback
+	// reads it without a lock.
+	var lost time.Time
 	for {
 		started := time.Now()
 		err := s.cfg.Wakeups.Listen(ctx, func(queue string) {
 			s.wakes.wake(queue)
-			if queue == "" {
-				// Report readiness after the reconnect wake has been delivered.
-				s.cfg.Logger.DebugContext(ctx, "wakeup listener ready")
+			if queue != "" {
+				return
+			}
+			// Report readiness after the reconnect wake has been delivered.
+			s.cfg.Logger.DebugContext(ctx, "wakeup listener ready")
+			if !lost.IsZero() {
+				s.cfg.Logger.InfoContext(ctx, "wakeup listener reconnected",
+					"down_for", time.Since(lost).Round(time.Millisecond).String())
+				lost = time.Time{}
 			}
 		})
 		if ctx.Err() != nil {
 			return
+		}
+		if lost.IsZero() {
+			lost = time.Now()
 		}
 		if time.Since(started) > listenRetryMax {
 			delay = listenRetryMin // it was up for a while: this is a new failure
