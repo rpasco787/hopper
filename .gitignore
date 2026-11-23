@@ -40,3 +40,6 @@ docs/bench/**/broker-cpu.pprof
 
 # Bytecode from importing scripts/bench_summary.py in its tests.
 __pycache__/
+
+# A failover proof's captured logs; failover.json and lost.json are the evidence.
+docs/failover/**/logs/
