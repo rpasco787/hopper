@@ -18,4 +18,10 @@
 // worker-kill run (default 10000 jobs of 100ms), HOPPER_CHAOS_SEED fixes its
 // choice of victims, and HOPPER_CHAOS_LONG_OUTAGE sets how long the
 // longer-than-the-lease outage lasts (default 40s).
+//
+// HOPPER_CONFORMANCE_WORKER runs every test against a named worker image
+// instead of the Go worker built from the tree (scripts/conformance.sh java
+// builds the Java one); worker-image.yaml is merged over the stack for it. The
+// build tag conformance selects the conformance scenarios instead of the chaos
+// tests (docs/design/conformance.md).
 package chaos
