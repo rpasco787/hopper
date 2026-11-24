@@ -67,6 +67,13 @@ class ComposeWorkerSmokeTest {
         JobResult job = client.enqueue(NewJob.builder("sleep").payloadJson("{\"ms\":20000}")
                 .idempotencyKey(prefix + "-cancel").build());
         awaitState(job.id(), JobState.LEASED, Duration.ofSeconds(30));
+        // LEASED is committed before the worker has the delivery, and a delivery on an idle
+        // stream takes the ownership check first. Cancelled now, the check refuses it and the
+        // handler never runs (the first cancel run of 2026-11-23: cancelled 15.7 ms after the
+        // lease, refused 64 ms after it). This test is the running case, so the cancel waits
+        // until the handler has started (24-64 ms on this stack) and lands well before the
+        // first renewal, G/3 = 10 s after the start, which is then what learns of it.
+        Thread.sleep(2_000);
         CancelResult cancelled = client.cancel(job.id());
         assertEquals(JobState.CANCELLED, cancelled.state());
 
