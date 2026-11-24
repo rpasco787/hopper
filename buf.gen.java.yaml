@@ -1,0 +1,20 @@
+version: v2
+# The Java stubs in java/hopper-proto (docs/design/java-worker-sdk.md). This is
+# a separate template from buf.gen.yaml so gen/ is untouched: managed mode sets
+# the Java options here rather than in proto/, whose descriptor the Go code
+# embeds. Run scripts/java-gen.sh, which fetches the two pinned binaries first.
+managed:
+  enabled: true
+  override:
+    - file_option: java_package
+      value: io.github.rpasco787.hopper.proto.v1
+    - file_option: java_multiple_files
+      value: true
+    - file_option: java_outer_classname
+      value: HopperProto
+plugins:
+  - protoc_builtin: java
+    protoc_path: java/.tools/protoc-4.36.2
+    out: java/hopper-proto/src/main/java
+  - local: java/.tools/protoc-gen-grpc-java-1.85.1
+    out: java/hopper-proto/src/main/java

@@ -47,10 +47,16 @@ subprojects {
                 attributes(
                     "Automatic-Module-Name" to "io.github.rpasco787.hopper." +
                         project.name.removePrefix("hopper-").replace('-', '.'),
-                    // No other jar may add classes to these packages, so the
-                    // package-private test seams stay private (Decision D18).
-                    "Sealed" to "true",
                 )
+                // No other jar may add classes to these packages, so the
+                // package-private test seams stay private (Decision D18).
+                // hopper-proto is the exception: its own tests live in its
+                // packages and see its jars through the test fixtures, and a
+                // sealed package can't be defined from two code sources. It
+                // holds no seam D18 protects (Decision D35).
+                if (project.name != "hopper-proto") {
+                    attributes("Sealed" to "true")
+                }
             }
         }
     }
