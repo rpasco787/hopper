@@ -6,6 +6,10 @@
 #
 #   scripts/kind-up.sh --set worker.replicas=3
 #
+# HOPPER_CONFORMANCE_WORKER=java runs the Java example worker as the chart's
+# worker instead of the Go one (docs/design/conformance.md);
+# HOPPER_CONFORMANCE_WORKER_MEMORY sets its memory limit (default 384Mi).
+#
 # Every kubectl and helm call names the kind-hopper context, so this never
 # touches another cluster.
 set -euo pipefail
@@ -35,6 +39,18 @@ for bin in broker worker hopperctl; do
     --build-arg BINARY="$bin" -t "$image" . >/dev/null
   images+=("$image")
 done
+
+# HOPPER_CONFORMANCE_WORKER=java runs the Java example worker as the chart's
+# worker (docs/design/conformance.md): built from java/ under the same tag,
+# set as worker.image, with the memory limit the Compose runs settled on.
+worker_args=()
+if [ "${HOPPER_CONFORMANCE_WORKER:-}" = java ]; then
+  image="ghcr.io/rpasco787/hopper-example-worker:$tag"
+  docker build -q --provenance=false -f java/hopper-example-worker/Dockerfile -t "$image" java >/dev/null
+  images+=("$image")
+  worker_args=(--set worker.image=ghcr.io/rpasco787/hopper-example-worker
+    --set "worker.resources.limits.memory=${HOPPER_CONFORMANCE_WORKER_MEMORY:-384Mi}")
+fi
 kind load docker-image --name "$cluster" "${images[@]}"
 
 kubectl --context "$context" create namespace "$ns" --dry-run=client -o yaml |
@@ -45,6 +61,6 @@ kubectl --context "$context" label namespace "$ns" --overwrite \
 
 helm upgrade --install "$release" deploy/helm/hopper \
   --kube-context "$context" -n "$ns" \
-  --set image.tag="$tag" --wait --timeout 5m "$@"
+  --set image.tag="$tag" --wait --timeout 5m ${worker_args[@]+"${worker_args[@]}"} "$@"
 
 echo "release $release in namespace $ns runs image tag $tag (commit $(git rev-parse --short HEAD)$(git diff --quiet || echo ', dirty'))"
