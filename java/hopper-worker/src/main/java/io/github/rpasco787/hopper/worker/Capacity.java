@@ -16,8 +16,6 @@ import java.util.function.BooleanSupplier;
  * up running more jobs than it said it would.
  */
 final class Capacity {
-    static final String OVER_RELEASED = "worker: released more capacity than exists; this is an SDK bug";
-
     private final int size;
     private final EventLog log;
     private final ReentrantLock lock = new ReentrantLock();
@@ -84,7 +82,7 @@ final class Capacity {
             lock.unlock();
         }
         if (over) {
-            log.log(EventLog.Level.ERROR, OVER_RELEASED, "concurrency", size);
+            log.log(EventLog.Level.ERROR, LogMessages.CAPACITY_OVER_RELEASED, "concurrency", size);
         }
     }
 

@@ -77,7 +77,7 @@ final class CapturingLog implements EventLog {
         }
     }
 
-    static Object render(Object v) {
+    private static Object render(Object v) {
         if (v == null || v instanceof Boolean || v instanceof Integer || v instanceof Long
                 || v instanceof Short || v instanceof Byte || v instanceof Double || v instanceof Float) {
             return v;

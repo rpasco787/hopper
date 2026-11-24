@@ -11,8 +11,8 @@ import java.util.function.DoubleSupplier;
  * reconnect in the same few milliseconds, again and again.
  */
 final class Backoff {
-    static final long BASE_NANOS = 100_000_000L;
-    static final long CAP_NANOS = 5_000_000_000L;
+    private static final long BASE_NANOS = 100_000_000L;
+    private static final long CAP_NANOS = 5_000_000_000L;
     private static final double JITTER_FLOOR = 0.75;
     private static final double JITTER_RANGE = 0.5;
 
