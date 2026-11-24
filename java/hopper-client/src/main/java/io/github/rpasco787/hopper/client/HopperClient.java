@@ -11,7 +11,11 @@ import io.github.rpasco787.hopper.proto.v1.GetJobResponse;
 import io.github.rpasco787.hopper.proto.v1.HopperServiceGrpc;
 import io.github.rpasco787.hopper.proto.v1.Job;
 import io.github.rpasco787.hopper.proto.v1.JobSpec;
+import io.github.rpasco787.hopper.proto.ChannelDefaults;
 import io.grpc.Channel;
+import io.grpc.ChannelCredentials;
+import io.grpc.InsecureChannelCredentials;
+import io.grpc.ManagedChannel;
 import io.grpc.StatusRuntimeException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -44,12 +48,65 @@ public final class HopperClient implements AutoCloseable {
     /** What a call waits when it is not given its own timeout. */
     static final Duration DEFAULT_CALL_TIMEOUT = Duration.ofSeconds(30);
 
+    /** How long close() lets calls in flight finish before cancelling them. */
+    private static final Duration CLOSE_GRACE = Duration.ofSeconds(5);
+
     private final HopperServiceGrpc.HopperServiceBlockingStub stub;
     private final Duration callTimeout;
+    /** The channel this client dialled and must close; null for a wrapped one. */
+    private final ManagedChannel owned;
 
-    private HopperClient(Channel channel, Duration callTimeout) {
+    private HopperClient(Channel channel, Duration callTimeout, ManagedChannel owned) {
         this.stub = HopperServiceGrpc.newBlockingStub(channel);
         this.callTimeout = callTimeout;
+        this.owned = owned;
+    }
+
+    /**
+     * Connects to the brokers {@code target} resolves to, in plaintext, with 30 s calls.
+     * A name that resolves to several addresses gets a connection to each, and unary
+     * calls rotate across them. The connection is lazy: this does not fail because the
+     * broker is down, the first call does, which is what you want in a producer that
+     * starts before its broker does. The client owns the channel; {@link #close()} shuts it down.
+     */
+    public static HopperClient connect(String target) {
+        return builder(target).build();
+    }
+
+    /** Options for a client that dials its own channel. */
+    public static Builder builder(String target) {
+        return new Builder(target);
+    }
+
+    public static final class Builder {
+        private final String target;
+        private ChannelCredentials credentials = InsecureChannelCredentials.create();
+        private Duration callTimeout = DEFAULT_CALL_TIMEOUT;
+
+        private Builder(String target) {
+            this.target = Objects.requireNonNull(target, "target");
+        }
+
+        /**
+         * Replaces the plaintext default (the broker is a trusted-network prototype that
+         * serves plaintext), for example with {@code TlsChannelCredentials.create()}.
+         */
+        public Builder credentials(ChannelCredentials credentials) {
+            this.credentials = Objects.requireNonNull(credentials, "credentials");
+            return this;
+        }
+
+        /** What a call waits when it is not given its own timeout. Default 30 s. */
+        public Builder callTimeout(Duration callTimeout) {
+            this.callTimeout = requirePositive(callTimeout);
+            return this;
+        }
+
+        /** Dials the target with {@link ChannelDefaults}. */
+        public HopperClient build() {
+            ManagedChannel channel = ChannelDefaults.open(target, credentials, b -> {});
+            return new HopperClient(channel, callTimeout, channel);
+        }
     }
 
     /**
@@ -63,7 +120,7 @@ public final class HopperClient implements AutoCloseable {
     /** As {@link #wrap(Channel)}, with {@code callTimeout} for calls that are not given their own. */
     public static HopperClient wrap(Channel channel, Duration callTimeout) {
         Objects.requireNonNull(channel, "channel");
-        return new HopperClient(channel, requirePositive(callTimeout));
+        return new HopperClient(channel, requirePositive(callTimeout), null);
     }
 
     private static Duration requirePositive(Duration timeout) {
@@ -190,7 +247,26 @@ public final class HopperClient implements AutoCloseable {
         return new JobResult(id, JobState.fromProto(job.getState()), deduplicated);
     }
 
-    /** Leaves the channel open: this client was made with {@link #wrap(Channel)}, and the caller owns it. */
+    /**
+     * Shuts down the channel this client dialled: it stops accepting calls, waits up to
+     * 5 s for those in flight, then cancels them. Does nothing for a client made with
+     * {@link #wrap(Channel)}, whose channel belongs to the caller. If the thread is
+     * interrupted while waiting, the in-flight calls are cancelled at once and the
+     * interrupt is kept.
+     */
     @Override
-    public void close() {}
+    public void close() {
+        if (owned == null) {
+            return;
+        }
+        owned.shutdown();
+        try {
+            if (!owned.awaitTermination(CLOSE_GRACE.toNanos(), TimeUnit.NANOSECONDS)) {
+                owned.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            owned.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }
