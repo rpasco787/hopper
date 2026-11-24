@@ -149,7 +149,14 @@ func (l *lifecycle) enforceDeadline(deadline time.Time) {
 		l.mu.Unlock()
 
 		l.force(ErrShuttingDown)
-		l.log.Warn("shutdown deadline reached", "counts", snap)
+		// The four counts by name, as "shutdown started" names its two and the
+		// Java SDK names all four (docs/semantics.md §11 item 4). counts has
+		// only unexported fields, which slog's JSON handler would render {}.
+		l.log.Warn("shutdown deadline reached",
+			"active_deliveries", snap.deliveries,
+			"running_handlers", snap.handlers,
+			"acquiring", snap.acquiring,
+			"confirming", snap.confirming)
 	case <-l.forceCtx.Done():
 	}
 }

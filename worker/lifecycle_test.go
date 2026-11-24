@@ -1,8 +1,11 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -189,6 +192,78 @@ func TestAwaitReportsAbandonmentWithSeparateCounts(t *testing.T) {
 	running.end()
 	confirming.end()
 	require.Equal(t, counts{}, lc.counts())
+}
+
+// lockedWriter collects log output written from the lifecycle's own
+// goroutines.
+type lockedWriter struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedWriter) lines() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.Split(strings.TrimSpace(w.b.String()), "\n")
+}
+
+// TestTheDeadlineLineNamesTheFourCounts: the line the deadline logs names what
+// it abandoned, under the keys "shutdown started" uses and the Java SDK logs
+// (docs/semantics.md §11 item 4), so a run can be judged from its log alone.
+// counts has unexported fields only, which slog's JSON handler renders {}.
+func TestTheDeadlineLineNamesTheFourCounts(t *testing.T) {
+	out := &lockedWriter{}
+	lc := newLifecycle(context.Background(), 50*time.Millisecond, slog.New(slog.NewJSONHandler(out, nil)))
+	t.Cleanup(lc.stop)
+
+	acquiring := lc.begin()
+	running := lc.begin()
+	require.True(t, running.acceptHandler())
+	confirming := lc.begin()
+	require.True(t, confirming.acceptHandler())
+	confirming.confirming()
+	require.ErrorIs(t, lc.await(), ErrAbandoned)
+
+	type deadlineLine struct {
+		Msg        string          `json:"msg"`
+		Active     *int            `json:"active_deliveries"`
+		Running    *int            `json:"running_handlers"`
+		Acquiring  *int            `json:"acquiring"`
+		Confirming *int            `json:"confirming"`
+		Counts     json.RawMessage `json:"counts"`
+	}
+	var got deadlineLine
+	// await can return on the force signal a moment before the line is written.
+	require.Eventually(t, func() bool {
+		for _, raw := range out.lines() {
+			var l deadlineLine
+			if json.Unmarshal([]byte(raw), &l) == nil && l.Msg == "shutdown deadline reached" {
+				got = l
+				return true
+			}
+		}
+		return false
+	}, barrier, 10*time.Millisecond, "no shutdown deadline reached line")
+
+	for name, v := range map[string]*int{"active_deliveries": got.Active, "running_handlers": got.Running,
+		"acquiring": got.Acquiring, "confirming": got.Confirming} {
+		require.NotNil(t, v, "the deadline line names %s", name)
+	}
+	require.Equal(t, 3, *got.Active)
+	require.Equal(t, 1, *got.Running)
+	require.Equal(t, 1, *got.Acquiring)
+	require.Equal(t, 1, *got.Confirming)
+	require.Nil(t, got.Counts, "the counts are named, not nested")
+
+	acquiring.end()
+	running.end()
+	confirming.end()
 }
 
 func TestAcceptHandlerLosesToDrain(t *testing.T) {
