@@ -123,7 +123,7 @@ func confirmAfterFailedRenewal(t *testing.T, ackOutage time.Duration) (msgs []st
 		}
 	})
 	sink := &logSink{}
-	r, s := runHandler(t, ctx, f, Options{Logger: slog.New(sink), ShutdownTimeout: 10 * time.Second}, "q",
+	r, s := runHandler(t, ctx, f, Options{Logger: slog.New(sink), ShutdownTimeout: 10 * time.Second, checkEveryDelivery: true}, "q",
 		func(hctx context.Context, _ Job) error {
 			select {
 			case <-time.After(1500 * time.Millisecond):
