@@ -52,6 +52,8 @@ public final class HopperWorker {
     private final EventLog log;
     private final Map<String, JobHandler> handlers;
     private final DeliveryRunner runner;
+    private final WorkerObserver observer;
+    private final boolean checkEveryDelivery;
     private final TimeSource timeSource;
     private final Duration healthySession;
 
@@ -72,9 +74,9 @@ public final class HopperWorker {
         EventLog base = b.log != null ? b.log : new JsonLinesLog(System.err, EventLog.Level.INFO);
         this.log = base.with("worker_id", workerId);
         this.handlers = Map.copyOf(b.handlers);
-        this.runner = b.runner != null ? b.runner : (lc, wk, ch, d) -> {
-            throw new UnsupportedOperationException("worker: the real delivery runner arrives in Task 17");
-        };
+        this.runner = b.runner; // null: the real execution, made in consume() once the clock exists
+        this.observer = b.observer;
+        this.checkEveryDelivery = b.checkEveryDelivery;
         this.timeSource = b.timeSource;
         this.healthySession = b.healthySession;
     }
@@ -222,7 +224,8 @@ public final class HopperWorker {
     /** Opens session after session until the drain or a permanent code; returns that code's status. */
     private Status sessions(Lifecycle lc, TimeSource time, ManagedChannel channel, Capacity capacity,
                             Runnable onInterrupt) {
-        Session.Config config = new Session.Config(queues(), workerId, leaseDuration, handlers, runner);
+        DeliveryRunner r = runner != null ? runner : new Execution(log, observer, checkEveryDelivery, time);
+        Session.Config config = new Session.Config(queues(), workerId, leaseDuration, handlers, r);
         Backoff backoff = new Backoff();
         Pause pause = new Pause(lc, time);
         while (!lc.isDraining()) {
@@ -347,6 +350,8 @@ public final class HopperWorker {
         private EventLog log;
         private final Map<String, JobHandler> handlers = new TreeMap<>();
         private DeliveryRunner runner;
+        private WorkerObserver observer;
+        private boolean checkEveryDelivery;
         private TimeSource timeSource;
         private Duration healthySession = DEFAULT_HEALTHY_SESSION;
 
@@ -388,6 +393,12 @@ public final class HopperWorker {
             return this;
         }
 
+        /** Receives handler lifecycle events, synchronously on each delivery's thread. Default: none. */
+        public Builder observer(WorkerObserver observer) {
+            this.observer = Objects.requireNonNull(observer, "worker: observer");
+            return this;
+        }
+
         /** The transport credentials for a channel the worker dials; plaintext by default. */
         public Builder credentials(ChannelCredentials c) {
             this.credentials = Objects.requireNonNull(c, "worker: credentials");
@@ -412,6 +423,16 @@ public final class HopperWorker {
                 throw new IllegalArgumentException("worker: queue " + quote(queue) + " already has a handler");
             }
             handlers.put(queue, handler);
+            return this;
+        }
+
+        /**
+         * Test seam (Decision D18): every delivery takes the ownership check, as if none were
+         * fresh. Tests that pin the check itself set it. Package-private and the jar is sealed,
+         * so nothing outside this package can reach it: no public option skips the start rule.
+         */
+        Builder checkEveryDelivery(boolean on) {
+            this.checkEveryDelivery = on;
             return this;
         }
 

@@ -15,7 +15,6 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -165,7 +164,6 @@ class WindowTest {
      * returned only 1.4s before the outage ended.
      */
     @Test
-    @Disabled("Task 17")
     void aConfirmationHasOnlyWhatIsLeftOfTheLease() throws Exception {
         Outcome o = confirmAfterFailedRenewal(Duration.ofMillis(2900));
         long now = System.nanoTime();
@@ -177,7 +175,6 @@ class WindowTest {
 
     /** The same delivery, with an outage that ends at 1.7s, before the deadline: a retry lands after it and the job is confirmed. */
     @Test
-    @Disabled("Task 17")
     void aLateConfirmationStillLandsBeforeTheDeadline() throws Exception {
         Outcome o = confirmAfterFailedRenewal(Duration.ofMillis(1700));
         assertEquals(1, o.acked());

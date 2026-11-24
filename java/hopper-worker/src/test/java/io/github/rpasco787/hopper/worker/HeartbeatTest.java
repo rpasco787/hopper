@@ -303,14 +303,32 @@ class HeartbeatTest {
     void theFirstRenewalIsAThirdOfTheGrantAfterStart() throws Exception {
         var time = new ManualTimeSource(START);
         try (var fake = FakeBroker.start(); var x = new HeartbeatHarness(fake, Duration.ofSeconds(3), time)) {
+            // The manual instant each Heartbeat reached the broker: a renewal's RPC runs on its
+            // own thread, so a count read right after advance() could miss one still in flight.
+            List<Long> arrived = new CopyOnWriteArrayList<>();
+            fake.onHeartbeat((req, ctx) -> arrived.add(time.nanoTime()));
             assertEquals(Optional.empty(), x.h.acquire(x.d.acquisitionBudget()));
-            time.jump(Duration.ofMillis(500)); // between the check and the handler's start
+            time.jump(Duration.ofMillis(500)); // between receipt and the check, and the handler's start
+            long start = time.nanoTime();
             x.h.start();
             time.awaitTimers(2, BARRIER);
-            time.advance(Duration.ofSeconds(1).minusNanos(1));
+            // G/3 after receipt is 500 ms after start: stop the clock there, and give a renewal
+            // that wrongly fired a moment of wall time to reach the broker (Go's own tests check
+            // absence the same way).
+            time.advance(Duration.ofMillis(500));
+            Thread.sleep(200);
+            assertEquals(List.of(arrived.get(0)), arrived, "no renewal G/3 after receipt");
+            time.advance(Duration.ofMillis(500).minusNanos(1));
             assertEquals(1, fake.started("Heartbeat"), "no renewal before G/3 after start");
             time.advance(Duration.ofNanos(1));
-            fake.awaitCalls("Heartbeat", 2, BARRIER);
+            // started() counts a call before its hook runs, so wait for the hook's own record.
+            long until = System.nanoTime() + BARRIER.toNanos();
+            while (arrived.size() < 2) {
+                assertTrue(System.nanoTime() < until, "the first renewal never reached the broker");
+                Thread.sleep(1);
+            }
+            assertEquals(start + Duration.ofSeconds(1).toNanos(), arrived.get(1),
+                    "the first renewal is sent exactly G/3 after start(), not after receipt");
         }
     }
 

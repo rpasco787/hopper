@@ -17,7 +17,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -195,7 +194,6 @@ class ReconnectTest {
     }
 
     @Test
-    @Disabled("Task 17: needs the real runner, which confirms")
     void reconnectCountsAConfirmationAsActiveDelivery() throws Exception {
         try (var fake = FakeBroker.start(); var breakFirst = new Gate(); var releaseAck = new Gate()) {
             breakFirstStream(fake, breakFirst);
