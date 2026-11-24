@@ -378,6 +378,55 @@ func (c *conf) summarize(e accounting.Expect, ev accounting.Evidence) string {
 	return s
 }
 
+// openDeliveries is how many deliveries the container's current process has
+// open by its log.
+func (c *conf) openDeliveries(name string) int {
+	c.t.Helper()
+	ctx, cancel := c.within(logsLimit)
+	defer cancel()
+	out, _, err := c.streams(ctx, name)
+	require.NoError(c.t, err, "logs of %s", name)
+	l, err := accounting.Parse(name, bytes.NewReader(out))
+	require.NoError(c.t, err)
+	return accounting.OpenDeliveries(l)
+}
+
+// startedJobs is how many of the run's jobs some worker has logged "job
+// started" for. It never fails the test, so an eventually condition can call it.
+func (c *conf) startedJobs(run string) int {
+	ctx, cancel := c.within(dbLimit)
+	rs, err := c.db.Query(ctx, `select id from jobs where idempotency_key like $1 || '-%'`, run)
+	if err != nil {
+		cancel()
+		return 0
+	}
+	ids := map[string]bool{}
+	for rs.Next() {
+		var id uuid.UUID
+		if rs.Scan(&id) == nil {
+			ids[id.String()] = true
+		}
+	}
+	rs.Close()
+	cancel()
+	started := map[string]bool{}
+	for _, w := range c.workerNames() {
+		lctx, lcancel := c.within(logsLimit)
+		out, _, err := c.streams(lctx, w)
+		lcancel()
+		if err != nil {
+			continue
+		}
+		l, _ := accounting.Parse(w, bytes.NewReader(out))
+		for _, line := range l.Lines {
+			if line.Msg == msgJobStarted && ids[line.JobID] {
+				started[line.JobID] = true
+			}
+		}
+	}
+	return len(started)
+}
+
 // busiest is the container of service with the most deliveries open now.
 func (c *conf) busiest(service string) string {
 	c.t.Helper()
