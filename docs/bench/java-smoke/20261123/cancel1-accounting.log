@@ -1,0 +1,10 @@
+=== RUN   TestJavaWorkerStopsACancelledJobAtItsFirstRenewal
+    javalog_test.go:86: 
+        	Error Trace:	/Users/ryanpascual/Documents/Docs/hopper/test/accounting/javalog_test.go:86
+        	Error:      	Should be false
+        	Test:       	TestJavaWorkerStopsACancelledJobAtItsFirstRenewal
+        	Messages:   	the handler never started
+--- FAIL: TestJavaWorkerStopsACancelledJobAtItsFirstRenewal (0.00s)
+FAIL
+FAIL	github.com/rpasco787/hopper/test/accounting	0.189s
+FAIL

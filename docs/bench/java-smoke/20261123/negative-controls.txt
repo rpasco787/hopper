@@ -1,0 +1,19 @@
+== no-start
+        	Error:      	Should be empty, but was [job 01a20c51-e907-7293-8e12-bdab635f12d0: completed, but no worker logged its start; the log capture is incomplete]
+--- FAIL: TestJavaWorkerLog (0.00s)
+FAIL	github.com/rpasco787/hopper/test/accounting	0.190s
+== non-json
+        	Error:      	Should be zero, but was 1
+        	Messages:   	every line the Java worker printed must be a JSON record
+--- FAIL: TestJavaWorkerLog (0.00s)
+FAIL	github.com/rpasco787/hopper/test/accounting	0.181s
+== no-nack-confirm
+        	Error:      	Should be empty, but was [job 01a20c51-9079-7afe-b05d-c7ff8b92202b: lease 4041aef5-b66c-4776-b855-e1a73a9a443f started on java-worker process 1, and no kill, nack or record of losing it explains the job running again]
+--- FAIL: TestJavaWorkerLog (0.00s)
+FAIL	github.com/rpasco787/hopper/test/accounting	0.186s
+== no-confirm
+--- PASS: TestJavaWorkerLog (0.00s)
+ok  	github.com/rpasco787/hopper/test/accounting	0.184s
+== no-ack-confirm-undisturbed
+--- PASS: TestJavaWorkerLog (0.00s)
+ok  	github.com/rpasco787/hopper/test/accounting	0.177s

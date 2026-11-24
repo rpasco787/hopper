@@ -1,0 +1,5 @@
+=== RUN   TestJavaWorkerLog
+    javalog_test.go:39: jobs 400, completed 400, processes 2, redelivered 0, restarted 0, unstarted nacks 0, repeats 0, shutdowns [{Pod:java-worker RunningHandlers:4 Stopped:true DeadlineReached:false}]
+--- PASS: TestJavaWorkerLog (0.00s)
+PASS
+ok  	github.com/rpasco787/hopper/test/accounting	0.179s

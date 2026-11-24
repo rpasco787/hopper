@@ -223,6 +223,45 @@ Ack/Nack confirmation, so `Concurrency` bounds all of it.
 `worker.Options.Observer` to receive handler start and finish events, as
 `cmd/worker` does for its Prometheus metrics.
 
+### Java (preview)
+
+`java/` holds a Java 25 producer client and worker SDK, with an example worker
+that serves `cmd/worker`'s three queues. Build and test it with
+`cd java && ./gradlew build`; build the example worker's image with
+`docker build -t hopper-example-worker:dev -f java/hopper-example-worker/Dockerfile java`.
+
+```java
+try (HopperClient client = HopperClient.connect("127.0.0.1:9090")) {
+    JobResult job = client.enqueue(NewJob.builder("send_email")
+            .payloadJson("{\"to\":\"a@example.com\"}")
+            .idempotencyKey("welcome-42").build());
+}
+```
+
+```java
+HopperWorker worker = HopperWorker.builder("127.0.0.1:9090")
+        .workerId("email-worker-1")
+        .concurrency(8)
+        .handle("send_email", ctx -> sendEmailOnce(ctx.job().id(), ctx.job().payloadUtf8()))
+        .build();
+Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+    worker.shutdown(); // SIGTERM: begin the drain, and hold the JVM until it ends
+    try { worker.awaitTermination(Duration.ofSeconds(35)); } catch (InterruptedException e) { }
+}));
+worker.run(); // blocks until the drain ends; throws WorkerFailedException
+```
+
+A hook that only called `shutdown()` would return at once, and the JVM would
+exit mid-drain. A JVM ended by a signal also exits 143 after its hooks; the
+example worker's `Main` halts with `cmd/worker`'s codes instead (0 after a clean
+drain, 1 otherwise).
+
+The Java SDK applies the same start rule and writes the same log contract as
+the Go SDK, and `test/accounting` judges its logs unchanged; see
+[docs/design/java-worker-sdk.md](docs/design/java-worker-sdk.md) and
+[docs/design/java-producer-client.md](docs/design/java-producer-client.md).
+Conformance against the Go SDK (Phase 3c) is still to come.
+
 ## Cron schedules
 
 Schedules are declared in a JSON file passed as `-cron-file`

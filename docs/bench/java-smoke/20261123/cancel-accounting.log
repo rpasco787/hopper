@@ -1,0 +1,5 @@
+=== RUN   TestJavaWorkerStopsACancelledJobAtItsFirstRenewal
+    javalog_test.go:89: stopped 10.04991663s after the handler started (G/3 = 10s)
+--- PASS: TestJavaWorkerStopsACancelledJobAtItsFirstRenewal (0.00s)
+PASS
+ok  	github.com/rpasco787/hopper/test/accounting	0.223s

@@ -386,3 +386,123 @@ and bounded to 4,096 bytes, `… (truncated)` included.
   being unsafe by design.
 - **Java options in proto/.** They would change the descriptor gen/ embeds;
   buf.gen.java.yaml's managed mode sets them instead.
+
+## Results (2026-11-23)
+
+Measured on branch `phase-3-java`; the plan is
+docs/plans/2026-11-23-phase-3a-3b.md. Nothing below claims a run that wasn't
+made.
+
+**Test counts** (each module's last run; every count is `failed=0`,
+`skipped=0`, and javac `-Xlint:all -Werror` reports no warning):
+
+| Module | Tests | Of which |
+|---|---|---|
+| `hopper-proto` | 20 | the stubs, the channel defaults, and `FakeBrokerTest`: 13 of worker/transport_test.go's tests of the fake, ported to where the fake now lives |
+| `hopper-client` | 38 | ports of client/client_test.go and the 3a note's code table, plus `compose`-tagged smoke tests run only by scripts/java-smoke.sh |
+| `hopper-worker` | 187 | 181 test methods (parameterized ones run several times). 102 methods port 94 of the Go SDK's 110 tests: 89 by name in lowerCamelCase, 3 renamed for Java's trigger (`callerShutdownBeginsDrain`, `drainListenersRunOnce`, `buildRejectsConfigurationBeforeDialing`), and `TestLeaseTransitions` and `TestSanitizeError` split into their 5 subtests each. 79 methods are Java-only (the stamp before `onNext`, interrupt hygiene, pauses, `Error` against `Exception`, the manual clock). Not ported: `TestForceContextKeepsValuesButNotCancellation` (a Go context's values), `TestAnAlreadyCancelledContextDrainsBeforeNewLifecycleReturns` (covered at the worker level by `ShutdownTest.aShutdownBeforeRunOpensNoStream`), `TestJobUnmarshal` (Java's `Job` has no unmarshal) |
+| `hopper-example-worker` | 45 | 10 ports of cmd/worker/main_test.go and 35 Java-only, among them `MainProcessTest`, which runs the worker as its own JVM and sends it a real SIGTERM. Not ported: the three metrics-server tests (no metrics, Decision D24) and `TestDurationOverflowFixtureFitsInt64` (Go fixture arithmetic; its literal is reused) |
+
+The start rule's own tests are 23 of the worker's: `StartRuleTest` 3,
+`CreditLedgerTest` 8, `CreditStampTest` 3, `StartRuleSessionTest` 5 and
+`FreshnessTest` 4.
+
+**Reruns.** The worker suite ran three times more with `--rerun-tasks` at
+`4e13996`, 187 of 187 each; the example worker three times at `e39bd1c`, 45 of
+45 each. One flake was found on the way and fixed in the test (see Findings).
+
+**Against the Compose stack**, project `hopperjava`, PostgreSQL and one broker
+with a 30 s lease, the worker at concurrency 4, through scripts/java-smoke.sh
+and test/accounting/javalog_test.go. The evidence is
+[docs/bench/java-smoke/20261123/](../bench/java-smoke/20261123/).
+
+- **Undisturbed** (240 jobs over the three queues): accounting passes,
+  `AttemptProblems` empty. 240 of 240 completed, one process, 20 redelivered
+  and 20 restarted (the `fail_n_times` retries, each repeat explained as
+  nacked), no shutdown, no non-JSON line.
+- **SIGTERM** mid-run (400 `sleep` jobs, the signal after 20 starts, then a
+  restart): exit 0; accounting passes with `Problems` empty. 400 of 400
+  completed over two processes, 0 redelivered, and `shutdown started` carried
+  `running_handlers` 4.
+- **Cancel while running.** The first run failed the check. The client
+  cancelled 15.7 ms after the lease, before the worker's ownership check (the
+  delivery was stale, 5.2 s after its credit), so the check was refused
+  `FAILED_PRECONDITION` and the handler never ran. That is the Go SDK's path
+  too, but not the running case the check is about. The driver now cancels 2 s
+  after `LEASED` (`3461424`). The rerun passed: the delivery, stale by 4.6 s,
+  took the check, and the first renewal was refused 10.05 s after the handler
+  started (G/3 = 10 s). The handler stopped 2 ms later on its interrupt, the
+  job was left unconfirmed, and no `job confirmed` was logged for it.
+- **Abandonment** (two 20 s jobs, a 2 s budget): exit 1 and one
+  `shutdown deadline reached` line with its four counts by name. stderr held
+  `worker: worker: shutdown deadline reached with 2 active deliveries (2
+  running handlers, 0 acquiring a lease, 0 awaiting confirmation)`. Both jobs
+  completed after the restart.
+- **Negative controls**, on copies of those logs. A deleted `job started`, an
+  inserted non-JSON line and a deleted nack confirmation each fail the check.
+  A deleted ack confirmation passes; see Spec gaps.
+
+**Findings.**
+- **Equivalent mutants**, each explained and none killed with a contrived
+  test:
+  - `CreditLedger`'s `reconciled` flag: the first reconcile already zeroes
+    what is outstanding (D11a).
+  - `HandlerContext`'s reason-then-interrupt order: the lock, not the order,
+    is the guarantee (D13d).
+  - A reconnect reusing a ledger that reconcile has already emptied (D15).
+  - `StartRule` without its `sent` check, through a session: no session test
+    can deliver against an unsent unit without a seam (D17).
+  - The example worker's flushes before `halt`: every line is already
+    flushed (D19).
+- **A flake in the tests, not the SDK** (D17): a wait on the fake's call
+  count, which counts a call before its hook runs. Fixed by waiting on the
+  hook's own record.
+- **Sealed jars** (D35): every jar is sealed except `hopper-proto`'s, whose
+  tests share its packages. It holds none of the package-private seams.
+- **What in-process grpc-java can't show** (D5b, D5c): a failed first send
+  has already sent the call's headers, and a failed `onNext` doesn't throw.
+  The fake's stream-control tests assert the same intent another way.
+- **Outside this work** (D0): the Go baseline's
+  `internal/scheduler TestReconcileFailsWhenTheClockIsUnavailable` failed
+  once before any of this. It is reported, and not touched.
+
+## Spec gaps found writing it
+
+These are the 3c talking points. Only the first was corrected, in
+docs/semantics.md; the others need Go changes this work didn't make.
+
+- **§11 item 5** said "After bounded ownership validation, the SDK Nacks that
+  known-unstarted delivery immediately". A fresh delivery for an unregistered
+  queue, or one that loses the race with shutdown, is nacked with no
+  validation at all (worker/execute.go:42-71). It now reads "After the start
+  rule (§4) or bounded ownership validation". Both SDKs behave this way.
+- **Go's `shutdown deadline reached` carries no counts.** It logs
+  `"counts", snap`, where `counts` has only unexported fields
+  (worker/lifecycle.go:64-66, 152). Checked on 2026-11-23 with a ten-line
+  program in the same shape: slog's JSON handler renders it `"counts":{}`. The
+  four counts §11 item 4 promises are only in the returned error. Java logs
+  them by name. The Go fix is one line, with a test in
+  worker/lifecycle_test.go.
+- **§11 item 3's pinning tests.** The doc says the four window tests pin the
+  check path with an unexported option. Only the first two do, by calling
+  `acquire` directly. The last two run a fresh delivery, so the Heartbeat
+  their hook answers first, which their comments call "the check", is the
+  first renewal at G/3. Their assertions still hold; the sentence and the
+  comments are stale.
+- **§4 Extension** says "a successful RPC creates a conservative local deadline
+  from the monotonic request-start instant". That reads as if every deadline
+  came from an RPC. A fresh delivery's first deadline comes from a credit send,
+  as the same paragraph's start rule says. This is wording, not behaviour.
+- **3c's cancel scenario must cancel after the start.** A row is `LEASED`
+  before any worker has its delivery. A client that cancels as soon as it sees
+  `LEASED` can beat the start: on a stale delivery the ownership check is
+  refused `FAILED_PRECONDITION` and the handler never runs. Task 20's first
+  cancel run did exactly that, 15.7 ms after the lease. It is correct, and the
+  same in Go, but it is a third outcome beside "stopped at its first renewal"
+  and "its Ack refused". A scenario that means the running case has to wait
+  for the start; one that accepts any of the three has to say so.
+- **Accounting doesn't need the Ack's log line.** `Reconcile` reads
+  `job confirmed` only to explain a lease that repeated. A completed job's
+  final Ack is proven by its row, completed under that lease, so a log missing
+  that line still passes. That holds for the Go worker too. A check of the log
+  contract alone can't see a missing ack line; the rows check the Ack itself.
