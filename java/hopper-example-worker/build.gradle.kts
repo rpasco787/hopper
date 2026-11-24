@@ -24,3 +24,16 @@ application {
         "--enable-native-access=ALL-UNNAMED",
     )
 }
+
+tasks.named<Test>("test") {
+    // MainProcessTest starts the worker as a JVM of its own, with the start
+    // script's JVM flags, to see the exit code a signal leaves.
+    val runtime = sourceSets["test"].runtimeClasspath
+    val flags = application.applicationDefaultJvmArgs
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+        listOf(
+            "-Dhopper.example.classpath=${runtime.asPath}",
+            "-Dhopper.example.jvmArgs=${flags.joinToString(" ")}",
+        )
+    })
+}
