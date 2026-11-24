@@ -5,6 +5,7 @@ package accounting
 // TestProcessesAgreeWithReconcile reads the unexported process split.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -44,11 +45,16 @@ func nack(job, lease string, ms int) string      { return sp(msgJobConfirmed, jo
 func unstarted(job, lease string, ms int) string { return sp(msgUnstartedNack, job, lease, "", ms) }
 func stopped(ms int) string                      { return sp(msgWorkerStopped, "", "", "", ms) }
 
-// lines parses specs as one pod's JSON log, through Parse.
-func lines(t *testing.T, pod string, specs ...string) Log {
+// jsonl renders specs as one container's stdout. A spec that starts with "{"
+// is already a JSON line and is written as it is.
+func jsonl(t *testing.T, specs ...string) []byte {
 	t.Helper()
 	var b strings.Builder
 	for _, s := range specs {
+		if strings.HasPrefix(s, "{") {
+			b.WriteString(s + "\n")
+			continue
+		}
 		f := strings.Split(s, "|")
 		require.Len(t, f, 6, "spec %q", s)
 		ms, err := strconv.Atoi(f[4])
@@ -77,7 +83,13 @@ func lines(t *testing.T, pod string, specs ...string) Log {
 		b.Write(raw)
 		b.WriteByte('\n')
 	}
-	l, err := Parse(pod, strings.NewReader(b.String()))
+	return []byte(b.String())
+}
+
+// lines parses specs as one pod's JSON log, through Parse.
+func lines(t *testing.T, pod string, specs ...string) Log {
+	t.Helper()
+	l, err := Parse(pod, bytes.NewReader(jsonl(t, specs...)))
 	require.NoError(t, err)
 	require.Zero(t, l.Unparsed)
 	return l
