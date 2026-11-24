@@ -1,0 +1,70 @@
+# CI (docs/design/conformance.md, "CI"). Every step runs through scripts/ci.sh,
+# so each one runs the same way on a laptop. Actions are pinned by commit; the
+# comment gives the release and its date (each at least two weeks old when
+# pinned, on 2026-11-24).
+name: ci
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, 2026-07-20
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, 2026-07-16
+        with:
+          go-version: '1.27.1'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1, 2026-06-23
+        with:
+          version: v4.3.0
+      - uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0, 2026-11-03
+        with:
+          version: 1.73.0
+          checksum: 8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1
+          setup_only: true # otherwise it pushes to the BSR on every push
+      - run: scripts/ci.sh go-checks
+      - run: scripts/ci.sh go-test
+  java:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, 2026-07-20
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0, 2026-11-04
+        with:
+          distribution: temurin
+          java-version: '25.0.5+8'
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1, 2026-10-28; validates the wrapper
+      - uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0, 2026-11-03
+        with:
+          version: 1.73.0
+          checksum: 8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1
+          setup_only: true
+      - run: scripts/ci.sh java-build
+      - run: scripts/ci.sh java-gen-check
+  conformance:
+    needs: [go, java]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, 2026-07-20
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0, 2026-07-16
+        with:
+          go-version: '1.27.1'
+      - run: docker compose version && scripts/ci.sh conformance
+        env:
+          HOPPER_CHAOS_DIR: ${{ runner.temp }}/conformance
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, 2026-10-07
+        with:
+          name: conformance-evidence
+          path: ${{ runner.temp }}/conformance
+          retention-days: 14
