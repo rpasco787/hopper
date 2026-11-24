@@ -15,6 +15,8 @@ dependencies {
 
     testFixturesApi(platform(libs.grpc.bom))
     testFixturesApi(libs.grpc.inprocess)
+    // FakeBroker.startOnLoopback binds a Netty server to 127.0.0.1 only.
+    testFixturesImplementation(libs.grpc.netty.shaded)
     testFixturesApi(platform(libs.junit.bom))
     testFixturesApi(libs.junit.jupiter)
 
