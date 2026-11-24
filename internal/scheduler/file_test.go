@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,7 +187,12 @@ func TestReconcileFailsWhenTheClockIsUnavailable(t *testing.T) {
 	s.Definitions = threeDefinitions()
 	r := runScheduler(t, s)
 
-	requireEventually(t, func() bool { return f.releaseCount() >= 1 }, "expected the term to end")
+	// The term's error is logged by Run after the deferred release has counted,
+	// so a stop that follows the release alone can win the race against the log
+	// line this test asserts on (docs/plans 3c, D23).
+	requireEventually(t, func() bool {
+		return f.releaseCount() >= 1 && strings.Contains(buf.String(), "clock down")
+	}, "expected the term to end and its error to be logged")
 	r.stopAndWait(t)
 
 	require.Empty(t, f.upsertsSnapshot(), "no upsert may be computed without the database clock")
