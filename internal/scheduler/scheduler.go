@@ -81,6 +81,23 @@ func (s *Scheduler) leaderTTL() time.Duration {
 	return max(s.LeaderTTL, 3*s.interval())
 }
 
+// stepTimeout bounds each store call in a term: a third of the leader TTL.
+// A healthy leader runs a statement on its session at least every pass plus
+// one wait, at most two steps, so it never comes near the TTL; a cut-off
+// leader's last pass ends within a step of its last answered Check, and its
+// next Check fails within two, a step before PostgreSQL can free the role
+// (docs/semantics.md §13).
+func (s *Scheduler) stepTimeout() time.Duration {
+	return s.leaderTTL() / 3
+}
+
+// within runs f with a context that ends step from now, or when ctx does.
+func within(ctx context.Context, step time.Duration, f func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, step)
+	defer cancel()
+	return f(ctx)
+}
+
 func (s *Scheduler) batchSize() int {
 	if s.BatchSize <= 0 {
 		return 100
@@ -124,17 +141,26 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // runs Check -> pass -> wait until leadership is lost, a store error occurs,
 // or ctx is cancelled (docs/plans decision 11). A reconcile failure ends the
 // term before the first pass, so a half-applied configuration never fires.
-// Release always runs on a context.WithoutCancel derivative with its own
-// short timeout, so a cancelled Run still releases rather than depending on
-// the session dying on its own.
+//
+// Every store call runs under stepTimeout: the attempt, the reconciliation,
+// each Check, each pass and the release. Running out of time is a store
+// error like any other, so a leader cut off from PostgreSQL ends its term
+// instead of waiting on TCP. Release runs on a context.WithoutCancel
+// derivative, so a cancelled Run still releases rather than depending on the
+// session dying on its own.
 func (s *Scheduler) term(ctx context.Context) error {
-	lead, err := s.Store.TryLeadership(ctx, s.leaderTTL())
-	if err != nil {
+	ttl, step := s.leaderTTL(), s.stepTimeout()
+	var lead store.Leadership
+	if err := within(ctx, step, func(ctx context.Context) error {
+		var err error
+		lead, err = s.Store.TryLeadership(ctx, ttl)
+		return err
+	}); err != nil {
 		return err
 	}
 	s.logger().InfoContext(ctx, "scheduler term won")
 	defer func() {
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), step)
 		defer cancel()
 		if err := lead.Release(rctx); err != nil {
 			s.logger().WarnContext(ctx, "scheduler release failed", "err", err)
@@ -144,7 +170,7 @@ func (s *Scheduler) term(ctx context.Context) error {
 	}()
 
 	if len(s.Definitions) > 0 {
-		if err := s.reconcile(ctx); err != nil {
+		if err := within(ctx, step, s.reconcile); err != nil {
 			return err
 		}
 	}
@@ -157,10 +183,10 @@ func (s *Scheduler) term(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		if err := lead.Check(ctx); err != nil {
+		if err := within(ctx, step, lead.Check); err != nil {
 			return fmt.Errorf("scheduler: leadership lost: %w", err)
 		}
-		if err := s.pass(ctx, warned); err != nil {
+		if err := within(ctx, step, func(ctx context.Context) error { return s.pass(ctx, warned) }); err != nil {
 			return err
 		}
 		select {

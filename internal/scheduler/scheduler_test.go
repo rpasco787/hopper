@@ -360,3 +360,79 @@ func TestTermAsksForTheLeaderTTL(t *testing.T) {
 	r.stopAndWait(t)
 	require.Equal(t, 300*time.Millisecond, f.ttlsSnapshot()[0])
 }
+
+// hangTTL makes every store call in a term run under hangTTL/3 = 100ms.
+const hangTTL = 300 * time.Millisecond
+
+// requireBounded checks that every recorded call ran under a deadline of at
+// most hangTTL/3.
+func requireBounded(t *testing.T, f *fakeStore, call string) {
+	t.Helper()
+	d := f.deadlinesSnapshot(call)
+	require.NotEmpty(t, d, "no %s call was recorded", call)
+	for i, left := range d {
+		require.Truef(t, left > 0 && left <= hangTTL/3, "%s call %d had %s left, want (0, %s]", call, i, left, hangTTL/3)
+	}
+}
+
+func TestAHungCheckEndsTheTerm(t *testing.T) {
+	f := newFakeStore()
+	f.checkHangsFrom = 2 // the first Check answers; the second hangs, as after a partition
+	buf := &syncBuffer{}
+	s := newTestScheduler(f, buf)
+	s.LeaderTTL = hangTTL
+	r := runScheduler(t, s)
+
+	requireEventually(t, func() bool { return f.releaseCount() >= 1 }, "a hung Check must end the term")
+	r.stopAndWait(t)
+
+	requireBounded(t, f, "check")
+	requireBounded(t, f, "release")
+	require.Contains(t, buf.String(), "leadership lost")
+	require.Contains(t, buf.String(), "deadline exceeded")
+}
+
+func TestAHungPassEndsTheTerm(t *testing.T) {
+	f := newFakeStore()
+	f.dueHangs = true
+	buf := &syncBuffer{}
+	s := newTestScheduler(f, buf)
+	s.LeaderTTL = hangTTL
+	r := runScheduler(t, s)
+
+	requireEventually(t, func() bool { return f.releaseCount() >= 1 && f.termsStartedCount() >= 2 },
+		"a hung pass must end the term, and the scheduler must contend again")
+	r.stopAndWait(t)
+
+	requireBounded(t, f, "due")
+	require.Contains(t, buf.String(), "due schedules")
+}
+
+func TestAHungLeadershipAttemptGivesWayToTheNext(t *testing.T) {
+	f := newFakeStore()
+	f.tryHangs = true
+	s := newTestScheduler(f, nil)
+	s.LeaderTTL = hangTTL
+	r := runScheduler(t, s)
+
+	requireEventually(t, func() bool { return f.tryLeaderCallCount() >= 3 }, "a hung attempt must give way to the next")
+	r.stopAndWait(t)
+
+	requireBounded(t, f, "try")
+	require.Zero(t, f.termsStartedCount())
+}
+
+func TestAHungReconcileEndsTheTermBeforeAnyPass(t *testing.T) {
+	f := newFakeStore()
+	f.nowHangs = true
+	s := newTestScheduler(f, nil)
+	s.LeaderTTL = hangTTL
+	s.Definitions = []Definition{{Name: "n", Queue: "q", Cron: "@every 1s"}}
+	r := runScheduler(t, s)
+
+	requireEventually(t, func() bool { return f.releaseCount() >= 1 }, "a hung reconcile must end the term")
+	r.stopAndWait(t)
+
+	requireBounded(t, f, "now")
+	require.Empty(t, f.dueCallsSnapshot(), "no pass may run after a failed reconcile")
+}

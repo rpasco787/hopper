@@ -51,6 +51,14 @@ type fakeStore struct {
 	checks         int
 	releases       int
 
+	// hangs: a call blocks until its context ends, as on a silent network
+	// path. checkHangsFrom makes the Nth Check and every later one hang
+	// (1-based; 0 never). deadlines records, per call ("try", "check", "due",
+	// "now", "release"), how long its context had left; -1 means no deadline.
+	tryHangs, dueHangs, nowHangs bool
+	checkHangsFrom               int
+	deadlines                    map[string][]time.Duration
+
 	// events is an ordered log of "check"/"due", for tests that assert
 	// interleaving (Decision 11: one DueSchedules call per Check).
 	events []string
@@ -83,14 +91,40 @@ type fakeStore struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{now: time.Now(), dedup: map[string]store.Job{}, existing: map[string]bool{}}
+	return &fakeStore{now: time.Now(), dedup: map[string]store.Job{}, existing: map[string]bool{}, deadlines: map[string][]time.Duration{}}
 }
 
-func (f *fakeStore) TryLeadership(_ context.Context, ttl time.Duration) (store.Leadership, error) {
+// hang records how long ctx had left and, when block is set, waits for ctx to
+// end. Callers hold f.mu; hang releases it while it waits and takes it back.
+func (f *fakeStore) hang(ctx context.Context, call string, block bool) error {
+	left := time.Duration(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		left = time.Until(dl)
+	}
+	f.deadlines[call] = append(f.deadlines[call], left)
+	if !block {
+		return nil
+	}
+	f.mu.Unlock()
+	<-ctx.Done()
+	f.mu.Lock()
+	return ctx.Err()
+}
+
+func (f *fakeStore) deadlinesSnapshot(call string) []time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Duration(nil), f.deadlines[call]...)
+}
+
+func (f *fakeStore) TryLeadership(ctx context.Context, ttl time.Duration) (store.Leadership, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tryLeaderCalls++
 	f.ttls = append(f.ttls, ttl)
+	if err := f.hang(ctx, "try", f.tryHangs); err != nil {
+		return nil, err
+	}
 	if f.leaderHeld {
 		return nil, store.ErrNotLeader
 	}
@@ -105,11 +139,14 @@ func (f *fakeStore) TryLeadership(_ context.Context, ttl time.Duration) (store.L
 	return &fakeLeadership{f: f}, nil
 }
 
-func (f *fakeStore) DueSchedules(_ context.Context, limit int) ([]store.CronSchedule, time.Time, error) {
+func (f *fakeStore) DueSchedules(ctx context.Context, limit int) ([]store.CronSchedule, time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dueCalls = append(f.dueCalls, limit)
 	f.events = append(f.events, "due")
+	if err := f.hang(ctx, "due", f.dueHangs); err != nil {
+		return nil, time.Time{}, err
+	}
 
 	if f.dueErrOnce != nil {
 		err := f.dueErrOnce
@@ -172,10 +209,13 @@ func (f *fakeStore) Enqueue(_ context.Context, p store.EnqueueParams) (store.Job
 	return job, true, nil
 }
 
-func (f *fakeStore) Now(context.Context) (time.Time, error) {
+func (f *fakeStore) Now(ctx context.Context) (time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nowCalls++
+	if err := f.hang(ctx, "now", f.nowHangs); err != nil {
+		return time.Time{}, err
+	}
 	if f.nowErr != nil {
 		return time.Time{}, f.nowErr
 	}
@@ -309,11 +349,14 @@ type fakeLeadership struct {
 	released bool
 }
 
-func (l *fakeLeadership) Check(context.Context) error {
+func (l *fakeLeadership) Check(ctx context.Context) error {
 	l.f.mu.Lock()
 	defer l.f.mu.Unlock()
 	l.f.checks++
 	l.f.events = append(l.f.events, "check")
+	if err := l.f.hang(ctx, "check", l.f.checkHangsFrom > 0 && l.f.checks >= l.f.checkHangsFrom); err != nil {
+		return err
+	}
 	if l.f.checkErr != nil {
 		return l.f.checkErr
 	}
@@ -323,7 +366,7 @@ func (l *fakeLeadership) Check(context.Context) error {
 	return nil
 }
 
-func (l *fakeLeadership) Release(context.Context) error {
+func (l *fakeLeadership) Release(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.released {
@@ -332,6 +375,7 @@ func (l *fakeLeadership) Release(context.Context) error {
 	l.released = true
 
 	l.f.mu.Lock()
+	_ = l.f.hang(ctx, "release", false)
 	l.f.leaderHeld = false
 	l.f.releases++
 	l.f.mu.Unlock()
