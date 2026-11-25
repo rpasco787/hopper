@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,7 +40,9 @@ func (s *Service) Enqueue(ctx context.Context, req *hopperv1.EnqueueRequest) (*h
 
 // EnqueueBatch reduces client RPC round trips, not database round trips.
 // Broker prevalidation failures write nothing. A database rejection, error,
-// or response-size failure can leave a committed prefix (or all jobs).
+// or response-size failure can leave a committed prefix (or all jobs); over a
+// store that runs the batch itself (store.BatchEnqueuer, as a sharded store
+// is), any subset (docs/semantics.md §8).
 // Stable keys deduplicate retries only while the original rows still exist.
 func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRequest) (*hopperv1.EnqueueBatchResponse, error) {
 	specs := req.GetJobs()
@@ -60,6 +63,9 @@ func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRe
 			return nil, status.Errorf(codes.InvalidArgument, "jobs[%d]: %v", i, status.Convert(err).Message())
 		}
 		params[i] = p
+	}
+	if be, ok := s.store.(store.BatchEnqueuer); ok {
+		return s.enqueueMany(ctx, be, params)
 	}
 
 	results := make([]*hopperv1.EnqueueResponse, 0, len(params))
@@ -82,6 +88,39 @@ func (s *Service) EnqueueBatch(ctx context.Context, req *hopperv1.EnqueueBatchRe
 		results = append(results, &hopperv1.EnqueueResponse{Job: proto, Deduplicated: !inserted})
 	}
 	return &hopperv1.EnqueueBatchResponse{Results: results}, nil
+}
+
+// enqueueMany is EnqueueBatch over a store that runs a batch itself, as the
+// sharded store does with each shard's part at once. Items that committed
+// before a failure stay committed and are announced; they need not be a
+// prefix (docs/semantics.md §8).
+func (s *Service) enqueueMany(ctx context.Context, be store.BatchEnqueuer, params []store.EnqueueParams) (*hopperv1.EnqueueBatchResponse, error) {
+	results, err := be.EnqueueMany(ctx, params)
+	done := 0
+	for _, r := range results {
+		if r.Done {
+			done++
+			s.announceIfLeasable(r.Job, r.Inserted)
+		}
+	}
+	if err == nil && len(results) != len(params) {
+		err = fmt.Errorf("broker: the store returned %d results for %d jobs", len(results), len(params))
+	}
+	if err != nil {
+		s.cfg.Logger.ErrorContext(ctx, "enqueue batch failed part way", "enqueued", done, "of", len(params), "err", err)
+		return nil, s.fail(ctx, "EnqueueBatch", err)
+	}
+	out := make([]*hopperv1.EnqueueResponse, len(results))
+	for i, r := range results {
+		p, err := jobToProto(r.Job)
+		if err != nil {
+			return nil, s.fail(ctx, "EnqueueBatch", err)
+		}
+		s.cfg.Logger.DebugContext(ctx, "job enqueued",
+			"job_id", r.Job.ID.String(), "queue", r.Job.Queue, "deduplicated", !r.Inserted)
+		out[i] = &hopperv1.EnqueueResponse{Job: p, Deduplicated: !r.Inserted}
+	}
+	return &hopperv1.EnqueueBatchResponse{Results: out}, nil
 }
 
 // announceIfLeasable wakes the streams that serve a job's queue when this call
