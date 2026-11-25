@@ -1,0 +1,15 @@
+{
+  "scenario": "cancel-short",
+  "mode": "attempts",
+  "rows": {
+    "01a20fd1-812f-74d8-be5b-1b679e31c5bd": {
+      "state": "cancelled",
+      "attempts": 1,
+      "starts": 1
+    }
+  },
+  "cancels": {
+    "01a20fd1-812f-74d8-be5b-1b679e31c5bd": "ack refused"
+  },
+  "grant": 30000000000
+}

@@ -1,0 +1,1 @@
+worker: worker: shutdown deadline reached with 2 active deliveries (2 running handlers, 0 acquiring a lease, 0 awaiting confirmation)

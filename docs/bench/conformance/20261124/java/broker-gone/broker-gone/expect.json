@@ -1,0 +1,14 @@
+{
+  "scenario": "broker-gone",
+  "mode": "attempts",
+  "repeat_causes": [
+    "lost"
+  ],
+  "expired": [
+    "01a20fd2-860d-7863-bcfd-15e8f46177b3",
+    "01a20fd2-860f-7049-992a-f85c9a2c3d77",
+    "01a20fd2-860f-76b9-803f-c1a1b5fcbe46"
+  ],
+  "outage_start": "2026-11-24T23:09:46.04675063Z",
+  "grant": 30000000000
+}

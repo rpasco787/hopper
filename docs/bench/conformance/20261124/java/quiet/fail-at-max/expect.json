@@ -1,0 +1,129 @@
+{
+  "scenario": "fail-at-max",
+  "mode": "attempts",
+  "repeat_causes": [
+    "nacked"
+  ],
+  "rows": {
+    "01a20fd6-db29-7f11-9222-b014c4fa310d": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2a-7c02-a6cd-3c4f40352122": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2b-7430-b3e9-5b01adf18fe2": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2b-7932-8339-b89b5fc3697b": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2c-72dc-9ee4-c61c570ced46": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2c-7e92-af9e-5d8aa8a18078": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2d-7a03-b4eb-dc92ded55286": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db2e-7b54-b84f-48af723a1428": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db30-7892-a246-4e3c5fd8af91": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db31-7846-a6af-c527ff8475a1": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db32-74ba-87bc-843da62bf1f3": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db33-73d2-9f63-330ca7eebfa5": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db33-7d6d-8640-cc820307c6cd": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db34-7ce3-85ad-0f50fefe5782": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db35-7a92-a212-19e80cdf6dfd": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db37-73a1-ab0f-544e39bb6b5b": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db38-7573-8690-302b4fe463c5": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db39-7338-b3d6-28d7538ad21b": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db3a-71d2-85ae-e3f64b2ae960": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    },
+    "01a20fd6-db3a-7dba-ae15-d5b570542452": {
+      "state": "dead",
+      "attempts": 3,
+      "starts": 3,
+      "last_error": "intentional failure on attempt 3 of 3"
+    }
+  }
+}

@@ -476,6 +476,11 @@ docs/semantics.md; the others need Go changes this work didn't make.
   queue, or one that loses the race with shutdown, is nacked with no
   validation at all (worker/execute.go:42-71). It now reads "After the start
   rule (§4) or bounded ownership validation". Both SDKs behave this way.
+  - Phase 3c: no scenario. An unregistered queue cannot occur against a real
+    broker, which leases only the queues a worker subscribed to, and both workers
+    subscribe exactly to their handlers. A delivery that loses the race with
+    shutdown is nacked unstarted; scenario 11 reports how many it saw (0 unstarted
+    nacks and 0 never received, on both SDKs, 2026-11-24).
 - **Go's `shutdown deadline reached` carries no counts.** It logs
   `"counts", snap`, where `counts` has only unexported fields
   (worker/lifecycle.go:64-66, 152). Checked on 2026-11-23 with a ten-line
@@ -483,16 +488,26 @@ docs/semantics.md; the others need Go changes this work didn't make.
   four counts §11 item 4 promises are only in the returned error. Java logs
   them by name. The Go fix is one line, with a test in
   worker/lifecycle_test.go.
+  - Phase 3c: fixed in 03b220e, the branch's first commit; the Go line now
+    names the four counts with Java's keys. Scenario 12 judges both SDKs' line,
+    exit code and stderr (counts 2/2/0/0, stderr identical), and its negative
+    control 17 shows the old line, `counts {}`, failing.
 - **§11 item 3's pinning tests.** The doc says the four window tests pin the
   check path with an unexported option. Only the first two do, by calling
   `acquire` directly. The last two run a fresh delivery, so the Heartbeat
   their hook answers first, which their comments call "the check", is the
   first renewal at G/3. Their assertions still hold; the sentence and the
   comments are stale.
+  - Phase 3c: a mutant that lets a failed renewal move the deadline survived
+    the old tests and died once the last two ran with the unexported
+    `checkEveryDelivery` option, so the check path was restored in both SDKs'
+    test setup (no assertion changed) and the semantics.md sentence says which
+    tests pin it how.
 - **§4 Extension** says "a successful RPC creates a conservative local deadline
   from the monotonic request-start instant". That reads as if every deadline
   came from an RPC. A fresh delivery's first deadline comes from a credit send,
   as the same paragraph's start rule says. This is wording, not behaviour.
+  - Phase 3c: wording fixed in semantics.md §4.
 - **3c's cancel scenario must cancel after the start.** A row is `LEASED`
   before any worker has its delivery. A client that cancels as soon as it sees
   `LEASED` can beat the start: on a stale delivery the ownership check is
@@ -501,8 +516,15 @@ docs/semantics.md; the others need Go changes this work didn't make.
   same in Go, but it is a third outcome beside "stopped at its first renewal"
   and "its Ack refused". A scenario that means the running case has to wait
   for the start; one that accepts any of the three has to say so.
+  - Phase 3c: scenarios 5 and 6 cancel after `job started` and scenario 7 at
+    lease time, accepting the third outcome by name. On 2026-11-24 the running
+    and short cases ended as designed on both SDKs; at lease time Go stopped the
+    job at its first renewal and Java never started it. Both are accepted.
 - **Accounting doesn't need the Ack's log line.** `Reconcile` reads
   `job confirmed` only to explain a lease that repeated. A completed job's
   final Ack is proven by its row, completed under that lease, so a log missing
   that line still passes. That holds for the Go worker too. A check of the log
   contract alone can't see a missing ack line; the rows check the Ack itself.
+  - Phase 3c: `ContractProblems` checks the log apart from the rows in every
+    scenario. Negative control 1 (a completed job's ack line removed) fails on
+    both SDKs.

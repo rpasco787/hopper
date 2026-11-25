@@ -1,0 +1,9 @@
+{
+  "scenario": "mixed-kill",
+  "mode": "attempts",
+  "repeat_causes": [
+    "killed"
+  ],
+  "min_repeat_gap": 25000000000,
+  "kills": 2
+}

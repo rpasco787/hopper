@@ -1,0 +1,14 @@
+{
+  "scenario": "cancel-lease-time",
+  "mode": "attempts",
+  "rows": {
+    "01a20fd1-8d7d-79e8-af11-0e2e010d76f6": {
+      "state": "cancelled",
+      "attempts": 1
+    }
+  },
+  "cancels": {
+    "01a20fd1-8d7d-79e8-af11-0e2e010d76f6": "stopped at its first renewal, or never started"
+  },
+  "grant": 30000000000
+}

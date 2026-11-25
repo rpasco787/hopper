@@ -179,3 +179,104 @@ commit.
 - **JAVA_TOOL_OPTIONS** to tune the JVM: the JVM announces it on stderr.
 - **Running the k8s proofs in this phase:** the laptop's kind node stays
   stopped; scripts/kind-up.sh is parameterized for a machine that can.
+
+## Results (2026-11-24)
+
+Run on one laptop (Docker Desktop VM, 3.83 GiB), on AC power, with no sleep or
+wake in any window, and with 0 containers and 0 volumes left behind. Evidence:
+docs/bench/conformance/20261124/.
+
+**Both passes, through `scripts/ci.sh conformance`** (15:03:49–15:14:50, at
+89b4d21 with the scripts then uncommitted, committed as d485947):
+
+| Pass | Time | Estimated | Aim |
+|---|---|---|---|
+| Go worker from the tree | 301.9 s | 660 s | 10 min |
+| Java worker, `hopper-example-worker:dev` (image 61a44b130a45), with the mixed fleet | 353.6 s | 840 s | 10 min |
+
+Both passed every scenario the first time they ran. The whole script took 11 min
+1 s, the Java image build included. The estimates were conservative because
+three scenarios wait out the 30 s lease (D11) and the stacks start faster than
+guessed.
+
+| # | Scenario | Go | Java |
+|---|---|---|---|
+| 1-4, 5-7 | `TestConformanceQuietRun`, seven subtests | 49.8 s | 42.1 s |
+| 8 | killed worker | 41.9 s; 4 handlers interrupted, 4 repeats, all `killed` | 42.6 s; the same counts |
+| 9 | broker gone past the lease | 103.1 s; 3 repeats, all `lost` | 106.2 s; the same |
+| 10 | short PostgreSQL outage | 23.7 s; sessions failed 2.96–3.17 s, 0 repeats | 25.8 s; 0 repeats |
+| 11 | SIGTERM drain | 19.7 s; exit 0, 0 unstarted nacks, 0 never received | 20.1 s; the same |
+| 12 | shutdown deadline | 60.3 s; exit 1, counts 2/2/0/0, 2 `lost` repeats | 59.8 s; the same, stderr identical |
+| 13 | mixed fleet, `Burst` and `Kill` | skipped | 55.2 s; 8 handlers interrupted, 4 on each SDK |
+
+The per-scenario peaks are in each `judgement.txt` and the pass logs
+(`summary.txt`): in every scenario no process held more deliveries open than the
+concurrency its `worker starting` line named, and in the burst every worker
+reached it (4 of 4).
+
+**The cancel outcomes.** A job cancelled while its handler ran stopped at its
+first renewal, G/3 after the start, on both SDKs. A short job cancelled after
+its start had its `Ack` refused on both. A job cancelled the moment its row was
+`leased` stopped at its first renewal on Go (`heartbeat rejected; cancelling the
+handler`, 10 s after the start) and was never started on Java (`lease not
+confirmed; leaving the job to be redelivered`: the ownership check was refused).
+Both are accepted outcomes; the third one no Go test ran end to end before.
+
+**Scenario 9's window.** The gated handlers' local expiry fell 27.22, 27.22 and
+27.27 s after the kill on Go, and 27.44, 27.44 and 27.23 s on Java, in the
+Task 12 runs against a window of 18.5–30.5 s; the handler finished at the same
+instant each time. The full passes judged the same window clean; they did not
+log the offsets.
+
+**The negative controls** (`negative-controls.txt`). Each of the 16 undamaged
+evidence sets judged clean, then 25 damaged copies (20 rows on Java, the 5
+daggered rows again on Go) each failed with the line the row names: 25 of 25, 0
+survivors. No judge was strengthened and there is no equivalent mutant among
+them. The first pass of the driver failed 19 of 20; the twentieth was a driver
+bug (it picked a job outside the scenario's rows), fixed in the driver. One
+equivalent mutant exists in the unit tests of the concurrency bound (a repeated
+first line), kept as written.
+
+**Memory and startup** (`measure.txt`, 3 workers then 8, 3,000 jobs, one worker
+killed and restarted 8 s in): the Java worker's peak was 104 MiB of its 384 MiB
+limit (27%); the whole stack with eight workers peaked at 845 MiB of 3,919 MiB;
+nothing was OOM-killed. D9's 384m stays. A container started to its first log
+line in 0.13–0.20 s; a restart under load reached `worker starting` after
+0.25 s, its own `lease stream opened` after 0.36 s and the broker's acceptance
+after 0.49 s. That makes the chaos kill loop's 5 s between a restart and the
+next kill safe. The caveat is nine `docker stats` samples about 6 s apart, so a
+spike shorter than that could have been missed.
+
+**`lease stream opened`** (D22): against `127.0.0.1:1` for 3 s the Go worker
+logged the line 0 times and the Java worker 5 times. Readiness is the broker's
+line (§14 of semantics.md).
+
+**The chaos suite unchanged with the Go worker** (D6): 605.6 s before the image
+switch and 600.4 s after, the same 9 tests and 4 subtests passing, the same
+render, the same kinds of counts.
+
+**The chaos suite five times against the Java worker** (`chaos-java-5.txt`):
+**four of five passed** (628.9, 619.6, 615.6 and 782.9 s). Pass 2 failed
+`TestBrokerRestartLosesNothing/crash`: one job's handler started twice. The
+`Ack` of its first attempt was in flight when the broker was killed and failed
+`UNKNOWN: channel closed`, which grpc-netty returns for a write onto a
+connection that has just closed (Go's gRPC reports `UNAVAILABLE`). The Java
+worker retried only `UNAVAILABLE` and `DEADLINE_EXCEEDED`, so it took the
+failure as a refusal, the lease ran out and the job ran again. It is a Java SDK
+bug, fixed in a595053 with `Heartbeat.isNetwork`, shared by confirmations and
+renewals (a renewal would have ended its lease on the same status); a unit test
+pins it. The five passes ran against the image from before the fix; the image
+was not rebuilt and the suite was not rerun against it, so the fix is proven by
+its unit test and not yet by a chaos pass. Pass 5 took 782.9 s, about 160 s more
+than the others, with no sleep in the window; its cause is unknown.
+
+**Window tests.** Both SDKs' last two window tests now run with the unexported
+`checkEveryDelivery` option, because a mutant that let a failed renewal move the
+deadline survived the old setup and died with it.
+
+**What did not run.** The first GitHub Actions run: the workflow's toolchain
+installs, the Linux branch of `java-gen.sh`, and the runner's Docker, Compose
+and Docker Hub pulls can only be seen there. The Kubernetes proof with the Java
+worker: `scripts/kind-up.sh` is parameterized for it, and the laptop's kind node
+stayed stopped. Raw worker stdout is not in the evidence directory: it would
+take 20 MB, and the judges' inputs (`expect.json`, `rows.csv`) and verdicts are.
