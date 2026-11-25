@@ -194,7 +194,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,lease_rows_per_call,lease_calls_per_job,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -670,12 +670,18 @@ wait_value() { awk -F'|' -v k="$1" '$1 == k { print $2 }' "$dir/waits.txt"; }
 type_pct() { awk -F'|' -v k="$1" '$1 == "type" && $2 == k { print $4; f = 1 } END { if (!f) print "0.0" }' "$dir/waits.txt"; }
 samples="$(wait_value samples)"; active_mean="$(wait_value active_mean)"
 on_cpu_pct="$(type_pct CPU)"; lock_pct="$(type_pct Lock)"; lwlock_pct="$(type_pct LWLock)"; io_pct="$(type_pct IO)"
-# The lease statement (internal/store/postgres/lease.go), found by its text.
-IFS='|' read -r lease_mean lease_blks <<<"$(sql "
+# The lease statement (internal/store/postgres/lease.go), found by its text:
+# mean ms and blocks per call, rows per call, and every call in the window.
+IFS='|' read -r lease_mean lease_blks lease_rows lease_calls <<<"$(sql "
   select round((sum(total_exec_time) / nullif(sum(calls), 0))::numeric, 3),
-         round(sum(shared_blks_hit + shared_blks_read)::numeric / nullif(sum(calls), 0), 1)
+         round(sum(shared_blks_hit + shared_blks_read)::numeric / nullif(sum(calls), 0), 1),
+         round(sum(rows)::numeric / nullif(sum(calls), 0), 2),
+         coalesce(sum(calls), 0)
   from pg_stat_statements
   where ltrim(regexp_replace(query, '\s+', ' ', 'g')) like 'with next as%'")"
+# Lease calls per completed job, empty leases included: H1's "the thing to
+# measure" (docs/scaling.md), and H6's mechanism.
+lease_calls_per_job="$(awk -v c="${lease_calls:-0}" -v n="$completed" 'BEGIN { if (n < 1) n = 1; printf "%.3f", c / n }')"
 # Mean CPU per role, in percent of one core.
 cpu() { awk -F, -v re="$1" '$1 ~ re { gsub("%", "", $2); s[$1] += $2; n[$1]++ }
   END { t = 0; for (c in s) t += s[c] / n[c]; printf "%.0f", t }' "$dir/stats.csv"; }
@@ -748,7 +754,7 @@ for v in ack_batch ack_fallback_pct heartbeat_batch heartbeat_fallback_pct; do
   if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
 done
 
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$dir"
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$lease_rows,$lease_calls_per_job,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"

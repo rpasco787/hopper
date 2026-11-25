@@ -121,7 +121,7 @@ elif args[0] == 'compose':
                 print('12:00:00.000|LWLock|LockManager|1')
                 print('12:00:00.000|CPU|running|3')
         elif 'n_live_tup' in sql: print('12:00:00|10|5.0|3|4|0')
-        elif 'with next as' in sql: print('0.500|12.0')
+        elif 'with next as' in sql: print('0.500|12.0|4.00|250')
     elif 'config' in args:
         services = {}
         path = next((a for a in args if a.endswith('settings.yaml')), None)
@@ -423,6 +423,16 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual((row['lease_mean_ms'], row['lease_blks_per_call']), ('0.500', '12.0'))
             waits = (evidence_dir(root) / 'waits.txt').read_text()
             self.assertIn('event|LWLock|LockManager|', waits)
+
+    def test_row_carries_lease_rows_and_calls_per_job(self):
+        # The fake's lease statement returned 4.00 rows a call over 250 calls,
+        # for 1,000 jobs (and 1,000 Acks, so the drain's Ack check passes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', BENCH_TEST_COMPLETED='1000', BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['lease_rows_per_call'], row['lease_calls_per_job']), ('4.00', '0.250'))
 
     def test_steady_samples_waits_too(self):
         with tempfile.TemporaryDirectory() as tmp:
