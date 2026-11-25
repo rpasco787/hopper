@@ -6,10 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rpasco787/hopper/internal/store"
 )
+
+// testLeaderTTL is long enough that no test holder lapses unless it means to.
+const testLeaderTTL = time.Minute
 
 // advisoryLockCount is the independent check from docs/plans decision 2: it
 // reads pg_locks directly rather than trusting the cheap `select 1` that
@@ -30,15 +34,15 @@ func TestOneLeaderAtATime(t *testing.T) {
 	s1 := newStore(t)
 	s2 := New(pool)
 
-	lead1, err := s1.TryLeadership(ctx)
+	lead1, err := s1.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 
-	_, err = s2.TryLeadership(ctx)
+	_, err = s2.TryLeadership(ctx, testLeaderTTL)
 	require.ErrorIs(t, err, store.ErrNotLeader)
 
 	require.NoError(t, lead1.Release(ctx))
 
-	lead2, err := s2.TryLeadership(ctx)
+	lead2, err := s2.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 	require.NoError(t, lead2.Release(ctx))
 }
@@ -49,7 +53,7 @@ func TestLeadershipIsRealInPgLocks(t *testing.T) {
 
 	require.Zero(t, advisoryLockCount(t, ctx, schedulerLockKey))
 
-	lead, err := s.TryLeadership(ctx)
+	lead, err := s.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 	require.Equal(t, 1, advisoryLockCount(t, ctx, schedulerLockKey))
 
@@ -65,7 +69,7 @@ func TestCheckFailsAfterTheSessionDies(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	lead, err := s.TryLeadership(ctx)
+	lead, err := s.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 	// Once the backend is killed below, lead's connection is permanently
 	// broken. Release's error path hijacks and closes it (the discard rule
@@ -89,7 +93,7 @@ func TestCheckFailsAfterTheSessionDies(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "Check must observe the terminated session")
 
 	require.Eventually(t, func() bool {
-		lead2, err := s.TryLeadership(ctx)
+		lead2, err := s.TryLeadership(ctx, testLeaderTTL)
 		if err != nil {
 			return false
 		}
@@ -103,7 +107,7 @@ func TestReleaseDoesNotPoisonThePool(t *testing.T) {
 	s := newStore(t)
 
 	for range 20 {
-		lead, err := s.TryLeadership(ctx)
+		lead, err := s.TryLeadership(ctx, testLeaderTTL)
 		require.NoError(t, err)
 		require.NoError(t, lead.Release(ctx))
 	}
@@ -120,7 +124,7 @@ func TestLeadershipSurvivesPoolPressure(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	lead, err := s.TryLeadership(ctx)
+	lead, err := s.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 	defer lead.Release(context.Background()) //nolint:errcheck // best-effort cleanup
 
@@ -146,8 +150,84 @@ func TestDoubleReleaseIsSafe(t *testing.T) {
 	ctx := ctxT(t)
 	s := newStore(t)
 
-	lead, err := s.TryLeadership(ctx)
+	lead, err := s.TryLeadership(ctx, testLeaderTTL)
 	require.NoError(t, err)
 	require.NoError(t, lead.Release(ctx))
 	require.NoError(t, lead.Release(ctx))
+}
+
+// TestLeadershipLapsesWhenTheHolderGoesSilent is the server half of the
+// silent-leader fix: a holder that runs nothing on its session for ttl loses
+// the role without doing anything, as a paused or partitioned process would.
+func TestLeadershipLapsesWhenTheHolderGoesSilent(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	const ttl = 500 * time.Millisecond
+
+	start := time.Now()
+	lead, err := s.TryLeadership(ctx, ttl)
+	require.NoError(t, err)
+	t.Cleanup(func() { lead.Release(context.Background()) }) //nolint:errcheck // the session is gone; Release discards it
+
+	var lapsed time.Duration
+	require.Eventually(t, func() bool {
+		lead2, err := s.TryLeadership(ctx, testLeaderTTL)
+		if err != nil {
+			return false
+		}
+		lapsed = time.Since(start)
+		t.Cleanup(func() { lead2.Release(context.Background()) }) //nolint:errcheck // best-effort cleanup
+		return true
+	}, 5*time.Second, 20*time.Millisecond, "the silent holder's session must end and free the role")
+	require.GreaterOrEqual(t, lapsed, ttl, "the role moved before the holder had been silent for ttl")
+	require.Error(t, lead.Check(ctx), "the silent holder must find its session gone")
+}
+
+// TestACheckingHolderKeepsTheRole: Check runs a statement on the session, so
+// a holder that checks well within ttl is never idle long enough to lose it.
+func TestACheckingHolderKeepsTheRole(t *testing.T) {
+	ctx := ctxT(t)
+	s := newStore(t)
+	const ttl = 500 * time.Millisecond
+
+	lead, err := s.TryLeadership(ctx, ttl)
+	require.NoError(t, err)
+	defer lead.Release(context.Background()) //nolint:errcheck // best-effort cleanup
+
+	for end := time.Now().Add(4 * ttl); time.Now().Before(end); time.Sleep(ttl / 5) {
+		require.NoError(t, lead.Check(ctx))
+	}
+	require.Equal(t, 1, advisoryLockCount(t, ctx, schedulerLockKey))
+	_, err = New(pool).TryLeadership(ctx, testLeaderTTL)
+	require.ErrorIs(t, err, store.ErrNotLeader)
+}
+
+// TestLeadershipSetsAndReleaseResetsTheIdleTimeout: the timeout is on the
+// leader's session only, and never reaches the pool.
+func TestLeadershipSetsAndReleaseResetsTheIdleTimeout(t *testing.T) {
+	ctx := ctxT(t)
+	newStore(t) // truncates
+	cfg := pool.Config().Copy()
+	cfg.MaxConns = 1 // one session, so the query after Release runs on the leader's own
+	one, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(one.Close)
+
+	lead, err := New(one).TryLeadership(ctx, 1500*time.Millisecond)
+	require.NoError(t, err)
+	var during string
+	require.NoError(t, lead.(*leadership).conn.QueryRow(ctx, `show idle_session_timeout`).Scan(&during))
+	require.Equal(t, "1500ms", during)
+	require.NoError(t, lead.Release(ctx))
+
+	var after string
+	require.NoError(t, one.QueryRow(ctx, `show idle_session_timeout`).Scan(&after))
+	require.Equal(t, "0", after, "Release must reset the timeout before the session goes back to the pool")
+}
+
+func TestTryLeadershipRejectsATTLUnderAMillisecond(t *testing.T) {
+	ctx := ctxT(t)
+	_, err := newStore(t).TryLeadership(ctx, 999*time.Microsecond)
+	require.ErrorContains(t, err, "under a millisecond")
+	require.Zero(t, advisoryLockCount(t, ctx, schedulerLockKey))
 }

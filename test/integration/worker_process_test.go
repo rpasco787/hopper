@@ -30,6 +30,7 @@ type processLog struct {
 	Queue            string `json:"queue"`
 	ActiveDeliveries int    `json:"active_deliveries"`
 	RunningHandlers  int    `json:"running_handlers"`
+	Err              string `json:"err"`
 }
 
 type lockedBuffer struct {

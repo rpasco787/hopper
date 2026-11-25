@@ -290,6 +290,13 @@ func jobAt(ctx context.Context, runAt time.Time) bool {
 // pending lists the tick outstanding at each kill; every one must have fired.
 func assertScheduleIntegrity(t *testing.T, ctx context.Context, queue, schedule string, seed time.Time, pending ...time.Time) {
 	t.Helper()
+	assertScheduleIntegrityWithin(t, ctx, queue, schedule, failoverBudget, seed, pending...)
+}
+
+// assertScheduleIntegrityWithin is assertScheduleIntegrity with the largest
+// gap it accepts given as budget.
+func assertScheduleIntegrityWithin(t *testing.T, ctx context.Context, queue, schedule string, budget time.Duration, seed time.Time, pending ...time.Time) {
+	t.Helper()
 	rows, err := pool.Query(ctx, "select run_at from jobs where queue = $1 order by run_at, id", queue)
 	require.NoError(t, err)
 	runAts, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
@@ -309,7 +316,7 @@ func assertScheduleIntegrity(t *testing.T, ctx context.Context, queue, schedule 
 		gap := ts.Sub(runAts[i-1])
 		// Strictly increasing also proves count(*) == count(distinct run_at).
 		require.Positive(t, gap, "occurrence %s fired twice", ts)
-		require.LessOrEqual(t, gap, failoverBudget, "gap before %s exceeds the failover budget", ts)
+		require.LessOrEqual(t, gap, budget, "gap before %s exceeds the failover budget", ts)
 		if gap > time.Second {
 			t.Logf("gap of %s before %s (catch-up skipped %d occurrence(s))", gap, ts.Format(time.TimeOnly), int(gap/time.Second)-1)
 		}

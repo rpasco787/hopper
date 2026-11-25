@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -37,7 +38,16 @@ func discard(conn *pgxpool.Conn) {
 // form deliberately because that lock must not survive a commit; leadership
 // needs the opposite property, a lock that outlives every transaction, which
 // is why it is pinned to one session instead.
-func (s *Store) TryLeadership(ctx context.Context) (store.Leadership, error) {
+//
+// The session, not this process, enforces ttl: PostgreSQL ends a session that
+// stays idle that long, which drops the lock even when this process can no
+// longer reach the server to say so (docs/semantics.md §13). It is set only
+// after winning, so a losing attempt returns a clean session to the pool, and
+// Release resets it before this one goes back.
+func (s *Store) TryLeadership(ctx context.Context, ttl time.Duration) (store.Leadership, error) {
+	if ttl < time.Millisecond {
+		return nil, fmt.Errorf("store: leadership: ttl %s is under a millisecond", ttl)
+	}
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return nil, wrap("leadership: acquire connection", err)
@@ -52,6 +62,11 @@ func (s *Store) TryLeadership(ctx context.Context) (store.Leadership, error) {
 	if !won {
 		conn.Release() // no lock was taken; the session is clean
 		return nil, store.ErrNotLeader
+	}
+	if _, err := conn.Exec(ctx, `select set_config('idle_session_timeout', $1, false)`,
+		strconv.FormatInt(ttl.Milliseconds(), 10)); err != nil {
+		discard(conn) // it holds the lock; ending the session drops it
+		return nil, wrap("leadership: set idle_session_timeout", err)
 	}
 	return &leadership{conn: conn}, nil
 }
@@ -71,7 +86,8 @@ type leadership struct {
 // proves the lock is still held (docs/plans decision 2). An ambiguous
 // failure — a context deadline, a network timeout — is treated the same as a
 // definitive loss: stepping down is always safe, continuing as a leader that
-// no longer holds the lock is not.
+// no longer holds the lock is not. Each Check is also what keeps the session
+// from reaching TryLeadership's idle timeout.
 func (l *leadership) Check(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -109,6 +125,14 @@ func (l *leadership) Release(ctx context.Context) error {
 		// destroy it rather than trust its state any further.
 		discard(l.conn)
 		return fmt.Errorf("store: leadership release: session did not hold the lock")
+	}
+	// The session carries idle_session_timeout from TryLeadership. A pooled
+	// connection must not, or PostgreSQL would end it after ttl of ordinary
+	// idleness in the pool. The role is already released, so a failed reset
+	// costs only this session.
+	if _, err := l.conn.Exec(ctx, `reset idle_session_timeout`); err != nil {
+		discard(l.conn)
+		return nil
 	}
 	l.conn.Release()
 	return nil

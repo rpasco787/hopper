@@ -302,14 +302,18 @@ empty `schedules` array at startup, before it listens.
 |---|---|---:|---|
 | `-cron-file` | `HOPPER_CRON_FILE` | empty | Schedule declarations; empty leaves `cron_schedules` unmanaged. |
 | `-scheduler` | `HOPPER_SCHEDULER` | `true` | Contend for the scheduler role in this process. |
-| `-scheduler-interval` | `HOPPER_SCHEDULER_INTERVAL` | `5s` | Tick period, and how often a non-leader retries the lock. |
+| `-scheduler-interval` | `HOPPER_SCHEDULER_INTERVAL` | `5s` | Tick period, and how often a non-leader retries the lock. A leader that goes silent loses the role after three intervals (never under 3s). |
 
 **Leader election.** Every broker contends for one PostgreSQL advisory lock,
 and only the holder runs the scheduler. If the leader dies, its session ends,
 the lock is released, and another broker takes over on its next
-`-scheduler-interval`. Each tick is enqueued with the idempotency key
-`<name>@<tick>` and then advanced with a compare-and-swap, so a stalled former
-leader cannot double-fire or rewind a schedule.
+`-scheduler-interval`. A leader that goes silent instead (stopped, or cut off
+by a network path that resets nothing) gives up its role on its own deadline,
+and PostgreSQL ends its idle session after three intervals, so another broker
+takes over within about four ([§13](docs/semantics.md)). Each tick is
+enqueued with the idempotency key `<name>@<tick>` and then advanced with a
+compare-and-swap, so a stalled former leader cannot double-fire or rewind a
+schedule.
 
 **Missed ticks.** An overdue schedule, after downtime or a slow failover, fires
 once for its pending tick and then skips to the next future occurrence.

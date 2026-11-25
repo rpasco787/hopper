@@ -18,7 +18,7 @@ import (
 // starting in the task that adds reconciliation; the interface is the
 // scheduler's whole store contract and is not worth editing twice.
 type Store interface {
-	TryLeadership(ctx context.Context) (store.Leadership, error)
+	TryLeadership(ctx context.Context, ttl time.Duration) (store.Leadership, error)
 	DueSchedules(ctx context.Context, limit int) ([]store.CronSchedule, time.Time, error)
 	AdvanceSchedule(ctx context.Context, name string, from, to time.Time) (bool, error)
 	Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, bool, error)
@@ -42,7 +42,13 @@ type Scheduler struct {
 	Store Store
 	// Interval paces both leadership retry and, while leading, the tick.
 	// Default 5s. A schedule fires within roughly one interval of its tick.
-	Interval  time.Duration
+	Interval time.Duration
+	// LeaderTTL is how long this scheduler's database session may run no
+	// statement before PostgreSQL ends it and frees the role
+	// (store.Store.TryLeadership): the bound on a silent leader. Zero takes
+	// DefaultLeaderTTL(Interval). Anything under three intervals is raised to
+	// three, because a healthy leader can be idle on its session for up to two.
+	LeaderTTL time.Duration
 	BatchSize int // default 100
 	Logger    *slog.Logger
 	// Definitions, when non-empty, are reconciled into cron_schedules at the
@@ -56,6 +62,40 @@ func (s *Scheduler) interval() time.Duration {
 		return 5 * time.Second
 	}
 	return s.Interval
+}
+
+// minLeaderTTL is the floor under DefaultLeaderTTL, so a fast test interval
+// doesn't make a loaded machine's slow statement look like a silent leader.
+const minLeaderTTL = 3 * time.Second
+
+// DefaultLeaderTTL is the leader TTL for a scheduler interval: three
+// intervals, and never under three seconds (docs/semantics.md §13).
+func DefaultLeaderTTL(interval time.Duration) time.Duration {
+	return max(3*interval, minLeaderTTL)
+}
+
+func (s *Scheduler) leaderTTL() time.Duration {
+	if s.LeaderTTL <= 0 {
+		return DefaultLeaderTTL(s.interval())
+	}
+	return max(s.LeaderTTL, 3*s.interval())
+}
+
+// stepTimeout bounds each store call in a term: a third of the leader TTL.
+// A healthy leader runs a statement on its session at least every pass plus
+// one wait, at most two steps, so it never comes near the TTL; a cut-off
+// leader's last pass ends within a step of its last answered Check, and its
+// next Check fails within two, a step before PostgreSQL can free the role
+// (docs/semantics.md §13).
+func (s *Scheduler) stepTimeout() time.Duration {
+	return s.leaderTTL() / 3
+}
+
+// within runs f with a context that ends step from now, or when ctx does.
+func within(ctx context.Context, step time.Duration, f func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, step)
+	defer cancel()
+	return f(ctx)
 }
 
 func (s *Scheduler) batchSize() int {
@@ -101,17 +141,26 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // runs Check -> pass -> wait until leadership is lost, a store error occurs,
 // or ctx is cancelled (docs/plans decision 11). A reconcile failure ends the
 // term before the first pass, so a half-applied configuration never fires.
-// Release always runs on a context.WithoutCancel derivative with its own
-// short timeout, so a cancelled Run still releases rather than depending on
-// the session dying on its own.
+//
+// Every store call runs under stepTimeout: the attempt, the reconciliation,
+// each Check, each pass and the release. Running out of time is a store
+// error like any other, so a leader cut off from PostgreSQL ends its term
+// instead of waiting on TCP. Release runs on a context.WithoutCancel
+// derivative, so a cancelled Run still releases rather than depending on the
+// session dying on its own.
 func (s *Scheduler) term(ctx context.Context) error {
-	lead, err := s.Store.TryLeadership(ctx)
-	if err != nil {
+	ttl, step := s.leaderTTL(), s.stepTimeout()
+	var lead store.Leadership
+	if err := within(ctx, step, func(ctx context.Context) error {
+		var err error
+		lead, err = s.Store.TryLeadership(ctx, ttl)
+		return err
+	}); err != nil {
 		return err
 	}
 	s.logger().InfoContext(ctx, "scheduler term won")
 	defer func() {
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), step)
 		defer cancel()
 		if err := lead.Release(rctx); err != nil {
 			s.logger().WarnContext(ctx, "scheduler release failed", "err", err)
@@ -121,7 +170,7 @@ func (s *Scheduler) term(ctx context.Context) error {
 	}()
 
 	if len(s.Definitions) > 0 {
-		if err := s.reconcile(ctx); err != nil {
+		if err := within(ctx, step, s.reconcile); err != nil {
 			return err
 		}
 	}
@@ -134,10 +183,10 @@ func (s *Scheduler) term(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		if err := lead.Check(ctx); err != nil {
+		if err := within(ctx, step, lead.Check); err != nil {
 			return fmt.Errorf("scheduler: leadership lost: %w", err)
 		}
-		if err := s.pass(ctx, warned); err != nil {
+		if err := within(ctx, step, func(ctx context.Context) error { return s.pass(ctx, warned) }); err != nil {
 			return err
 		}
 		select {
