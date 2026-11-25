@@ -27,6 +27,7 @@ var workerEnvironment = []string{
 	"HOPPER_SHUTDOWN_TIMEOUT",
 	"HOPPER_LOG_LEVEL",
 	"HOPPER_METRICS_LISTEN",
+	"HOPPER_DEBUG_LISTEN",
 }
 
 func clearWorkerEnvironment(t *testing.T) {
@@ -328,4 +329,80 @@ func workJob(payload string, attempt int32) workersdk.Job {
 
 func TestDurationOverflowFixtureFitsInt64(t *testing.T) {
 	require.Less(t, int64(math.MaxInt64/int64(time.Millisecond)), int64(9223372036855))
+}
+
+func TestDebugListenConfiguration(t *testing.T) {
+	clearWorkerEnvironment(t)
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	require.Empty(t, c.debugListen)
+
+	t.Setenv("HOPPER_DEBUG_LISTEN", "127.0.0.1:6061")
+	c, err = parseConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:6061", c.debugListen)
+
+	c, err = parseConfig([]string{"-debug-listen", "127.0.0.1:6062"})
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:6062", c.debugListen)
+
+	_, err = parseConfig([]string{"-debug-listen", "nohost"})
+	require.EqualError(t, err, "invalid debug-listen address")
+}
+
+func TestWorkerServesProfilesWhenAsked(t *testing.T) {
+	clearWorkerEnvironment(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	require.NoError(t, lis.Close())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithContext(context.Background(), []string{"-debug-listen", addr}, &stdout,
+			func(context.Context, *workersdk.Worker) error {
+				close(started)
+				<-release
+				return nil
+			})
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker start function was not called")
+	}
+	get := func(path string) (int, string) {
+		t.Helper()
+		resp, err := http.Get("http://" + addr + path)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		return resp.StatusCode, string(body)
+	}
+	code, body := get("/debug/pprof/goroutine?debug=1")
+	require.Equal(t, http.StatusOK, code)
+	require.Contains(t, body, "goroutine profile")
+	code, _ = get("/debug/pprof/cmdline")
+	require.Equal(t, http.StatusNotFound, code)
+	require.Contains(t, stdout.String(), `"msg":"debug endpoint listening`)
+
+	close(release)
+	require.NoError(t, <-done)
+	require.Eventually(t, func() bool { return connectionRefused(addr) }, time.Second, 10*time.Millisecond)
+}
+
+func TestWorkerStopsWhenItCannotBindTheDebugListener(t *testing.T) {
+	clearWorkerEnvironment(t)
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Close() })
+	err = runWithContext(context.Background(), []string{"-debug-listen", held.Addr().String()}, io.Discard,
+		func(context.Context, *workersdk.Worker) error {
+			t.Error("the worker started without its debug listener")
+			return nil
+		})
+	require.ErrorContains(t, err, "debug listen:")
 }
