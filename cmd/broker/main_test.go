@@ -383,13 +383,13 @@ func TestPoolConfigBoundsConnectionAttempts(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://hopper@127.0.0.1:1/hopper")
 	c, err := parseConfig(nil)
 	require.NoError(t, err)
-	pc, err := poolConfig(c)
+	pc, err := poolConfig(c.dsn, c.dbMaxConns)
 	require.NoError(t, err)
 	require.Equal(t, DefaultDBConnectTimeout, pc.ConnConfig.ConnectTimeout)
 	require.EqualValues(t, DefaultDBMaxConns, pc.MaxConns)
 
 	c.dsn += "?connect_timeout=2"
-	pc, err = poolConfig(c)
+	pc, err = poolConfig(c.dsn, c.dbMaxConns)
 	require.NoError(t, err)
 	require.Equal(t, 2*time.Second, pc.ConnConfig.ConnectTimeout, "the DSN's own bound wins")
 }
@@ -426,7 +426,7 @@ func TestASilentServerEndsAConnectionAttemptWithNoDeadline(t *testing.T) {
 	t.Setenv("HOPPER_DSN", "postgres://hopper@"+lis.Addr().String()+"/hopper?sslmode=disable")
 	c, err := parseConfig(nil)
 	require.NoError(t, err)
-	pc, err := poolConfig(c)
+	pc, err := poolConfig(c.dsn, c.dbMaxConns)
 	require.NoError(t, err)
 	p, err := pgxpool.NewWithConfig(context.Background(), pc)
 	require.NoError(t, err)
@@ -438,4 +438,46 @@ func TestASilentServerEndsAConnectionAttemptWithNoDeadline(t *testing.T) {
 	require.Error(t, err)
 	require.GreaterOrEqual(t, took, DefaultDBConnectTimeout-time.Second)
 	require.Less(t, took, DefaultDBConnectTimeout+3*time.Second)
+}
+
+func TestShardDSNs(t *testing.T) {
+	t.Setenv("HOPPER_DSN", "")
+	t.Setenv("HOPPER_SHARD_DSNS", "")
+	a := "postgres://h:h@a:5432/hopper?sslmode=disable"
+	b := "postgresql://h:h@b:5432/hopper?sslmode=disable"
+	c, err := parseConfig([]string{"-shard-dsns", a + " " + b})
+	require.NoError(t, err)
+	require.Equal(t, []string{a, b}, c.dsns())
+
+	c, err = parseConfig([]string{"-dsn", a})
+	require.NoError(t, err)
+	require.Equal(t, []string{a}, c.dsns())
+
+	for name, args := range map[string][]string{
+		"both":         {"-dsn", a, "-shard-dsns", a + " " + b},
+		"one":          {"-shard-dsns", a},
+		"keyword form": {"-shard-dsns", "host=a dbname=hopper"},
+		"duplicate":    {"-shard-dsns", a + " " + a},
+		"pool size":    {"-shard-dsns", a + "&pool_max_conns=4 " + b},
+	} {
+		_, err := parseConfig(args)
+		require.Error(t, err, name)
+		require.NotContains(t, err.Error(), "h:h@", "%s: an error must never echo a DSN", name)
+	}
+}
+
+// TestShardDSNsFromTheEnvironment: Compose and the chart set the variable,
+// and an empty HOPPER_DSN beside it (the shard overlays' override) is unset.
+func TestShardDSNsFromTheEnvironment(t *testing.T) {
+	a := "postgres://h:h@a:5432/hopper"
+	b := "postgres://h:h@b:5432/hopper"
+	t.Setenv("HOPPER_DSN", "")
+	t.Setenv("HOPPER_SHARD_DSNS", a+"  "+b+"\n")
+	c, err := parseConfig(nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{a, b}, c.dsns())
+
+	t.Setenv("HOPPER_DSN", a)
+	_, err = parseConfig(nil)
+	require.ErrorContains(t, err, "not both")
 }

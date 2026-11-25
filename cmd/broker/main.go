@@ -40,7 +40,9 @@ import (
 	"github.com/rpasco787/hopper/internal/debughttp"
 	"github.com/rpasco787/hopper/internal/metrics"
 	"github.com/rpasco787/hopper/internal/scheduler"
+	"github.com/rpasco787/hopper/internal/store"
 	"github.com/rpasco787/hopper/internal/store/postgres"
+	"github.com/rpasco787/hopper/internal/store/sharded"
 	"github.com/rpasco787/hopper/internal/sweep"
 )
 
@@ -50,6 +52,10 @@ type config struct {
 	leaseDuration, reaperInterval, pollInterval, retention, shutdownTimeout time.Duration
 	leaseStreamMaxAge, maxConnectionAge                                     time.Duration
 	maxLeaseBatch, dbMaxConns, confirmBatch, confirmFlights                 int
+
+	// shardDSNs is one connection string per shard, in shard order. When it
+	// is set, dsn is empty; see dsns.
+	shardDSNs []string
 
 	scheduler         bool
 	schedulerInterval time.Duration
@@ -70,7 +76,7 @@ var envVars = [][2]string{
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"}, {"max-lease-batch", "HOPPER_MAX_LEASE_BATCH"},
 	{"scheduler", "HOPPER_SCHEDULER"}, {"scheduler-interval", "HOPPER_SCHEDULER_INTERVAL"},
 	{"cron-file", "HOPPER_CRON_FILE"}, {"debug-listen", "HOPPER_DEBUG_LISTEN"},
-	{"db-max-conns", "HOPPER_DB_MAX_CONNS"},
+	{"db-max-conns", "HOPPER_DB_MAX_CONNS"}, {"shard-dsns", "HOPPER_SHARD_DSNS"},
 	{"lease-stream-max-age", "HOPPER_LEASE_STREAM_MAX_AGE"}, {"max-connection-age", "HOPPER_MAX_CONNECTION_AGE"},
 }
 
@@ -94,14 +100,30 @@ const DefaultDBMaxConns = 16
 // elected meanwhile. RPCs are bounded by their callers' deadlines either way.
 const DefaultDBConnectTimeout = 5 * time.Second
 
-// poolConfig is the broker's pgxpool configuration: the DSN, the pool size,
-// and a connect bound when the DSN has none.
-func poolConfig(c config) (*pgxpool.Config, error) {
-	pc, err := pgxpool.ParseConfig(c.dsn)
+// probeInterval and probeTimeout pace each shard's health probe. A shard
+// whose probe fails, or that returns an unavailable error to any call, is
+// passed over by leases and unkeyed enqueues for a second (docs/design/sharding.md).
+const (
+	probeInterval = 500 * time.Millisecond
+	probeTimeout  = time.Second
+)
+
+// dsns is every database the broker uses, in shard order.
+func (c config) dsns() []string {
+	if len(c.shardDSNs) > 0 {
+		return c.shardDSNs
+	}
+	return []string{c.dsn}
+}
+
+// poolConfig is the broker's pgxpool configuration for one database: the
+// DSN, the pool size, and a connect bound when the DSN has none.
+func poolConfig(dsn string, maxConns int) (*pgxpool.Config, error) {
+	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
-	pc.MaxConns = int32(c.dbMaxConns)
+	pc.MaxConns = int32(maxConns)
 	if pc.ConnConfig.ConnectTimeout == 0 {
 		pc.ConnConfig.ConnectTimeout = DefaultDBConnectTimeout
 	}
@@ -124,9 +146,10 @@ func minDBMaxConns(scheduler bool) int {
 // so a bad value can never leave a half-started broker behind.
 func parseConfig(args []string) (config, error) {
 	var c config
-	var metricsQueues string
+	var metricsQueues, shardDSNs string
 	fs := flag.NewFlagSet("broker", flag.ContinueOnError)
 	fs.StringVar(&c.dsn, "dsn", "", "PostgreSQL connection string (HOPPER_DSN)")
+	fs.StringVar(&shardDSNs, "shard-dsns", "", "space-separated postgres:// URLs, one per shard, in shard order; replaces -dsn (HOPPER_SHARD_DSNS)")
 	fs.StringVar(&c.listen, "listen", "127.0.0.1:9090", "trusted-network gRPC address (HOPPER_LISTEN)")
 	fs.StringVar(&c.metricsListen, "metrics-listen", "127.0.0.1:9091", "Prometheus HTTP address; empty disables metrics (HOPPER_METRICS_LISTEN)")
 	fs.StringVar(&c.debugListen, "debug-listen", "", "pprof HTTP address; empty disables profiling (HOPPER_DEBUG_LISTEN)")
@@ -166,7 +189,31 @@ func parseConfig(args []string) (config, error) {
 			}
 		}
 	}
-	if c.dsn == "" {
+	if shardDSNs != "" {
+		if c.dsn != "" {
+			return c, errors.New("set -dsn or -shard-dsns, not both")
+		}
+		c.shardDSNs = strings.Fields(shardDSNs)
+		if len(c.shardDSNs) < 2 {
+			return c, errors.New("-shard-dsns needs two or more DSNs; use -dsn for one database")
+		}
+		if len(c.shardDSNs) > store.MaxShards {
+			return c, fmt.Errorf("-shard-dsns lists more than %d shards", store.MaxShards)
+		}
+		seen := map[string]bool{}
+		for i, d := range c.shardDSNs {
+			if !strings.HasPrefix(d, "postgres://") && !strings.HasPrefix(d, "postgresql://") {
+				return c, fmt.Errorf("-shard-dsns entry %d must be a postgres:// URL", i) // never echo the DSN
+			}
+			if strings.Contains(d, "pool_max_conns") {
+				return c, errors.New("set -db-max-conns rather than pool_max_conns in the DSN")
+			}
+			if seen[d] {
+				return c, fmt.Errorf("-shard-dsns entry %d repeats an earlier one", i)
+			}
+			seen[d] = true
+		}
+	} else if c.dsn == "" {
 		return c, errors.New("-dsn or HOPPER_DSN is required")
 	}
 	// One knob for the pool size, so there is no precedence to remember.
@@ -339,19 +386,32 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	poolCfg, err := poolConfig(cfg)
+	// One pool per database. With one DSN this is the broker it has always
+	// been; with -shard-dsns each shard gets a pool of -db-max-conns.
+	dsns := cfg.dsns()
+	poolCfgs := make([]*pgxpool.Config, len(dsns))
+	pools := make([]*pgxpool.Pool, len(dsns))
+	for i, dsn := range dsns {
+		if poolCfgs[i], err = poolConfig(dsn, cfg.dbMaxConns); err != nil {
+			if len(dsns) > 1 {
+				return fmt.Errorf("shard %d: %w", i, err)
+			}
+			return err
+		}
+		pool, err := pgxpool.NewWithConfig(ctx, poolCfgs[i])
+		if err != nil {
+			if len(dsns) > 1 {
+				return fmt.Errorf("shard %d: open pool: %w", i, err)
+			}
+			return fmt.Errorf("open pool: %w", err)
+		}
+		defer pool.Close()
+		pools[i] = pool
+	}
+	stores, err := prepareShards(ctx, pools)
 	if err != nil {
 		return err
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
-	if err != nil {
-		return fmt.Errorf("open pool: %w", err)
-	}
-	defer pool.Close()
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		return fmt.Errorf("migrate: %w", err)
-	}
-	st := postgres.New(pool)
 	var (
 		reg      *prometheus.Registry
 		bm       *metrics.Broker
@@ -364,8 +424,10 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		st = st.WithObserver(bm)
-		if err := metrics.RegisterPool(reg, func() metrics.PoolStat { return pool.Stat() }); err != nil {
+		for i := range stores {
+			stores[i] = stores[i].WithObserver(bm)
+		}
+		if err := metrics.RegisterPool(reg, func() metrics.PoolStat { return poolSum(pools) }); err != nil {
 			return err
 		}
 		grpcMet, err = metrics.NewGRPCServerMetrics(reg)
@@ -404,10 +466,28 @@ func run(args []string) error {
 			"so anyone who can connect can read and mutate every job, including lease tokens",
 			"addr", cfg.listen)
 	}
+	// The broker serves one database's store directly; over several, the
+	// sharded store routes each call, and wakeups listen on every shard.
+	var (
+		st        store.Store     = stores[0]
+		announcer store.Announcer = stores[0]
+		listeners []store.Listener
+		sh        *sharded.Store
+	)
+	if len(stores) > 1 {
+		shards := make([]sharded.Shard, len(stores))
+		for i, s := range stores {
+			shards[i] = s
+		}
+		if sh, err = sharded.New(shards, logger); err != nil {
+			return err
+		}
+		st, announcer, listeners = sh, sh, sh.Listeners()
+	}
 	brokerCfg := broker.Config{
 		ConfirmBatch: cfg.confirmBatch, ConfirmFlights: cfg.confirmFlights,
 		LeaseDuration: cfg.leaseDuration, MaxLeaseBatch: cfg.maxLeaseBatch,
-		PollInterval: cfg.pollInterval, Wakeups: st, Logger: logger,
+		PollInterval: cfg.pollInterval, Wakeups: announcer, Listeners: listeners, Logger: logger,
 		LeaseStreamMaxAge: cfg.leaseStreamMaxAge, MaxConnectionAge: cfg.maxConnectionAge,
 	}
 	if bm != nil {
@@ -422,18 +502,41 @@ func run(args []string) error {
 	var sweeps sync.WaitGroup
 	// This defer runs before pool.Close, including an unexpected Serve failure.
 	defer func() { stopSweeps(); sweeps.Wait() }()
-	for _, loop := range sweep.All(st, cfg.retention) {
-		if loop.Name == "reaper" {
-			loop.Interval = cfg.reaperInterval
+	// Sweeps run per shard, on that shard's own store, so a shard that is
+	// down stalls only its own reaper, promoter and janitor.
+	for i, s := range stores {
+		shardLogger := logger
+		if len(stores) > 1 {
+			shardLogger = logger.With("shard", i)
 		}
-		loop.Logger = logger
-		sweeps.Add(1)
-		go func(l *sweep.Loop) {
-			defer sweeps.Done()
-			if err := l.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("sweep loop stopped", "loop", l.Name, "err", err)
+		for _, loop := range sweep.All(s, cfg.retention) {
+			if loop.Name == "reaper" {
+				loop.Interval = cfg.reaperInterval
 			}
-		}(loop)
+			loop.Logger = shardLogger
+			sweeps.Add(1)
+			go func(l *sweep.Loop) {
+				defer sweeps.Done()
+				if err := l.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
+					shardLogger.Error("sweep loop stopped", "loop", l.Name, "err", err)
+				}
+			}(loop)
+		}
+	}
+	if sh != nil {
+		// Each prober pings its shard on a session of its own, outside the
+		// pool, so a busy pool never makes a healthy shard look down.
+		probes := make([]sharded.Probe, len(stores))
+		for i := range stores {
+			p := postgres.NewProber(poolCfgs[i].ConnConfig)
+			defer p.Close()
+			probes[i] = p.Probe
+		}
+		sweeps.Add(1)
+		go func() {
+			defer sweeps.Done()
+			sh.Watch(sweepCtx, probes, probeInterval, probeTimeout)
+		}()
 	}
 	// Wakeups hold one pooled connection for the listener.
 	sweeps.Add(1)
@@ -456,14 +559,18 @@ func run(args []string) error {
 		}()
 	}
 	if bm != nil {
-		sampler := &metrics.DepthSampler{Source: st, Metrics: bm, Logger: logger}
-		sweeps.Add(1)
-		go func() {
-			defer sweeps.Done()
-			if err := sampler.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("queue depth sampler stopped", "err", err)
-			}
-		}()
+		// One sampler per shard: each counts its own database and labels the
+		// series with its shard.
+		for i, s := range stores {
+			sampler := &metrics.DepthSampler{Source: s, Metrics: bm, Shard: i, Logger: logger}
+			sweeps.Add(1)
+			go func() {
+				defer sweeps.Done()
+				if err := sampler.Run(sweepCtx); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("queue depth sampler stopped", "shard", i, "err", err)
+				}
+			}()
+		}
 	}
 	logger.Info("scheduler configured", "enabled", cfg.scheduler,
 		"interval", cfg.schedulerInterval.String(), "definitions", len(cfg.schedules))
@@ -498,7 +605,7 @@ func run(args []string) error {
 		logger.Warn("debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect",
 			"addr", debugLis.Addr().String())
 	}
-	logger.Info("broker listening", "addr", lis.Addr().String(),
+	logger.Info("broker listening", "addr", lis.Addr().String(), "shards", len(stores),
 		"lease_duration", cfg.leaseDuration.String(), "reaper_interval", cfg.reaperInterval.String(),
 		"retention", cfg.retention.String(), "db_max_conns", cfg.dbMaxConns,
 		"lease_stream_max_age", cfg.leaseStreamMaxAge.String(), "max_connection_age", cfg.maxConnectionAge.String())
