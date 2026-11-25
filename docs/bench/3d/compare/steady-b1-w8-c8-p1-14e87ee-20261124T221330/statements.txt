@@ -1,0 +1,17 @@
+calls|total_ms|pct_of_total|mean_ms|rows_per_call|blks_per_call|query
+31716|2480|38.4|0.078|0.9|20.9|with next as ( select c.id from unnest($1::text[]) as q(queue), lateral ( select id, prior
+30000|1773|27.5|0.059|1.0|5.3|insert into jobs (id, queue, payload, priority, max_attempts, run_at, idempotency_key, sta
+26540|1605|24.9|0.060|1.1|18.0|with mine as ( select j.id from unnest($1::uuid[], $2::uuid[]) as c(id, lease_id) join job
+2|200|3.1|99.972|1.0|5106.0|select count(*) from jobs where state = $1
+92|187|2.9|2.037|978.3|1424.7|select id, queue, payload, state, priority, run_at, attempts, max_attempts, lease_id, leas
+286|100|1.5|0.348|1.0|10.9|update jobs set state = 'completed', finished_at = now(), updated_at = now() where id = $1
+8|53|0.8|6.573|0.5|3163.8|select queue, $1 as state, count(*) as count from jobs where state = $2 group by queue uni
+35|23|0.4|0.664|3.6|57.2|with mine as ( select j.id, c.dur_us from unnest($1::uuid[], $2::uuid[], $3::int8[]) as c(
+44|11|0.2|0.249|0.0|18.4|select id, queue, attempts, max_attempts from jobs where state = 'leased' and lease_expire
+26|9|0.1|0.338|2.7|3.0|select to_char(clock_timestamp(), $1), $2, $3, $4 union all select to_char(clock_timestamp
+563|5|0.1|0.008|1.0|0.0|select pg_notify($1, q) from unnest($2::text[]) as q
+44|3|0.0|0.058|0.0|1.0|with due as ( select id from jobs where state = 'scheduled' and run_at <= now() order by r
+44|2|0.0|0.035|0.0|0.0|rollback
+2|1|0.0|0.735|1.0|10.0|update jobs set lease_expires = now() + $3::interval, updated_at = now() where id = $1 and
+1|1|0.0|0.652|1.0|0.0|select pg_stat_statements_reset()
+total|statements=20|calls=89457|total_ms=6453

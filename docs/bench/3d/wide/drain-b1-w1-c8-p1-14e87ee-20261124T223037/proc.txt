@@ -1,0 +1,62 @@
+clk_tck 100
+== end 72cfd87d94eba93ab4e5d8af6f0fe0140b48839cb0f05fb1a76d5061590871a7 9311
+9311 (app) S 9287 9311 9311 0 -1 4194560 8067 0 0 0 89 28 0 0 20 0 9 0 512245 1508368384 53148 18446744073709551615 1 1 0 0 0 0 1002060288 0 2143420159 0 0 0 17 4 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	app
+Umask:	0022
+State:	S (sleeping)
+Tgid:	9311
+Ngid:	0
+Pid:	9311
+PPid:	9287
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	9311	1
+NSpid:	9311	1
+NSpgid:	9311	1
+NSsid:	9311	1
+Kthread:	0
+VmPeak:	 1473016 kB
+VmSize:	 1473016 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  212968 kB
+VmRSS:	  212968 kB
+RssAnon:	  201548 kB
+RssFile:	   11420 kB
+RssShmem:	       0 kB
+VmData:	  275656 kB
+VmStk:	     132 kB
+VmExe:	    5456 kB
+VmLib:	       8 kB
+VmPTE:	     504 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	9
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	fffffffc3bba3a00
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	17
+nonvoluntary_ctxt_switches:	24

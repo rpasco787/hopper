@@ -30,7 +30,7 @@ class ConfigTest {
 
     @Test
     void configDefaults() throws Exception {
-        assertEquals(new Config("127.0.0.1:9090", "", 8, Duration.ZERO, Duration.ofSeconds(30), "info", ""),
+        assertEquals(new Config("127.0.0.1:9090", "", 8, Duration.ZERO, Duration.ofSeconds(30), "info", "", ""),
                 parse(NO_ENV));
     }
 
@@ -44,7 +44,7 @@ class ConfigTest {
                 "HOPPER_SHUTDOWN_TIMEOUT", "9s",
                 "HOPPER_LOG_LEVEL", "debug");
         assertEquals(new Config("broker.internal:9090", "worker-9", 17, Duration.ofSeconds(45),
-                Duration.ofSeconds(9), "debug", ""), parse(env));
+                Duration.ofSeconds(9), "debug", "", ""), parse(env));
     }
 
     @Test
@@ -61,6 +61,14 @@ class ConfigTest {
         assertEquals("127.0.0.1:9191", parse(Map.of("HOPPER_METRICS_LISTEN", "127.0.0.1:9191")).metricsListen());
         assertEquals("127.0.0.1:9292", parse(NO_ENV, "-metrics-listen", "127.0.0.1:9292").metricsListen());
         assertEquals("invalid metrics-listen address", fails(NO_ENV, "-metrics-listen", "nohost").getMessage());
+    }
+
+    @Test
+    void debugListenConfiguration() throws Exception {
+        assertEquals("", parse(NO_ENV).debugListen());
+        assertEquals("127.0.0.1:6061", parse(Map.of("HOPPER_DEBUG_LISTEN", "127.0.0.1:6061")).debugListen());
+        assertEquals("127.0.0.1:6062", parse(NO_ENV, "-debug-listen", "127.0.0.1:6062").debugListen());
+        assertEquals("invalid debug-listen address", fails(NO_ENV, "-debug-listen", "nohost").getMessage());
     }
 
     @Test
@@ -104,6 +112,7 @@ class ConfigTest {
         cases.put(List.of("-lease-duration", "-1s"), "lease-duration must not be negative");
         cases.put(List.of("-shutdown-timeout", "-1s"), "shutdown-timeout must not be negative");
         cases.put(List.of("-metrics-listen", "nohost"), "invalid metrics-listen address");
+        cases.put(List.of("-debug-listen", "nohost"), "invalid debug-listen address");
         cases.put(List.of("-log-level", "loud"), "invalid log level \"loud\" (want debug, info, warn or error)");
         cases.put(List.of("-concurrency", "many"), "invalid value \"many\" for flag -concurrency: parse error");
         cases.put(List.of("-concurrency", "9223372036854775808"),
@@ -225,6 +234,8 @@ class ConfigTest {
                     \tbroker gRPC address (HOPPER_BROKER) (default "127.0.0.1:9090")
                   -concurrency int
                     \tmaximum active deliveries (HOPPER_CONCURRENCY) (default 8)
+                  -debug-listen string
+                    \taccepted as cmd/worker accepts it; the Java example worker serves no profiles (HOPPER_DEBUG_LISTEN)
                   -lease-duration duration
                     \trequested lease duration; zero uses broker default (HOPPER_LEASE_DURATION)
                   -log-level string

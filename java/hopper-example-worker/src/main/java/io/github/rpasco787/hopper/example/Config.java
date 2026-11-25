@@ -19,7 +19,7 @@ import java.util.Set;
  * @param logLevel the text as given; {@link #slogLevel} reads it
  */
 record Config(String broker, String workerId, int concurrency, Duration leaseDuration,
-        Duration shutdownTimeout, String logLevel, String metricsListen) {
+        Duration shutdownTimeout, String logLevel, String metricsListen, String debugListen) {
 
     static final int MAX_CONCURRENCY = 1 << 16;
 
@@ -30,6 +30,8 @@ record Config(String broker, String workerId, int concurrency, Duration leaseDur
                 \tbroker gRPC address (HOPPER_BROKER) (default "127.0.0.1:9090")
               -concurrency int
                 \tmaximum active deliveries (HOPPER_CONCURRENCY) (default 8)
+              -debug-listen string
+                \taccepted as cmd/worker accepts it; the Java example worker serves no profiles (HOPPER_DEBUG_LISTEN)
               -lease-duration duration
                 \trequested lease duration; zero uses broker default (HOPPER_LEASE_DURATION)
               -log-level string
@@ -50,10 +52,12 @@ record Config(String broker, String workerId, int concurrency, Duration leaseDur
             new String[] {"lease-duration", "HOPPER_LEASE_DURATION"},
             new String[] {"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"},
             new String[] {"log-level", "HOPPER_LOG_LEVEL"},
-            new String[] {"metrics-listen", "HOPPER_METRICS_LISTEN"});
+            new String[] {"metrics-listen", "HOPPER_METRICS_LISTEN"},
+            new String[] {"debug-listen", "HOPPER_DEBUG_LISTEN"});
 
     private static final Set<String> FLAGS = Set.of(
-            "broker", "worker-id", "concurrency", "lease-duration", "shutdown-timeout", "log-level", "metrics-listen");
+            "broker", "worker-id", "concurrency", "lease-duration", "shutdown-timeout", "log-level", "metrics-listen",
+            "debug-listen");
 
     /** The values being parsed; a flag.Value per field. */
     private static final class Values {
@@ -64,6 +68,7 @@ record Config(String broker, String workerId, int concurrency, Duration leaseDur
         Duration shutdownTimeout = Duration.ofSeconds(30);
         String logLevel = "info";
         String metricsListen = "";
+        String debugListen = "";
 
         /** flag.FlagSet.Set: false where the value doesn't parse. */
         boolean set(String name, String value) {
@@ -71,6 +76,7 @@ record Config(String broker, String workerId, int concurrency, Duration leaseDur
                 case "broker" -> broker = value;
                 case "worker-id" -> workerId = value;
                 case "metrics-listen" -> metricsListen = value;
+                case "debug-listen" -> debugListen = value;
                 case "log-level" -> logLevel = value;
                 case "concurrency" -> {
                     Long n = parseGoInt(value);
@@ -179,9 +185,12 @@ record Config(String broker, String workerId, int concurrency, Duration leaseDur
         if (!v.metricsListen.isEmpty() && !splitsAsHostPort(v.metricsListen)) {
             throw ConfigException.invalid("invalid metrics-listen address");
         }
+        if (!v.debugListen.isEmpty() && !splitsAsHostPort(v.debugListen)) {
+            throw ConfigException.invalid("invalid debug-listen address");
+        }
         slogLevel(v.logLevel);
         return new Config(v.broker, v.workerId, (int) v.concurrency, v.leaseDuration, v.shutdownTimeout,
-                v.logLevel, v.metricsListen);
+                v.logLevel, v.metricsListen, v.debugListen);
     }
 
     /** The lowest level this configuration logs, or empty for none (a level above ERROR). */

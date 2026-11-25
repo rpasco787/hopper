@@ -12,13 +12,30 @@ import unittest
 # BENCH_TEST_RETRIED the drain's retried jobs, BENCH_TEST_NO_WAITS=1 makes the
 # wait-event sampler come back empty, and BENCH_TEST_STATS_DELAY makes stats
 # collect for that many seconds before printing, as the real one does.
+# The workers are BENCH_TEST_WORKER_IDS (two by default), each with its first
+# 12 characters as hostname, as Docker's are. BENCH_TEST_COMPLETED is the
+# successive answers to a count of completed jobs (the last repeats),
+# BENCH_TEST_LEASED the rows leased now, BENCH_TEST_TICKS_<LABEL> each worker's
+# CPU ticks in the /proc snapshot of that label (default 100),
+# BENCH_TEST_MEMORY each worker's memory limit in bytes, BENCH_TEST_EXITED=1
+# makes the workers exited, and BENCH_TEST_NO_JFR=1 leaves docker cp nothing.
+# The warm-throughput query answers its offset plus 21, so a test sees the offset.
 FAKE_DOCKER = r'''#!/usr/bin/env python3
-import os, sys, time
+import json, os, re, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 trace = Path(os.environ['BENCH_TEST_TRACE'])
 def event(name):
     with trace.open('a') as f: f.write(name + '\n')
+def events():
+    return trace.read_text().splitlines() if trace.exists() else []
+ids = os.environ.get('BENCH_TEST_WORKER_IDS', 'a1b2c3d4e5f6aaaa f6e5d4c3b2a1bbbb').split()
+def number(c):
+    return ids.index(c) + 1 if c in ids else 0
+def completed():
+    seq = os.environ.get('BENCH_TEST_COMPLETED', '1').split(',')
+    event('completed count')
+    return seq[min(events().count('completed count'), len(seq)) - 1]
 if args[0] == 'info':
     print(os.environ.get('BENCH_TEST_NCPU', '8'))
 elif args[0] == 'stats':
@@ -31,6 +48,46 @@ elif args[0] == 'stats':
     print('hopper-bench-broker-1,50%')
     print('hopper-bench-worker-1,20%')
     time.sleep(0.02)
+elif args[0] == 'inspect':
+    if '--format' in args:
+        i = args.index('--format')
+        fmt, targets = args[i + 1], args[i + 2:]
+        for c in targets:
+            if '.State.Pid' in fmt: print(c, 100 + number(c))
+            elif 'Networks' in fmt: print('hopper-bench_default')
+            elif '.Name' in fmt: print('/hopper-bench-worker-%d' % number(c))
+    else:
+        exited = os.environ.get('BENCH_TEST_EXITED') == '1'
+        print(json.dumps([{
+            'Id': c, 'Name': '/hopper-bench-worker-%d' % number(c), 'Image': 'sha256:fake',
+            'Config': {'Hostname': c[:12], 'Env': ['HOPPER_LOG_LEVEL=warn']},
+            'State': {'StartedAt': '2026-11-25T00:00:00.000000000Z', 'Running': not exited,
+                      'OOMKilled': False, 'ExitCode': 3 if exited else 0, 'Pid': 100 + number(c)},
+            'HostConfig': {'Memory': int(os.environ.get('BENCH_TEST_MEMORY', '0')), 'MemorySwap': 0,
+                           'CpusetCpus': ''},
+        } for c in args[1:]]))
+elif args[0] == 'run':
+    event('docker run: ' + ' '.join(args))
+    if '--pid=host' in args:
+        i = args.index('snapshot')
+        label, pairs = args[i + 1], args[i + 2:]
+        ticks = int(os.environ.get('BENCH_TEST_TICKS_' + label.upper(), '100'))
+        print('clk_tck 100')
+        for c, pid in zip(pairs[0::2], pairs[1::2]):
+            print('== %s %s %s' % (label, c, pid))
+            print('%s (app) S 1 1 1 0 -1 4194560 10 0 0 0 %d %d 0 0 20 0 9 0 5 0'
+                  % (pid, ticks - ticks // 2, ticks // 2))
+            print('Name:\tapp\nVmHWM:\t   20480 kB\nVmRSS:\t   19456 kB\nThreads:\t9')
+    elif any('PrintFlagsFinal' in a for a in args):
+        print('     bool UseSerialGC                              = true                                      {product} {command line}')
+    elif 'wget' in args:
+        print('fake profile')
+elif args[0] == 'cp':
+    event('docker cp: ' + ' '.join(args[1:]))
+    if os.environ.get('BENCH_TEST_NO_JFR') != '1':
+        Path(args[2]).write_text('JFR')
+elif args[0] == 'logs':
+    print('{"time":"2026-11-25T00:00:01Z","level":"INFO","msg":"worker starting"}')
 elif args[0] == 'compose':
     event('compose files: ' + ' '.join(a for a in args if a.endswith(('.yml', '.yaml'))))
     if 'up' in args:
@@ -41,7 +98,13 @@ elif args[0] == 'compose':
     elif 'exec' in args:
         sql = args[-1]
         event('sql: ' + ' '.join(sql.split())[:60])
-        if "where state = 'completed'" in sql: print('1')
+        if "filter (where state = 'completed')" in sql:
+            print('%s|%s' % (completed(), os.environ.get('BENCH_TEST_LEASED', '3')))
+        elif 'offset' in sql: print(int(re.search(r'offset (\d+)', sql).group(1)) + 21)
+        elif 'floor(extract' in sql:
+            event('rate sql: ' + ' '.join(sql.split()))
+            print('0|5\n1|7')
+        elif "where state = 'completed'" in sql: print(completed())
         elif 'to_regclass' in sql: print('t')
         elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
@@ -60,7 +123,6 @@ elif args[0] == 'compose':
         elif 'n_live_tup' in sql: print('12:00:00|10|5.0|3|4|0')
         elif 'with next as' in sql: print('0.500|12.0')
     elif 'config' in args:
-        import json
         services = {}
         path = next((a for a in args if a.endswith('settings.yaml')), None)
         if path and os.environ.get('BENCH_TEST_IGNORE_SETTINGS') != '1':
@@ -72,10 +134,18 @@ elif args[0] == 'compose':
                     svc = line.strip().rstrip(':')
                     services[svc] = {'environment': {}}
         print(json.dumps({'services': services}))
-    elif 'logs' in args: print('"lease stream opened"\n' * 16, end='')
+    elif 'ps' in args:
+        print('\n'.join(ids))
+    elif 'logs' in args:
+        for c in ids:
+            for _ in range(8):
+                print(json.dumps({'time': '2026-11-25T00:00:00.250000000Z', 'level': 'INFO',
+                                  'msg': 'lease stream opened', 'worker_id': c[:12] + '-1'}))
     elif 'run' in args:
         event('compose run: ' + ' '.join(args))
-        print('{}')
+        print(json.dumps({'throughput': 1000, 'retried': 0, 'enqueue': {'p50_ms': 1, 'p99_ms': 2},
+                          'pickup': {'p50_ms': 1, 'p99_ms': 3}, 'end_to_end': {'p50_ms': 2, 'p99_ms': 4},
+                          'offered_rate': 1000, 'max_lag_ms': 5}))
 '''
 
 # Stands in for curl. It counts its calls in BENCH_TEST_CURLS and reports Ack
@@ -358,7 +428,7 @@ class BenchmarkTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = run_bench(root, scenario='steady')
-            # The fake's loadgen JSON is {}, so steady's numbers are empty; only the waits matter here.
+            # Only the waits matter here.
             self.assertTrue((evidence_dir(root) / 'waits.psv').exists(), result.stderr)
 
     def test_no_sample_lands_after_the_run(self):
@@ -459,6 +529,252 @@ class BenchmarkTest(unittest.TestCase):
             result = run_bench(root, BENCH_TEST_ACKS='0')
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('the Ack histograms saw 0 calls for 1 jobs', (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_row_carries_worker_cpu_memory_threads_and_startup(self):
+        # Two workers at 100 ticks (1 s) each since they started, 1,000 jobs
+        # (and 1,000 Acks, so the drain's Ack check passes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', BENCH_TEST_COMPLETED='1000', BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['worker_sdk'], row['worker_cpu_ms_per_1k'], row['worker_peak_rss_mib'],
+                              row['worker_threads'], row['startup_ms']), ('go', '2000', '20.0', '9', '250'))
+            ev = evidence_dir(root)
+            self.assertIn('== end a1b2c3d4e5f6aaaa 101', (ev / 'proc.txt').read_text())
+            self.assertTrue((ev / 'worker-1.stdout').exists())
+            self.assertTrue((ev / 'worker-2.stdout').exists())
+            self.assertIn('"Hostname": "a1b2c3d4e5f6"', (ev / 'workers.json').read_text())
+            self.assertIn('lease stream opened', (ev / 'brokers.log').read_text())
+
+    def test_steady_counts_worker_cpu_between_its_snapshots(self):
+        # 40 ticks before the measured run and 100 after, on each of two workers: 1.2 s for 1,000 jobs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, scenario='steady', BENCH_TEST_TICKS_BEFORE='40',
+                               BENCH_TEST_TICKS_AFTER='100', BENCH_TEST_COMPLETED='0,1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_cpu_ms_per_1k'], '1200')
+            events = trace(root)
+            snaps = [i for i, e in enumerate(events) if e.startswith('docker run: ') and '--pid=host' in e]
+            measured = next(i for i, e in enumerate(events) if e.startswith('compose run: ') and '-rate' in e)
+            self.assertEqual(len(snaps), 2, events)
+            self.assertLess(snaps[0], measured)
+            self.assertGreater(snaps[1], measured)
+
+    def test_a_worker_that_exited_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_EXITED='1')
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(rows(root), [])
+            self.assertIn('worker-1 exited during the run (exit 3, OOM-killed false)',
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_go_is_the_default_worker_and_adds_no_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['worker_sdk'], row['worker_mem']), ('go', ''))
+            self.assertNotIn('java.yaml', '\n'.join(trace(root)))
+            self.assertFalse((evidence_dir(root) / 'jvm-flags.txt').exists())
+            self.assertIn('worker: go', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_java_runs_the_java_overlay_and_records_its_jvm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_sdk'], 'java')
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('deploy/bench/java.yaml', call)
+            ev = evidence_dir(root)
+            self.assertIn('java opts: -XX:+UseSerialGC', (ev / 'machine.txt').read_text())
+            self.assertIn('UseSerialGC', (ev / 'jvm-flags.txt').read_text())
+            [probe] = [e for e in trace(root) if 'PrintFlagsFinal' in e]
+            self.assertIn('JAVA_OPTS=-XX:+UseSerialGC -XX:+PrintFlagsFinal -version', probe)
+
+    def test_worker_must_be_go_or_java(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), WORKER='python')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WORKER must be go or java', result.stderr)
+
+    def test_worker_jvm_applies_to_java_only_and_holds_no_quotes(self):
+        for kw, msg in [({'WORKER_JVM': '-Xmx1g'}, 'WORKER_JVM applies to WORKER=java only'),
+                        ({'WORKER': 'java', 'WORKER_JVM': '-Dx="y"'}, 'WORKER_JVM may not contain quotes')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), VARIANT='x', **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_worker_mem_limits_every_worker_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_MEM='384m', BENCH_TEST_MEMORY='402653184')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_mem'], '384m')
+            mem = (evidence_dir(root) / 'workers-mem.yaml').read_text()
+            for svc in ('worker', 'worker-b', 'worker-c', 'worker-d'):
+                self.assertIn(f'  {svc}: {{mem_limit: 384m, memswap_limit: 384m}}', mem)
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('workers-mem.yaml', call)
+
+    def test_a_memory_limit_the_workers_did_not_get_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_MEM='384m')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('worker-1 ran with memory limit 0, not 402653184',
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_worker_mem_must_be_a_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), WORKER_MEM='lots')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WORKER_MEM must be a size such as 384m or 1g', result.stderr)
+
+    def test_drain_reports_warm_throughput_and_its_rate_curve(self):
+        # 1,000 jobs, and 1,000 Acks so the drain's Ack check passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', WARM_JOBS='100', BENCH_TEST_COMPLETED='1000',
+                               BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['warm_throughput'], '120')
+            # The fake answers the query's offset plus 21: offset 99 is the 100th completion.
+            self.assertIn('0|5', (evidence_dir(root) / 'rate.psv').read_text())
+            self.assertIn('warm jobs: 100', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_the_rate_curve_reads_jobs_once_with_its_origin_computed_first(self):
+        # The first lease is a scalar subquery, which PostgreSQL runs once
+        # (an InitPlan). As a join it was planned on the preload's statistics,
+        # which see no completed rows, and a nested loop then re-ran the
+        # min(leased_at) scan for every completed job: the 200,000-job pilot
+        # drain's rate.psv query was still running after 12 minutes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', BENCH_TEST_COMPLETED='1000', BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [q] = [e for e in trace(root) if e.startswith('rate sql: ')]
+            self.assertIn('(select min(leased_at) from jobs)', q)
+            self.assertEqual(q.count(' from jobs'), 2, q)  # the curve's scan and the subquery's, no join
+            self.assertNotIn('from jobs j,', q)
+
+    def test_warm_jobs_and_warmup_belong_to_their_scenarios(self):
+        for scenario, kw, msg in [('drain', {'JOBS': '10', 'WARM_JOBS': '10'}, 'WARM_JOBS must be less than JOBS'),
+                                  ('steady', {'WARM_JOBS': '5'}, 'WARM_JOBS applies to drain only'),
+                                  ('drain', {'WARMUP': '5', 'VARIANT': 'w'}, 'WARMUP applies to steady only'),
+                                  ('drain', {'WARM_JOBS': 'some'}, 'WARM_JOBS must be a whole number')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_steady_warmup_runs_first_and_counts_nothing(self):
+        # 600 jobs completed by the warm-up, 1,600 by the end: the measured run's 1,000
+        # carry the 1,000 commits between the two snapshots.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, scenario='steady', WARMUP='5', VARIANT='warm', BENCH_TEST_COMPLETED='600,1600')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            loads = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertEqual(len(loads), 2, loads)
+            self.assertIn('-duration 5s', loads[0])
+            self.assertIn('-run warmup', loads[0])
+            self.assertNotIn('-run warmup', loads[1])
+            [row] = rows(root)
+            self.assertEqual(row['commits_per_job'], '1.00')
+            self.assertTrue((evidence_dir(root) / 'warmup.json').exists())
+
+    def test_drain_records_the_most_rows_leased_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_LEASED='7')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['max_leased'], '7')
+
+    def test_more_rows_leased_than_slots_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKERS='1', CONCURRENCY='2', BENCH_TEST_LEASED='3')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("3 rows were leased at once, more than the workers' 2 slots",
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_drain_preload_carries_work_ms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORK_MS='15000', VARIANT='wide')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [preload] = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertIn('-work-ms 15000', preload)
+
+    def test_jfr_records_each_java_worker_and_keeps_the_recordings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java', JFR='1', JFR_SETTLE='0', VARIANT='jfr')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            ev = evidence_dir(root)
+            opts = (ev / 'machine.txt').read_text()
+            self.assertIn('-XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=1s,'
+                          'jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off', opts)
+            self.assertTrue((ev / 'worker-1.jfr').exists())
+            self.assertTrue((ev / 'worker-2.jfr').exists())
+            # The flags probe runs the JVM without the recording.
+            [probe] = [e for e in trace(root) if 'PrintFlagsFinal' in e]
+            self.assertNotIn('StartFlightRecording', probe)
+
+    def test_a_missing_recording_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java', JFR='1', JFR_SETTLE='0', VARIANT='jfr', BENCH_TEST_NO_JFR='1')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('no JFR recording from worker-1 worker-2', (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_profiles_need_their_worker_and_a_drain(self):
+        for scenario, kw, msg in [('drain', {'JFR': '1'}, 'JFR applies to WORKER=java drains only'),
+                                  ('steady', {'JFR': '1', 'WORKER': 'java'}, 'JFR applies to WORKER=java drains only'),
+                                  ('drain', {'JFR': '0', 'WORKER': 'java'}, 'JFR must be at least 1 second'),
+                                  ('drain', {'WORKER_PPROF': '1', 'WORKER': 'java'},
+                                   'WORKER_PPROF applies to WORKER=go drains only')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, VARIANT='p', **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_worker_pprof_fetches_three_profiles_from_the_first_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_PPROF='0', WORKER_PPROF_SECONDS='1', VARIANT='pprof')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            ev = evidence_dir(root)
+            self.assertIn('  worker:\n    environment:\n      HOPPER_DEBUG_LISTEN: "0.0.0.0:6060"\n',
+                          (ev / 'settings.yaml').read_text())
+            fetches = [e for e in trace(root) if e.startswith('docker run: ') and 'wget' in e]
+            for path in ('heap?debug=1', 'goroutine?debug=1', 'profile?seconds=1'):
+                self.assertTrue(any(f'http://hopper-bench-worker-1:6060/debug/pprof/{path}' in e for e in fetches),
+                                fetches)
+            for f in ('worker-heap.txt', 'worker-goroutine.txt', 'worker-cpu.pprof'):
+                self.assertTrue((ev / f).exists(), f)
+
+    def test_new_knobs_need_a_variant(self):
+        for scenario, kw, knob in [('steady', {'WARMUP': '5'}, 'WARMUP'),
+                                   ('drain', {'WORKER': 'java', 'JFR': '1'}, 'JFR'),
+                                   ('drain', {'WORKER_PPROF': '0'}, 'WORKER_PPROF'),
+                                   ('drain', {'WORKER': 'java', 'WORKER_JVM': '-Xmx1g'}, 'WORKER_JVM'),
+                                   ('drain', {'WORK_MS': '5'}, 'WORK_MS')]:
+            with self.subTest(knob=knob), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f'{knob} changes the', result.stderr)
 
 
 if __name__ == '__main__':

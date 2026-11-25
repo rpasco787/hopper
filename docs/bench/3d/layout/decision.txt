@@ -1,0 +1,20 @@
+== java against go at w8c16
+b1 throughput: java-w8c16 2,262 (1,795-2,573) vs go-w8c16 7,356 (6,472-7,474)  n=3/3  0.308x  worse
+b1 warm_throughput: java-w8c16 2,892 (2,373-3,309) vs go-w8c16 7,094 (6,583-7,892)  n=3/3  0.408x  worse
+b1 worker_cpu_ms_per_1k: java-w8c16 1,378 (1,204-1,696) vs go-w8c16 127 (127-138)  n=3/3  0.092x  worse
+== java against go at w2c64
+b1 throughput: java-w2c64 7,817 (7,552-7,983) vs go-w2c64 12,946 (12,945-13,014)  n=3/3  0.604x  worse
+b1 warm_throughput: java-w2c64 10,418 (9,802-10,650) vs go-w2c64 13,941 (13,715-15,609)  n=3/3  0.747x  worse
+b1 worker_cpu_ms_per_1k: java-w2c64 308 (300-330) vs go-w2c64 69.00 (67.00-69.00)  n=3/3  0.224x  worse
+== java against go at w1c128
+b1 throughput: java-w1c128 8,475 (8,303-8,800) vs go-w1c128 14,153 (13,461-14,692)  n=3/3  0.599x  worse
+b1 warm_throughput: java-w1c128 11,506 (9,879-11,710) vs go-w1c128 15,831 (14,857-17,347)  n=3/3  0.727x  worse
+b1 worker_cpu_ms_per_1k: java-w1c128 205 (194-207) vs go-w1c128 58.00 (57.00-60.00)  n=3/3  0.283x  worse
+== java at w2c64 against java at w8c16
+b1 throughput: java-w2c64 7,817 (7,552-7,983) vs java-w8c16 2,262 (1,795-2,573)  n=3/3  3.456x  helps
+b1 warm_throughput: java-w2c64 10,418 (9,802-10,650) vs java-w8c16 2,892 (2,373-3,309)  n=3/3  3.602x  helps
+b1 worker_cpu_ms_per_1k: java-w2c64 308 (300-330) vs java-w8c16 1,378 (1,204-1,696)  n=3/3  4.474x  helps
+== java at w1c128 against java at w8c16
+b1 throughput: java-w1c128 8,475 (8,303-8,800) vs java-w8c16 2,262 (1,795-2,573)  n=3/3  3.747x  helps
+b1 warm_throughput: java-w1c128 11,506 (9,879-11,710) vs java-w8c16 2,892 (2,373-3,309)  n=3/3  3.979x  helps
+b1 worker_cpu_ms_per_1k: java-w1c128 205 (194-207) vs java-w8c16 1,378 (1,204-1,696)  n=3/3  6.722x  helps

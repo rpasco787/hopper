@@ -16,7 +16,7 @@ from collections import defaultdict
 # own (BROKER_ENV, WORKER_ENV, PG_ARGS, BENCH_SQL, EXPLAIN) are folded into
 # variant: scripts/bench.sh refuses them without one.
 SETUP = ('ref', 'harness', 'scenario', 'variant', 'payload_bytes', 'sync_commit', 'db_max_conns',
-         'workers', 'concurrency', 'vm_cpus', 'pinned')
+         'workers', 'concurrency', 'vm_cpus', 'pinned', 'worker_sdk', 'worker_mem')
 WANT = 5
 # Under PIN=1, a role is saturated at 90% of the cores scripts/bench.sh gives
 # it, in percent of one core. Every broker may use CPUs 2 and 3, so the
@@ -29,6 +29,11 @@ HEADER = ('| brokers | runs | jobs/s median (range) | postgres CPU | CPU per bro
           '| on-CPU % | Lock+LWLock % | IO % | lease ms | lease blocks | commits/job | WAL syncs/job '
           '| WAL KB/job | HOT % | ack p99 ms | hb p99 ms | batch ack/hb | fallback % ack/hb | saturated |')
 RULE = '|---:|---:|---|' + '---:|' * 16 + '---|'
+WORKER_HEADER = ('| brokers | runs | warm jobs/s median (range) | max leased | worker CPU ms per 1k jobs '
+                 '| peak RSS MiB per worker | threads per worker | startup ms |')
+WORKER_RULE = '|---:|---:|---|---:|---:|---:|---:|---:|'
+# What scripts/bench_workers.py writes for a value it could not compute.
+UNKNOWN = '-'
 
 
 def fmt(x, digits=0):
@@ -40,7 +45,7 @@ def pair(a, b, digits=1):
 
 
 def median_of(rs, key):
-    vals = [float(r[key]) for r in rs if r.get(key) not in (None, '')]
+    vals = [float(r[key]) for r in rs if r.get(key) not in (None, '', UNKNOWN)]
     return statistics.median(vals) if vals else None
 
 
@@ -107,6 +112,18 @@ def summarize(rows):
             ]
             lines.append('| ' + ' | '.join(cells) + ' |')
         lines.append('')
+        if any(r.get('worker_cpu_ms_per_1k') for b in groups[setup] for r in groups[setup][b]):
+            lines += [WORKER_HEADER, WORKER_RULE]
+            for brokers in sorted(groups[setup]):
+                rs = groups[setup][brokers]
+                warm = [float(r['warm_throughput']) for r in rs if r.get('warm_throughput') not in (None, '', UNKNOWN)]
+                cells = [str(brokers), str(len(rs)),
+                         f'{fmt(statistics.median(warm))} ({fmt(min(warm))}–{fmt(max(warm))})' if warm else '–',
+                         fmt(median_of(rs, 'max_leased')), fmt(median_of(rs, 'worker_cpu_ms_per_1k')),
+                         fmt(median_of(rs, 'worker_peak_rss_mib'), 1), fmt(median_of(rs, 'worker_threads')),
+                         fmt(median_of(rs, 'startup_ms'))]
+                lines.append('| ' + ' | '.join(cells) + ' |')
+            lines.append('')
         if 1 in throughputs and len(throughputs) > 1:
             for n in sorted(throughputs):
                 if n == 1:

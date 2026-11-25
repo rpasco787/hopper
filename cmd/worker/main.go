@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rpasco787/hopper/internal/debughttp"
 	"github.com/rpasco787/hopper/internal/metrics"
 	workersdk "github.com/rpasco787/hopper/worker"
 )
@@ -23,7 +24,7 @@ const maxWorkerConcurrency = 1 << 16
 
 type config struct {
 	broker, id, logLevel           string
-	metricsListen                  string
+	metricsListen, debugListen     string
 	concurrency                    int
 	leaseDuration, shutdownTimeout time.Duration
 }
@@ -36,6 +37,7 @@ var envVars = [][2]string{
 	{"shutdown-timeout", "HOPPER_SHUTDOWN_TIMEOUT"},
 	{"log-level", "HOPPER_LOG_LEVEL"},
 	{"metrics-listen", "HOPPER_METRICS_LISTEN"},
+	{"debug-listen", "HOPPER_DEBUG_LISTEN"},
 }
 
 func parseConfig(args []string) (config, error) {
@@ -48,6 +50,7 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful drain budget (HOPPER_SHUTDOWN_TIMEOUT)")
 	fs.StringVar(&c.logLevel, "log-level", "info", "debug/info/warn/error (HOPPER_LOG_LEVEL)")
 	fs.StringVar(&c.metricsListen, "metrics-listen", "", "Prometheus HTTP address; empty disables metrics (HOPPER_METRICS_LISTEN)")
+	fs.StringVar(&c.debugListen, "debug-listen", "", "pprof HTTP address; empty disables profiling (HOPPER_DEBUG_LISTEN)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -81,6 +84,11 @@ func parseConfig(args []string) (config, error) {
 	if c.metricsListen != "" {
 		if _, _, err := net.SplitHostPort(c.metricsListen); err != nil {
 			return c, errors.New("invalid metrics-listen address")
+		}
+	}
+	if c.debugListen != "" {
+		if _, _, err := net.SplitHostPort(c.debugListen); err != nil {
+			return c, errors.New("invalid debug-listen address")
 		}
 	}
 	if _, err := parseLevel(c.logLevel); err != nil {
@@ -175,6 +183,24 @@ func runWithContext(ctx context.Context, args []string, stdout io.Writer, start 
 			metricsErr <- nil
 		}()
 		logger.Info("metrics listening", "addr", metricsLis.Addr().String())
+	}
+	if cfg.debugListen != "" {
+		// Profiling is a diagnostic, not a dependency, as on the broker: a bind
+		// failure stops the worker before it starts, and a serve failure is
+		// logged while the worker keeps going.
+		debugLis, err := net.Listen("tcp", cfg.debugListen)
+		if err != nil {
+			return fmt.Errorf("debug listen: %w", err)
+		}
+		debugSrv := debughttp.NewServer()
+		defer func() { _ = debugSrv.Close() }() // ends any profile in flight; nothing waits on it
+		go func() {
+			if err := debugSrv.Serve(debugLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("debug server stopped", "err", err)
+			}
+		}()
+		logger.Warn("debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect",
+			"addr", debugLis.Addr().String())
 	}
 	w := workersdk.New(cfg.broker, workersdk.Options{
 		ID: cfg.id, Concurrency: cfg.concurrency, LeaseDuration: cfg.leaseDuration,

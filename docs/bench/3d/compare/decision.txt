@@ -1,0 +1,12 @@
+b1 throughput: java 2,045 (1,939-2,296) vs go 7,699 (7,240-8,508)  n=5/5  0.266x  worse
+b1 warm_throughput: java 2,872 (2,161-3,416) vs go 8,088 (6,751-9,442)  n=5/5  0.355x  worse
+b1 worker_cpu_ms_per_1k: java 1,491 (1,342-1,566) vs go 119 (110-130)  n=5/5  0.080x  worse
+b1 worker_peak_rss_mib: java 128 (127-129) vs go 21.40 (21.20-21.50)  n=5/5  0.168x  worse
+b1 worker_threads: java 23.00 (23.00-23.00) vs go 9.00 (9.00-9.00)  n=5/5  0.391x  worse
+b1 startup_ms: java 4,119 (3,923-4,864) vs go 174 (136-210)  n=5/5  0.042x  worse
+b1 throughput: java 1,001 (997-1,002) vs go 1,001 (1,000-1,004)  n=5/5  1.000x  no measurable effect
+b1 pickup_p99_ms: java 15.66 (13.59-17.29) vs go 10.01 (7.61-11.47)  n=5/5  0.639x  worse
+b1 e2e_p99_ms: java 58.97 (48.88-75.76) vs go 29.75 (25.98-34.96)  n=5/5  0.505x  worse
+b1 worker_cpu_ms_per_1k: java 915 (852-1,023) vs go 249 (246-287)  n=5/5  0.272x  worse
+b1 worker_peak_rss_mib: java 128 (127-129) vs go 21.20 (21.10-21.30)  n=5/5  0.166x  worse
+b1 startup_ms: java 2,634 (2,143-2,859) vs go 107 (86-158)  n=5/5  0.041x  worse

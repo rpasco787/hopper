@@ -37,6 +37,12 @@ docs/plans
 # Bulky per-run benchmark files; the rest of docs/bench/ is the evidence.
 docs/bench/**/logs.txt
 docs/bench/**/broker-cpu.pprof
+# Phase 3d: raw worker logs, JFR recordings and worker CPU profiles stay local;
+# their text extracts are the evidence (docs/bench/3d/README.txt).
+docs/bench/**/*.stdout
+docs/bench/**/*.stderr
+docs/bench/**/*.jfr
+docs/bench/**/worker-cpu.pprof
 
 # Bytecode from importing scripts/bench_summary.py in its tests.
 __pycache__/

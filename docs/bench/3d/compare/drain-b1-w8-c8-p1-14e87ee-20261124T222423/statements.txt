@@ -1,0 +1,17 @@
+calls|total_ms|pct_of_total|mean_ms|rows_per_call|blks_per_call|query
+23512|17728|55.3|0.754|6.0|470.9|with next as ( select c.id from unnest($1::text[]) as q(queue), lateral ( select id, prior
+11127|5056|15.8|0.454|1.0|13.8|update jobs set state = $3, finished_at = now(), updated_at = now() where id = $1 and leas
+8572|4315|13.5|0.503|15.0|313.1|with mine as ( select j.id from unnest($1::uuid[], $2::uuid[]) as c(id, lease_id) join job
+32|3190|9.9|99.693|1.0|13681.1|select count(*) filter (where state = $1), count(*) filter (where state = $2) from jobs
+7|906|2.8|129.461|1.1|19479.7|select queue, $1 as state, count(*) as count from jobs where state = $2 group by queue uni
+1|397|1.2|397.070|187.0|66985.0|select floor(extract($1 from finished_at - (select min(leased_at) from jobs)) * $2)::int, 
+1|337|1.0|336.725|1.0|18784.0|select round(count(*) / extract($1 from max(finished_at) - min(leased_at))), count(*) filt
+1|125|0.4|124.848|1.0|48198.0|select round((count(*) - $1) / nullif(extract($2 from max(finished_at) - min(finished_at))
+18|13|0.0|0.728|3.2|3.0|select to_char(clock_timestamp(), $1), $2, $3, $4 union all select to_char(clock_timestamp
+39|8|0.0|0.212|0.0|4.1|select id, queue, attempts, max_attempts from jobs where state = 'leased' and lease_expire
+39|1|0.0|0.038|0.0|1.0|with due as ( select id from jobs where state = 'scheduled' and run_at <= now() order by r
+2|1|0.0|0.251|1.0|22.0|select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup 
+1|0|0.0|0.370|1.0|0.0|select pg_stat_statements_reset()
+1|0|0.0|0.136|0.0|2.0|with old as ( select id from jobs where state in ($3, $4) and finished_at < $1 order by fi
+39|0|0.0|0.003|0.0|0.0|begin
+total|statements=18|calls=43433|total_ms=32078

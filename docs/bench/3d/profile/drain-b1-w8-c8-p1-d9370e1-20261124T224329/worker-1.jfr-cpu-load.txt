@@ -1,0 +1,21 @@
+
+CPU Load Statistics
+-------------------
+
+JVM User (Minimum): 0.00%
+
+JVM User (Average): 4.42%
+
+JVM User (Maximum): 5.88%
+
+JVM System (Minimum): 0.00%
+
+JVM System (Average): 0.40%
+
+JVM System (Maximum): 0.89%
+
+Machine Total (Minimum): 0.00%
+
+Machine Total (Average): 62.65%
+
+Machine Total (Maximum): 79.60%

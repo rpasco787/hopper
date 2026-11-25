@@ -1,0 +1,30 @@
+
+                                                                                   Java Methods that Execute the Most
+
+Method                                                                                                                                                                                  Samples Percent
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ------- -------
+io.grpc.netty.shaded.io.grpc.netty.NettyClientTransport.newStream(MethodDescriptor, Metadata, CallOptions, ClientStreamTracer[])                                                              4   0.96%
+io.grpc.internal.RetriableStream.<init>(...)                                                                                                                                                  3   0.72%
+jdk.internal.loader.Resource.getBytes()                                                                                                                                                       3   0.72%
+java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool$WorkQueue)                                                                                                                           3   0.72%
+io.grpc.CallOptions.withStreamTracerFactory(ClientStreamTracer$Factory)                                                                                                                       2   0.48%
+io.grpc.netty.shaded.io.netty.channel.epoll.EpollIoHandler.wakeup()                                                                                                                           2   0.48%
+io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler.onHeadersRead(int, Http2Headers, boolean)                                                                                               2   0.48%
+io.grpc.netty.shaded.io.netty.handler.codec.http2.DefaultHttp2FrameWriter.writeData(ChannelHandlerContext, int, ByteBuf, int, boolean, ChannelPromise)                                        2   0.48%
+io.grpc.netty.shaded.io.netty.handler.codec.http2.DefaultHttp2FrameReader$HeadersBlockBuilder.addFragment(ByteBuf, int, ByteBufAllocator, boolean)                                            2   0.48%
+com.google.protobuf.UnknownFieldSet.writeTo(CodedOutputStream)                                                                                                                                2   0.48%
+io.grpc.netty.shaded.io.grpc.netty.NettyClientHandler.createStream(CreateStreamCommand, ChannelPromise)                                                                                       2   0.48%
+io.grpc.netty.shaded.io.netty.util.concurrent.DefaultPromise.addListener(GenericFutureListener)                                                                                               2   0.48%
+io.grpc.netty.shaded.io.netty.handler.codec.http2.DefaultHttp2Connection$DefaultPropertyKey.verifyConnection(Http2Connection)                                                                 2   0.48%
+io.grpc.netty.shaded.io.netty.buffer.AbstractByteBufAllocator.buffer()                                                                                                                        2   0.48%
+java.util.zip.ZipFile$Source.getEntryPos(String, boolean, ZipCoder)                                                                                                                           2   0.48%
+java.lang.Class.searchMethods(Method[], String, Class[])                                                                                                                                      2   0.48%
+io.grpc.netty.shaded.io.netty.channel.DefaultChannelPipeline$HeadContext.read(ChannelHandlerContext)                                                                                          2   0.48%
+java.util.HashMap.hash(Object)                                                                                                                                                                2   0.48%
+io.grpc.netty.shaded.io.netty.handler.codec.http2.DefaultHttp2Connection.notifyHalfClosed(Http2Stream)                                                                                        2   0.48%
+io.grpc.netty.shaded.io.netty.util.collection.IntObjectHashMap.get(int)                                                                                                                       2   0.48%
+java.util.zip.InflaterInputStream.read(byte[], int, int)                                                                                                                                      2   0.48%
+java.math.BigInteger.subtract(int[], int[])                                                                                                                                                   2   0.48%
+java.util.Collections$UnmodifiableCollection$1.<init>(Collections$UnmodifiableCollection)                                                                                                     2   0.48%
+java.util.concurrent.ConcurrentHashMap.transfer(ConcurrentHashMap$Node[], ConcurrentHashMap$Node[])                                                                                           2   0.48%
+io.grpc.Metadata.merge(Metadata)                                                                                                                                                              2   0.48%

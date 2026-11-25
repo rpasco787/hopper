@@ -1,0 +1,18 @@
+# Written by scripts/bench.sh: the settings this run overrides.
+services:
+  worker:
+    environment:
+      HOPPER_METRICS_LISTEN: ""
+      HOPPER_LEASE_DURATION: "60s"
+  worker-b:
+    environment:
+      HOPPER_METRICS_LISTEN: ""
+      HOPPER_LEASE_DURATION: "60s"
+  worker-c:
+    environment:
+      HOPPER_METRICS_LISTEN: ""
+      HOPPER_LEASE_DURATION: "60s"
+  worker-d:
+    environment:
+      HOPPER_METRICS_LISTEN: ""
+      HOPPER_LEASE_DURATION: "60s"

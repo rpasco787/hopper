@@ -25,6 +25,7 @@ case "${1:-}" in
     go vet -tags k8s ./test/k8s
     go vet -tags javalog ./test/accounting
     go vet -tags evidence ./test/accounting
+    go vet -tags peaks ./test/accounting
     if go list -deps ./worker | grep -q prometheus; then echo "ci.sh: the worker SDK depends on Prometheus" >&2; exit 1; fi
     buf lint
     helm lint --strict deploy/helm/hopper

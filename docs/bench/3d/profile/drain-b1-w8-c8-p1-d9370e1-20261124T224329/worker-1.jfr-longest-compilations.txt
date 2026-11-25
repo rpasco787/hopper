@@ -1,0 +1,30 @@
+
+                                                                                          Longest Compilations
+
+Start Time Duration Method                                                                                                                                                  Compilation Level Succeeded
+---------- -------- ------------------------------------------------------------------------------------------------------------------------------------------------------- ----------------- ---------
+22:44:16     1.87 s jdk.jfr.internal.MetadataWriter.buildStringPool(MetadataDescriptor$Element, Set)                                                                                        4      true
+22:44:32     1.66 s io.grpc.netty.shaded.io.netty.buffer.PoolArena.allocate(PoolThreadCache, PooledByteBuf, int)                                                                            4      true
+22:44:18     1.29 s jdk.jfr.internal.MetadataWriter.write(DataOutput, MetadataDescriptor$Element, HashMap)                                                                                  4      true
+22:44:14     563 ms jdk.internal.classfile.impl.StackMapGenerator.processBlock(RawBytecodeHelper)                                                                                           4      true
+22:44:30     483 ms io.grpc.netty.shaded.io.netty.handler.codec.http2.HpackEncoder.encodeHeader(ByteBuf, CharSequence, CharSequence, boolean, long)                                         4      true
+22:44:10     430 ms java.util.concurrent.ConcurrentHashMap.putVal(Object, Object, boolean)                                                                                                  4      true
+22:44:27     326 ms io.grpc.netty.shaded.io.netty.handler.codec.http2.HpackEncoder.getEntryInsensitive(CharSequence, int, CharSequence, int)                                                4      true
+22:44:15     311 ms java.util.HashSet.add(Object)                                                                                                                                           4      true
+22:44:19     305 ms java.util.ArrayList.add(Object)                                                                                                                                         4      true
+22:44:26     284 ms com.fasterxml.jackson.core.json.UTF8StreamJsonParser._finishAndReturnString()                                                                                           4      true
+22:44:15     259 ms java.math.BigInteger.subtract(int[], int[])                                                                                                                             4      true
+22:44:12     247 ms jdk.internal.classfile.impl.AbstractPoolEntry$Utf8EntryImpl.writeTo(BufWriterImpl)                                                                                      4      true
+22:44:29     246 ms java.util.regex.Pattern$Curly.match0(Matcher, int, int, CharSequence)                                                                                                   4      true
+22:44:25     239 ms com.fasterxml.jackson.core.json.UTF8StreamJsonParser._finishAndReturnString()                                                                                           4      true
+22:44:28     214 ms io.grpc.internal.CompositeReadableBuffer.executeNoThrow(CompositeReadableBuffer$NoThrowReadOperation, int, Object, int)                                                 4      true
+22:44:31     209 ms io.grpc.netty.shaded.io.netty.channel.ChannelOutboundBuffer.addMessage(Object, int, ChannelPromise)                                                                     4      true
+22:44:21     186 ms com.fasterxml.jackson.core.json.UTF8StreamJsonParser.nextToken()                                                                                                        3      true
+22:44:31     179 ms io.grpc.netty.shaded.io.netty.util.concurrent.DefaultPromise.trySuccess(Object)                                                                                         4      true
+22:44:23     154 ms io.grpc.internal.ReflectionLongAdderCounter.add(long)                                                                                                                   3      true
+22:44:20     138 ms io.grpc.netty.shaded.io.netty.buffer.PoolThreadCache.createNormalCaches(int, int, PoolArena)                                                                            3      true
+22:44:11     129 ms java.util.concurrent.ConcurrentHashMap.transfer(ConcurrentHashMap$Node[], ConcurrentHashMap$Node[])                                                                     4      true
+22:44:24     120 ms io.grpc.netty.shaded.io.netty.handler.codec.http2.DefaultHttp2ConnectionDecoder$FrameReadListener.onHeadersRead(...)                                                    3      true
+22:44:15     113 ms java.math.BigInteger.add(int[], int[])                                                                                                                                  4      true
+22:44:26     112 ms java.lang.StringLatin1.toLowerCase(String, byte[], Locale)                                                                                                              4      true
+22:44:24     106 ms io.grpc.netty.shaded.io.netty.util.AsciiString.contentEquals(CharSequence)                                                                                              4      true

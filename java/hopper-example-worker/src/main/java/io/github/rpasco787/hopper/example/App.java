@@ -26,6 +26,7 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 final class App {
     static final String METRICS_NOT_SERVED = "metrics are not served by the Java example worker";
+    static final String PROFILES_NOT_SERVED = "profiles are not served by the Java example worker";
     static final String UNCAUGHT = "uncaught exception";
     /** The SDK's drain budget when none is configured (Decision D31), and the hook's before parsing. */
     static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
@@ -86,6 +87,9 @@ final class App {
         String id = cfg.workerId().isEmpty() ? resolvedWorkerId() : cfg.workerId();
         if (!cfg.metricsListen().isEmpty()) {
             log.log(EventLog.Level.WARN, METRICS_NOT_SERVED, "addr", cfg.metricsListen());
+        }
+        if (!cfg.debugListen().isEmpty()) {
+            log.log(EventLog.Level.WARN, PROFILES_NOT_SERVED, "addr", cfg.debugListen());
         }
         HopperWorker.Builder b = HopperWorker.builder(cfg.broker())
                 .workerId(id)

@@ -1,0 +1,53 @@
+Phase 3d prediction, written 2026-11-24 21:12 PST before any pilot or loop run.
+Settings: docs/plans/2026-11-24-phase-3d-go-vs-java-benchmark.md §3-§4 and D1-D11.
+Inputs: scaling.md's H4-credit loop (Go drain at 1 broker, 8 x 16, PIN=1:
+8,937 jobs/s, 8,543-10,143), conformance.md (Java peak 104 MiB of 384 MiB,
+0.49 s restart to the broker's acceptance), and the Task 10 smoke (not a
+result: 2 workers x 16, 2,000 jobs). The smoke gave Go 4,389 jobs/s cold at
+140 ms CPU per 1,000 jobs and Java 1,153 at 3,475 ms; Java RSS 108-132 MiB
+and 24-28 threads, Go 21 MiB and 8; startup Go 109-144 ms, Java 853-1,432 ms;
+and 17 and 35 jdk.VirtualThreadPinned events in the two JFR'd Java workers,
+all at the start (contended class loading and class initialization in the
+first deliveries, Execution.run and Heartbeat.<init>).
+
+Drain (1 broker, 8 workers x 16, PIN=1, 300 B, 384m limit):
+- Java cold throughput / Go cold throughput: 0.25, because the Java worker
+  spends about 25x Go's CPU per job (interpreted and C1 code early, grpc-java
+  and protobuf allocation, a virtual thread and a Heartbeat object per
+  delivery), and eight JVMs share the workers' 3 CPUs, so Java is CPU-bound
+  where Go is bound by the broker and PostgreSQL.
+- Java warm throughput / Go warm throughput: 0.40. C2 halves Java's per-job
+  CPU once warm, but it stays CPU-bound on 3 CPUs; Go's warm pace is near its
+  cold one.
+- Worker CPU per 1,000 jobs, cold: Go 130 ms, Java 1,800 ms (JVM start and JIT
+  amortized over a drain of WARM_JOBS + 40,000 jobs).
+- Peak RSS per worker: Go 22 MiB, Java 140 MiB. Threads per worker: Go 9,
+  Java 26.
+- Startup to an accepted stream: Go 120 ms, Java 1,500 ms (eight JVMs starting
+  at once on 3 CPUs, slower than the smoke's two).
+- Saturation: yes. The workers' 3 CPUs saturate under Java for the whole
+  drain; under Go they don't.
+Steady (1,000 jobs/s after a 60 s warm-up):
+- Pickup p99: Go 6 ms, Java 12 ms. End-to-end p99: Go 20 ms, Java 60 ms.
+  kept_up for both: yes (warm Java needs about 1.2 of the 3 CPUs at 1,000/s).
+- Worker CPU per 1,000 jobs, warm: Go 200 ms, Java 1,200 ms.
+10,000 handlers on one worker (1g limit):
+- Peak RSS: Go 110 MiB (10,000 goroutines with grown stacks, timers and
+  per-delivery state), Java 300 MiB (virtual thread stacks live in the heap,
+  plus grpc-java per-message buffers; heap 768 MiB, so not near the limit).
+  Threads: Go 12, Java 30.
+- jdk.VirtualThreadPinned events in the Java proof run: about 50, all in the
+  first second (class loading and initialization, as in the smoke), none
+  while the 10,000 handlers sleep.
+What would prove the measurement wrong rather than the SDKs different:
+- Go's drain outside 8,543-10,143 jobs/s on this layout (the H4-credit range
+  at 170c385; 14e87ee doesn't change the Go path).
+- max_leased above 128 in a drain, or above 10,000 in a wide run (D13).
+- Go's warm_throughput below its cold throughput by more than 10%, or Java's
+  warm CPU per 1,000 jobs above its cold.
+- A Go worker's peak RSS above 50 MiB in a drain, or a Java jvm-flags.txt
+  without UseSerialGC from the command line and a 288 MiB MaxHeapSize.
+- Any rejected run. (Go's kept_up at 1,000 jobs/s is not such a sign: the one
+  committed 1b steady row at that rate, h3-drift-rate1000, has kept_up=no,
+  which is why R2 exists.)
+- Zero pinned events in the proof run while control.sh fails.

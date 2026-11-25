@@ -1,0 +1,6 @@
+samples|17
+active_mean|0.12
+type|CPU|1|50.0
+type|IO|1|50.0
+event|IO|WALSync|1|50.0
+event|CPU|running|1|50.0

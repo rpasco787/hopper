@@ -107,6 +107,31 @@ class SummaryTest(unittest.TestCase):
         out = bench_summary.summarize(runs(1, [1, 2, 3], harness='abc1234-dirty'))
         self.assertIn('uncommitted harness', out)
 
+    def test_setup_splits_by_worker_sdk_and_memory_limit(self):
+        out = bench_summary.summarize(runs(1, [1, 2, 3], worker_sdk='go', worker_mem='384m')
+                                      + runs(1, [4, 5, 6], worker_sdk='java', worker_mem='384m'))
+        self.assertIn('worker_sdk=go', out)
+        self.assertIn('worker_sdk=java', out)
+        self.assertIn('worker_mem=384m', out)
+
+    def test_worker_columns_show_in_their_own_table(self):
+        out = bench_summary.summarize(runs(1, [9000, 9100, 9200], worker_sdk='java', warm_throughput=9500,
+                                           max_leased=128, worker_cpu_ms_per_1k=1500, worker_peak_rss_mib=110.5,
+                                           worker_threads=31, startup_ms=640))
+        self.assertIn('| 1 | 3 | 9,500 (9,500–9,500) | 128 | 1,500 | 110.5 | 31 | 640 |', out)
+
+    def test_rows_without_worker_columns_get_no_worker_table(self):
+        self.assertNotIn('worker CPU ms per 1k jobs', bench_summary.summarize(runs(1, [1, 2, 3])))
+
+    def test_values_bench_workers_could_not_compute_are_left_out_of_medians(self):
+        # scripts/bench_workers.py writes '-' for a startup no broker logged.
+        rs = runs(1, [9000, 9100], worker_cpu_ms_per_1k=1500, worker_peak_rss_mib=110.5,
+                  worker_threads=31, startup_ms=640)
+        rs.append(row(throughput=9200, worker_cpu_ms_per_1k='-', worker_peak_rss_mib='120.5',
+                      worker_threads='31', startup_ms='-'))
+        out = bench_summary.summarize(rs)
+        self.assertIn('| 1 | 3 | – | – | 1,500 | 110.5 | 31 | 640 |', out)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,23 @@
+
+Compiler Statistics
+-------------------
+
+Compiled Methods: 5,046
+
+Peak Time: 1.87 s
+
+Total Time: 21.5 s
+
+Bailouts: 1
+
+OSR Compilations: 21
+
+Standard Compilations: 5,025
+
+OSR Bytes Compiled: 0 bytes
+
+Standard Bytes Compiled: 0 bytes
+
+Compilation Resulting Size: 8.3 MB
+
+Compilation Resulting Code Size: 5.7 MB

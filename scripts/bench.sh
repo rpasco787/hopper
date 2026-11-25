@@ -9,9 +9,19 @@
 #   REF            build broker and worker from this git ref (default: the working tree)
 #   BROKERS        1, 2 or 4 (default 1); workers split evenly, one worker service per broker, and producers alternate
 #   WORKERS        worker containers (default 4), CONCURRENCY slots each (default 16)
+#   WORKER         go (default) runs cmd/worker; java runs the Java example worker
+#                  (java/hopper-example-worker), built from REF's java/ (deploy/bench/java.yaml)
+#   WORKER_MEM     every worker container's memory limit, with no swap beyond it, e.g. 384m
+#                  (default none). A Java worker's heap is 75% of it (-XX:MaxRAMPercentage=75)
+#   WORKER_JVM     WORKER=java: the JVM's flags, space-separated (default -XX:+UseSerialGC)
 #   JOBS           drain: jobs to preload (default 40000)
+#   WARM_JOBS      drain: also report warm_throughput, over the jobs that finished after
+#                  the WARM_JOBS-th completion (default 0: not reported)
 #   RATE DURATION PRODUCERS BATCH WORK_MS
-#                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0)
+#                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0). WORK_MS
+#                  also sets a drain's preloaded handler time
+#   WARMUP         steady: seconds of the same load, under its own run id, before the
+#                  measured run (default 0)
 #   DB_MAX_CONNS   the brokers' pool size; unset keeps the binary's default
 #   SYNC_COMMIT    PostgreSQL synchronous_commit (default on; off is a diagnostic)
 #   PG_ARGS        extra server settings as name=value words, e.g. "commit_delay=200 commit_siblings=5"
@@ -30,6 +40,12 @@
 #   STATS_SETTLE   seconds to wait before each snapshot of cumulative statistics (default 11)
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
 #   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
+#   JFR            WORKER=java drains: a JFR recording (settings=profile, pinned virtual
+#                  threads at any duration) of this many seconds from each JVM's start,
+#                  copied to <worker>.jfr JFR_SETTLE (default 5) seconds after it ends
+#   WORKER_PPROF   WORKER=go drains: this many seconds after the workers start, the first
+#                  worker's heap and goroutine profiles and a CPU profile of
+#                  WORKER_PPROF_SECONDS (default 5); needs a cmd/worker with -debug-listen
 #   OUT            evidence root (default ${TMPDIR:-/tmp}/hopper-bench); LABEL names the row
 #   KEEP           1 leaves the stack up afterwards
 #
@@ -38,9 +54,15 @@
 #
 # Each run keeps machine.txt (the Docker VM), waits.psv/waits.txt (active
 # PostgreSQL backends by wait event, once a second) and, with PIN=1,
-# cpuset.yaml. A run with no wait samples, no broker CPU samples, no lease
-# statement or (drain) any retried job writes rejected.txt and no row.
-# Summarize a results.csv with scripts/bench_summary.py.
+# cpuset.yaml. For the workers it keeps proc.txt (each worker process's /proc
+# stat and status at the measured interval's ends, read from the VM's PID
+# namespace), workers.json (their docker inspect, trimmed), brokers.log (the
+# brokers' lines, for startup) and <worker>.stdout and .stderr;
+# scripts/bench_workers.py turns them into the worker columns. A run with no
+# wait samples, no broker CPU samples, no lease statement, (drain) any retried
+# job, or a worker that exited, was OOM-killed or has no /proc statistics
+# writes rejected.txt and no row. Summarize a results.csv with
+# scripts/bench_summary.py.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -55,6 +77,49 @@ concurrency="${CONCURRENCY:-16}"
 case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
+worker_sdk="${WORKER:-go}"
+case "$worker_sdk" in go | java) ;; *) echo "WORKER must be go or java" >&2; exit 2 ;; esac
+worker_mem="${WORKER_MEM:-}"
+mem_bytes=0
+if [ -n "$worker_mem" ]; then
+  [[ "$worker_mem" =~ ^[1-9][0-9]*[kmg]$ ]] || { echo "WORKER_MEM must be a size such as 384m or 1g" >&2; exit 2; }
+  n="${worker_mem%?}"
+  case "$worker_mem" in
+    *k) mem_bytes=$((n * 1024)) ;;
+    *m) mem_bytes=$((n * 1048576)) ;;
+    *g) mem_bytes=$((n * 1073741824)) ;;
+  esac
+fi
+java_flags="${WORKER_JVM:--XX:+UseSerialGC}"
+if [ -n "${WORKER_JVM:-}" ]; then
+  [ "$worker_sdk" = java ] || { echo "WORKER_JVM applies to WORKER=java only" >&2; exit 2; }
+  case "$WORKER_JVM" in *[\"\'\\]*) echo "WORKER_JVM may not contain quotes or backslashes" >&2; exit 2 ;; esac
+fi
+java_opts="$java_flags"
+jobs="${JOBS:-40000}"
+for knob in JOBS WARM_JOBS WARMUP WORK_MS JFR JFR_SETTLE WORKER_PPROF WORKER_PPROF_SECONDS; do
+  case "${!knob:-0}" in *[!0-9]*) echo "$knob must be a whole number" >&2; exit 2 ;; esac
+done
+if [ -n "${JFR:-}" ]; then
+  { [ "$worker_sdk" = java ] && [ "$scenario" = drain ]; } || { echo "JFR applies to WORKER=java drains only" >&2; exit 2; }
+  [ "$JFR" -gt 0 ] || { echo "JFR must be at least 1 second" >&2; exit 2; }
+  # A fixed duration, because a recording left for exit is lost: the example
+  # worker halts in its shutdown hook. Pinned threads at any duration (JFR's
+  # default threshold is 20 ms); the startup lines off, so stdout stays JSON.
+  java_opts="$java_opts -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=${JFR}s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off"
+fi
+if [ -n "${WORKER_PPROF:-}" ]; then
+  { [ "$worker_sdk" = go ] && [ "$scenario" = drain ]; } || { echo "WORKER_PPROF applies to WORKER=go drains only" >&2; exit 2; }
+  # cmd/worker serves its profiles only when asked (docs/semantics.md §14).
+  WORKER_ENV="${WORKER_ENV:+$WORKER_ENV }HOPPER_DEBUG_LISTEN=0.0.0.0:6060"
+fi
+if [ "${WARM_JOBS:-0}" != 0 ]; then
+  [ "$scenario" = drain ] || { echo "WARM_JOBS applies to drain only" >&2; exit 2; }
+  [ "$WARM_JOBS" -lt "$jobs" ] || { echo "WARM_JOBS must be less than JOBS" >&2; exit 2; }
+fi
+if [ "${WARMUP:-0}" != 0 ] && [ "$scenario" != steady ]; then
+  echo "WARMUP applies to steady only" >&2; exit 2
+fi
 payload_bytes="${PAYLOAD_BYTES:-0}"
 variant="${VARIANT:-}"
 case "$variant" in *,*) echo "VARIANT may not contain a comma" >&2; exit 2 ;; esac
@@ -75,10 +140,15 @@ done
 # that changes one must name itself or the summary would pool it with
 # default runs.
 if [ -z "$variant" ]; then
-  for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL; do
+  for knob in BROKER_ENV WORKER_PPROF WORKER_ENV PG_ARGS BENCH_SQL WORKER_JVM; do
     [ -z "${!knob:-}" ] || { echo "$knob changes the run: name it with VARIANT" >&2; exit 2; }
   done
+  [ "${WARMUP:-0}" = 0 ] || { echo "WARMUP changes the run: name it with VARIANT" >&2; exit 2; }
+  if [ "$scenario" = drain ] && [ "${WORK_MS:-0}" != 0 ]; then
+    echo "WORK_MS changes the drain: name it with VARIANT" >&2; exit 2
+  fi
   [ "${EXPLAIN:-0}" != 1 ] || { echo "EXPLAIN changes the run: name it with VARIANT" >&2; exit 2; }
+  [ "${JFR:-0}" = 0 ] || { echo "JFR changes the run: name it with VARIANT" >&2; exit 2; }
 fi
 # The instruments (this script, loadgen and the Compose files) always come
 # from the working tree, whatever REF says, so each row names their revision
@@ -92,28 +162,39 @@ fi
 
 # Images. A ref is built from `git archive`, so uncommitted files never leak
 # into it, and its images are reused across runs; the working tree is rebuilt
-# every time.
+# every time. The Java worker builds from java/ alone, as its Dockerfile asks.
+go_bins="broker"
+if [ "$worker_sdk" = go ]; then go_bins="broker worker"; fi
 if [ -n "${REF:-}" ]; then
   sha="$(git rev-parse --short "${REF}^{commit}")"
   tag="ref-$sha"
-  for bin in broker worker; do
+  for bin in $go_bins; do
     if ! docker image inspect "hopper-bench/$bin:$tag" >/dev/null 2>&1; then
       git archive --format=tar "$sha" |
         docker build -q -f deploy/docker/Dockerfile --build-arg BINARY="$bin" -t "hopper-bench/$bin:$tag" - >/dev/null
     fi
   done
+  if [ "$worker_sdk" = java ] && ! docker image inspect "hopper-bench/worker-java:$tag" >/dev/null 2>&1; then
+    git cat-file -e "$sha:java/hopper-example-worker/Dockerfile" 2>/dev/null ||
+      { echo "$sha has no java/hopper-example-worker to build" >&2; exit 2; }
+    git archive --format=tar "$sha:java" |
+      docker build -q -f hopper-example-worker/Dockerfile -t "hopper-bench/worker-java:$tag" - >/dev/null
+  fi
 else
   sha="$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- . || echo -dirty)"
   tag="wt" # rebuilt every run; the previous build is left dangling
-  for bin in broker worker; do
+  for bin in $go_bins; do
     docker build -q -f deploy/docker/Dockerfile --build-arg BINARY="$bin" -t "hopper-bench/$bin:$tag" . >/dev/null
   done
+  if [ "$worker_sdk" = java ]; then
+    docker build -q -f java/hopper-example-worker/Dockerfile -t "hopper-bench/worker-java:$tag" java >/dev/null
+  fi
 fi
 # loadgen is the measuring instrument, so it always comes from the working tree.
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -121,6 +202,7 @@ fi
 dir="$out/$scenario-b$brokers-w$workers-c$vm_cpus-p$pin-$sha-$(date +%Y%m%dT%H%M%S)"
 mkdir -p "$dir"
 files=(-f docker-compose.yml -f deploy/bench/compose.yaml)
+if [ "$worker_sdk" = java ]; then files+=(-f deploy/bench/java.yaml); fi
 if [ "$pin" = 1 ]; then
   cat >"$dir/cpuset.yaml" <<'EOF'
 # Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
@@ -141,6 +223,10 @@ services:
 EOF
   files+=(-f "$dir/cpuset.yaml")
 fi
+# Throwaway helper containers (the /proc reader, profile fetches) run on
+# loadgen's CPU under PIN=1, away from every measured role.
+helper=(--rm)
+if [ "$pin" = 1 ]; then helper+=(--cpuset-cpus 7); fi
 # The server's command line for this run, kept as evidence. It replaces the
 # overlay's command, which stays for anyone running the stack by hand. (The
 # array is never empty when expanded: bash 3.2, macOS's, treats an empty
@@ -163,6 +249,18 @@ for kv in ${PG_ARGS:-}; do pg_settings+=("$kv"); done
   echo ']'
 } >"$dir/postgres.yaml"
 files+=(-f "$dir/postgres.yaml")
+# One memory limit for every worker container, with no swap beyond it, so both
+# SDKs run under the same ceiling and a Java heap is sized from it.
+if [ -n "$worker_mem" ]; then
+  {
+    echo "# Written by scripts/bench.sh: WORKER_MEM for every worker service, swap included."
+    echo "services:"
+    for svc in worker worker-b worker-c worker-d; do
+      printf '  %s: {mem_limit: %s, memswap_limit: %s}\n' "$svc" "$worker_mem" "$worker_mem"
+    done
+  } >"$dir/workers-mem.yaml"
+  files+=(-f "$dir/workers-mem.yaml")
+fi
 # Per-run settings, as a Compose file of their own merged after the bench
 # overlay. Compose prefers a service's environment to its env_file, and a
 # later file's environment to an earlier one's, so this is the one place a
@@ -187,13 +285,28 @@ fi
   echo "host: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)"
   echo "docker: $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes, server {{.ServerVersion}}')"
   echo "pinned: $pin"
+  echo "worker: $worker_sdk"
+  echo "worker memory: ${worker_mem:-none}"
+  if [ "$worker_sdk" = java ]; then echo "java opts: $java_opts"; fi
+  if [ "$scenario" = drain ]; then echo "warm jobs: ${WARM_JOBS:-0}"; else echo "warmup: ${WARMUP:-0}s"; fi
 } >"$dir/machine.txt"
+if [ "$worker_sdk" = java ]; then
+  # The JVM's own account of its heap, collector and CPUs, through the image's
+  # start script, under the workers' memory limit and CPU set.
+  probe=(--rm)
+  if [ -n "$worker_mem" ]; then probe+=(--memory "$worker_mem" --memory-swap "$worker_mem"); fi
+  if [ "$pin" = 1 ]; then probe+=(--cpuset-cpus 4-6); fi
+  docker run "${probe[@]}" -e "JAVA_OPTS=$java_flags -XX:+PrintFlagsFinal -version" "hopper-bench/worker-java:$tag" 2>&1 |
+    grep -E ' (MaxHeapSize|InitialHeapSize|MaxRAMPercentage|UseSerialGC|UseG1GC|UseParallelGC|UseZGC|ActiveProcessorCount) |version' \
+      >"$dir/jvm-flags.txt" || true
+fi
 label="${LABEL:-$scenario $sha}"
 : >"$dir/broker.env"
 [ -n "${DB_MAX_CONNS:-}" ] && echo "HOPPER_DB_MAX_CONNS=$DB_MAX_CONNS" >>"$dir/broker.env"
 
 export HOPPER_BENCH_TAG="$tag" HOPPER_BENCH_BROKER_ENV="$dir/broker.env"
 export HOPPER_BENCH_SYNC_COMMIT="${SYNC_COMMIT:-on}" HOPPER_BENCH_CONCURRENCY="$concurrency"
+export HOPPER_BENCH_JAVA_OPTS="$java_opts"
 compose() { docker compose -p hopper-bench "${files[@]}" "$@"; }
 sql() { compose exec -T postgres psql -U hopper -d hopper -qAt -c "$1"; }
 # Commits and WAL across the database, and how updates landed on jobs, as
@@ -224,6 +337,10 @@ fi
 
 samplers=""
 profiler=""
+warm_throughput=""
+pprofer=""
+jfr_missing=""
+max_leased=""
 cleanup() {
   stop_samplers
   compose logs --no-color >"$dir/logs.txt" 2>&1 || true
@@ -264,6 +381,47 @@ for i in 0 1 2 3; do
 done
 start_workers() {
   compose up -d --no-build --no-deps "${scale[@]}" "${worker_services[@]}" >/dev/null
+}
+# Worker containers, stopped ones too, so a worker that died is still judged.
+worker_ids() { compose ps -a -q "${worker_services[@]}"; }
+# /hopper-bench-worker-b-1 -> worker-b-1
+container_name() {
+  local n
+  n="$(docker inspect --format '{{.Name}}' "$1")"
+  echo "${n#/hopper-bench-}"
+}
+# Every worker process's /proc/<pid>/stat and status, read from the Docker VM's
+# PID namespace by a throwaway container of the stack's own PostgreSQL image,
+# each pair after a line "== <label> <container> <pid>". stat's utime and stime
+# count every thread of the process, a JVM's compiler and collector threads too.
+proc_snapshot() { # label
+  local pairs
+  # shellcheck disable=SC2046 # one word per container
+  pairs="$(docker inspect --format '{{.Id}} {{.State.Pid}}' $(worker_ids))" || return 0
+  # shellcheck disable=SC2016,SC2086 # $1 and $2 are the helper's own; one word per id and pid
+  docker run "${helper[@]}" --pid=host --entrypoint sh postgres:16-alpine -c '
+    label=$1; shift
+    echo "clk_tck $(getconf CLK_TCK)"
+    while [ $# -ge 2 ]; do echo "== $label $1 $2"; cat "/proc/$2/stat" "/proc/$2/status"; shift 2; done
+  ' snapshot "$1" $pairs >>"$dir/proc.txt" 2>&1 || true
+}
+# WORKER_PPROF seconds after the workers start: the first worker's heap and
+# goroutine profiles (text, ending with the runtime's memory statistics) and a
+# CPU profile, fetched over the Compose network by a throwaway container.
+worker_pprof() {
+  sleep "$WORKER_PPROF"
+  local id host net
+  id="$(compose ps -q worker | head -n 1)"
+  host="$(docker inspect --format '{{.Name}}' "$id")"
+  host="${host#/}"
+  net="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$id" | head -n 1)"
+  fetch() {
+    docker run "${helper[@]}" --network "$net" --entrypoint wget postgres:16-alpine -qO- "http://$host:6060/debug/pprof/$1"
+  }
+  fetch 'heap?debug=1' >"$dir/worker-heap.txt" &&
+    fetch 'goroutine?debug=1' >"$dir/worker-goroutine.txt" &&
+    fetch "profile?seconds=${WORKER_PPROF_SECONDS:-5}" >"$dir/worker-cpu.pprof" ||
+    echo "no worker profile: does $sha's cmd/worker have -debug-listen?" >&2
 }
 brokers_arg="broker:9090"; metrics_ports="16091"
 if [ "$brokers" -ge 2 ]; then brokers_arg="$brokers_arg,broker-standby:9090"; metrics_ports="$metrics_ports 16092"; fi
@@ -348,8 +506,8 @@ profile() {
 
 case "$scenario" in
 drain)
-  jobs="${JOBS:-40000}"
-  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" -wait=false -json >"$dir/preload.json"
+  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" \
+    -work-ms "${WORK_MS:-0}" -wait=false -json >"$dir/preload.json"
   sql "vacuum analyze jobs" >/dev/null
   settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
@@ -361,27 +519,64 @@ drain)
   sample & samplers="$!"
   waits & samplers="$samplers $!"
   if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
+  workers_started=$SECONDS
   start_workers
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
+  if [ -n "${WORKER_PPROF:-}" ]; then worker_pprof & pprofer=$!; fi
+  # Progress four times a second, and the rows leased at that moment: at most
+  # the workers' slots, because the broker leases only against credit a worker
+  # sent for a free slot (docs/design/credit-anchored-freshness.md).
+  max_leased=0
   deadline=$((SECONDS + 600))
-  until [ "$(sql "select count(*) from jobs where state = 'completed'")" -ge "$jobs" ]; do
+  while :; do
+    IFS='|' read -r done_jobs leased <<<"$(sql "select count(*) filter (where state = 'completed'),
+      count(*) filter (where state = 'leased') from jobs")"
+    if [ "${leased:-0}" -gt "$max_leased" ]; then max_leased="$leased"; fi
+    [ "${done_jobs:-0}" -lt "$jobs" ] || break
     [ "$SECONDS" -lt "$deadline" ] || { echo "drain did not finish within 10 minutes" >&2; exit 1; }
     sleep 0.25
   done
+  proc_snapshot end
   stop_samplers
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
+  if [ -n "$pprofer" ]; then wait "$pprofer" || true; fi
+  if [ -n "${JFR:-}" ]; then
+    # Each recording is written when it ends, JFR seconds after its JVM started.
+    until [ $((SECONDS - workers_started)) -ge $((JFR + ${JFR_SETTLE:-5})) ]; do sleep 1; done
+    for id in $(worker_ids); do
+      name="$(container_name "$id")"
+      docker cp "$id:/tmp/hopper.jfr" "$dir/$name.jfr" >/dev/null 2>&1 || true
+      [ -s "$dir/$name.jfr" ] || jfr_missing="${jfr_missing:+$jfr_missing }$name"
+    done
+  fi
   # The drain runs from the first lease to the last completion, on the
   # database's clock; every job must have completed on its first lease.
   IFS=, read -r throughput retried <<<"$(sql "
     select round(count(*) / extract(epoch from max(finished_at) - min(leased_at))),
            count(*) filter (where attempts > 1)
     from jobs" | tr '|' ',')"
+  # Completions per tenth of a second from the first lease: how long the
+  # workers take to reach their pace. The first lease is a scalar subquery,
+  # which runs once; as a join, planned on statistics from before the drain
+  # (no completed rows), it became a nested loop that rescanned jobs per job.
+  {
+    echo "# tenths of a second since the first lease|jobs completed in it"
+    sql "select floor(extract(epoch from finished_at - (select min(leased_at) from jobs)) * 10)::int, count(*)
+         from jobs where state = 'completed' group by 1 order by 1"
+  } >"$dir/rate.psv"
+  if [ "${WARM_JOBS:-0}" != 0 ]; then
+    # The pace once warm: the jobs that finished after the WARM_JOBS-th
+    # completion, over the time from it to the last.
+    warm_throughput="$(sql "select round((count(*) - 1) / nullif(extract(epoch from max(finished_at) - min(finished_at)), 0))
+      from (select finished_at from jobs where state = 'completed' order by finished_at offset $((WARM_JOBS - 1))) w")"
+  fi
   completed="$jobs"
   enqueue_p50=""; enqueue_p99=""; pickup_p50=""; pickup_p99=""; e2e_p50=""; e2e_p99=""
   offered=""; max_lag=""; kept_up=""
   ;;
 steady)
+  workers_started=$SECONDS
   start_workers
   waits_once
   # Every worker has a stream open before the offered load starts.
@@ -391,11 +586,21 @@ steady)
     [ "$SECONDS" -lt "$deadline" ] || { echo "the workers did not all open lease streams" >&2; exit 1; }
     sleep 0.25
   done
+  if [ "${WARMUP:-0}" != 0 ]; then
+    # The same load first, under its own run id, so the measured run meets warm
+    # workers: compiled, with pools and connections open. loadgen reads back
+    # only its own run's jobs, and every count below starts after this.
+    loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${WARMUP}s" -run warmup \
+      -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" \
+      -json >"$dir/warmup.json"
+  fi
   settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
   counters_before="$(counters)"
+  completed_before="$(sql "select count(*) from jobs where state = 'completed'")"
   sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
+  proc_snapshot before
   sample & samplers="$!"
   waits & samplers="$samplers $!"
   if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
@@ -403,6 +608,7 @@ steady)
   loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${DURATION:-30s}" \
     -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" -json >"$dir/loadgen.json"
   stop_samplers
+  proc_snapshot after
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
   read -r throughput retried enqueue_p50 enqueue_p99 pickup_p50 pickup_p99 e2e_p50 e2e_p99 offered max_lag <<<"$(jq -r '
@@ -411,7 +617,7 @@ steady)
   # Keeping up: at least 98% of offered, no call a second late.
   kept_up="$(awk -v t="$throughput" -v o="$offered" -v l="$max_lag" \
     'BEGIN { print (o > 0 && t >= 0.98 * o && l < 1000) ? "yes" : "no" }')"
-  completed="$(sql "select count(*) from jobs where state = 'completed'")"
+  completed=$(($(sql "select count(*) from jobs where state = 'completed'") - completed_before))
   ;;
 esac
 stop_samplers
@@ -507,6 +713,29 @@ read -r heartbeat_calls heartbeat_p99 <<<"$hist"
 if [ "$scenario" = drain ] && [ "$ack_calls" -lt "$jobs" ]; then
   reject "the Ack histograms saw $ack_calls calls for $jobs jobs"
 fi
+# The workers: their logs, how they ran, and what they cost.
+for id in $(worker_ids); do
+  name="$(container_name "$id")"
+  docker logs "$id" >"$dir/$name.stdout" 2>"$dir/$name.stderr" || true
+done
+# shellcheck disable=SC2046 # one word per container
+docker inspect $(worker_ids) | jq '[.[] | {Id, Name, Image,
+    Config: {Hostname: .Config.Hostname, Env: .Config.Env},
+    State: {StartedAt: .State.StartedAt, Running: .State.Running, OOMKilled: .State.OOMKilled,
+            ExitCode: .State.ExitCode, Pid: .State.Pid},
+    HostConfig: {Memory: .HostConfig.Memory, MemorySwap: .HostConfig.MemorySwap,
+                 CpusetCpus: .HostConfig.CpusetCpus}}]' >"$dir/workers.json" || true
+# shellcheck disable=SC2086 # one word per service
+compose logs --no-color --no-log-prefix $broker_services >"$dir/brokers.log" 2>&1 || true
+w="$(python3 scripts/bench_workers.py "$dir" "$completed" "$mem_bytes" 2>&1)" || reject "$w"
+read -r worker_cpu_per_1k worker_peak_rss worker_threads startup_ms <<<"$w"
+for v in worker_cpu_per_1k worker_peak_rss worker_threads startup_ms; do
+  if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
+done
+if [ "$scenario" = drain ] && [ "$max_leased" -gt $((workers * concurrency)) ]; then
+  reject "$max_leased rows were leased at once, more than the workers' $((workers * concurrency)) slots"
+fi
+[ -z "$jfr_missing" ] || reject "no JFR recording from $jfr_missing"
 # Batch size as submitted: confirmation RPCs per batch statement (a batch's
 # rows are only what it applied). Fallback share: one-row statements per RPC.
 # Both per kind, and blank when no batch statement ran, as with batching off.
@@ -519,7 +748,7 @@ for v in ack_batch ack_fallback_pct heartbeat_batch heartbeat_fallback_pct; do
   if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
 done
 
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$dir"
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"

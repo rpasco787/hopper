@@ -1,0 +1,32 @@
+[
+  {
+    "Id": "6e4a06e6eaeea64eef9884d10ec4a1aaae74dbf9a3603752a34835d7309317ff",
+    "Name": "/hopper-bench-worker-1",
+    "Image": "sha256:066f2a6f8e657abfe7bd639b8d1b78198749a4a72a86bfd7734c08621ff0fba8",
+    "Config": {
+      "Hostname": "6e4a06e6eaee",
+      "Env": [
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_LEASE_DURATION=60s",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=10000",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T05:41:14.359903795Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 92388
+    },
+    "HostConfig": {
+      "Memory": 1073741824,
+      "MemorySwap": 1073741824,
+      "CpusetCpus": "4-6"
+    }
+  }
+]
