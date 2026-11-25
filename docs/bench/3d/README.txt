@@ -36,3 +36,29 @@ Decisions taken while running
 - Pilot R3: both wide runs reached max_leased 10,000 under 80% of 1g (Go
   206.3 MiB, Java 275.2 MiB), so WIDE_MEM=1g, WIDE_MS=15000, WIDE_LEASE=60s.
 - Pilot R4: WIDE_JFR = 10000/603 + 15, rounded up to a multiple of 5 = 35.
+- The pilot's rows carry harness=0acfa0a-dirty only because of the user's
+  uncommitted '.claude' line in .gitignore (bench.sh's harness check looks at
+  everything outside docs/, .gitignore included). No build reads .gitignore:
+  every image builds from REF through git archive. Before Task 13 the user
+  moved that line to .git/info/exclude, so the tree matches HEAD outside
+  docs/ and the comparison's rows carry a clean harness.
+- Task 13: before the loop, `ps -ef | grep "[b]ash scripts/bench.sh"` found
+  no stray process, `docker ps -q` was empty and the laptop was on AC power.
+  shellcheck isn't installed on this host, so loop.sh was checked with
+  `bash -n` only.
+- Task 13 ran 2026-11-25 05:47:13-06:25:34 UTC (38 min): 20 rows, harness
+  8726d9d (clean), no FAILED line, no rejected.txt, sleeps.txt empty, so D17
+  needed no rerun. Every drain's max_leased was at most 126 (of 128); every
+  Java jvm-flags.txt shows UseSerialGC {command line} and a 288 MiB
+  MaxHeapSize. The loop's first run is "java drain", as the plan's rotation
+  ((i + k) % 4 from i=1) gives; not reordered.
+- Prediction misses, for java.md (prediction.txt's own "measurement wrong"
+  tests): Go's drain median, 7,699 jobs/s (7,240-8,508), sits below the
+  H4-credit range (8,543-10,143). Not taken as a broken measurement: those
+  were 40,000-job drains, these are 140,000, and every Go drain ended with
+  280,000 dead tuples (Java's 30,902-82,549), the late-drain slowdown the
+  pilot's rate curve showed (pilot/decision.txt). One Go drain's warm window
+  (6,751) is 10.2% below its cold rate (7,519), on the same cause; the
+  medians are warm 8,088 above cold 7,699. Java's startup (drain 4,119 ms,
+  steady 2,634) is far above the predicted 1,500 ms; its warm steady CPU
+  (915 ms per 1k) is below its cold drain CPU (1,491), as predicted.
