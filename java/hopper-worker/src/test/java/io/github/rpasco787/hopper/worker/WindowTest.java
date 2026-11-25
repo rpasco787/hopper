@@ -117,11 +117,10 @@ class WindowTest {
      * Acks fail with UNAVAILABLE until ackOutage after that first Heartbeat. Returns the
      * worker's log messages, how many Acks succeeded, and when the first Heartbeat was answered.
      *
-     * <p>Ported as Go has it: without checkEveryDelivery (Go's call at window_test.go:126 doesn't
-     * set it), on the system clock with Go's tolerances (the outage is wall time in a hook, and
-     * the worker retries through backoff timers). So the delivery is fresh, and the first
-     * Heartbeat the hook answers is the first renewal at G/3, not an ownership check, though
-     * Go's comments still call it "the check" (docs/plans §15).
+     * <p>Ported as Go has it: with checkEveryDelivery(true), so the first Heartbeat the hook
+     * answers is the ownership check and the failures that follow are renewals, which pins the
+     * check path. On the system clock with Go's tolerances (the outage is wall time in a hook,
+     * and the worker retries through backoff timers).
      */
     private record Outcome(List<String> msgs, int acked, long checkedNanos) {}
 
@@ -146,7 +145,7 @@ class WindowTest {
             });
             JobHandler handler = ctx -> Thread.sleep(1500);
             var w = HopperWorker.builder(fake.channel()).log(log).concurrency(1).shutdownTimeout(Duration.ofSeconds(10))
-                    .handle("q", handler).build();
+                    .checkEveryDelivery(true).handle("q", handler).build();
             try (var run = Harness.runWorker(w)) {
                 FakeStream s = fake.awaitStream(BARRIER);
                 s.deliver(Fixture.of("q").grant(GRANT).proto(), BARRIER);

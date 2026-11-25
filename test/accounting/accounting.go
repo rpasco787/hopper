@@ -55,6 +55,8 @@ type Row struct {
 	// job is the one that completed it. uuid.Nil when never leased, or when
 	// the caller did not load it; AttemptProblems needs it.
 	LeaseID uuid.UUID
+	// LastError is jobs.last_error; empty when null. The conformance judges read it.
+	LastError string
 }
 
 // Line holds the fields of a worker's JSON log line that accounting reads.
@@ -68,6 +70,16 @@ type Line struct {
 	LeaseID         string    `json:"lease_id"`
 	Operation       string    `json:"operation"` // "ack" or "nack", on "job confirmed"
 	RunningHandlers *int      `json:"running_handlers"`
+
+	// Read by the conformance judges (contract.go, concurrency.go, judge.go).
+	Level            string `json:"level"`
+	WorkerID         string `json:"worker_id"`
+	Queue            string `json:"queue"`
+	Attempt          *int   `json:"attempt"`
+	Concurrency      *int   `json:"concurrency"`       // on "worker starting"
+	ActiveDeliveries *int   `json:"active_deliveries"` // on the shutdown lines
+	Acquiring        *int   `json:"acquiring"`         // on "shutdown deadline reached"
+	Confirming       *int   `json:"confirming"`        // on "shutdown deadline reached"
 }
 
 // Log is one worker pod's or container's captured output.

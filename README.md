@@ -50,6 +50,7 @@ is needed.
 - [Worker SDK](#worker-sdk)
 - [Cron schedules](#cron-schedules)
 - [Shutdown and failure handling](#shutdown-and-failure-handling)
+- [Conformance](#conformance)
 - [Observability](#observability)
 - [Kubernetes](#kubernetes)
 - [Performance](#performance)
@@ -212,12 +213,14 @@ func main() {
 can drain. It is cancelled on definitive lease loss, job cancellation, local
 lease expiry, or the forced shutdown deadline.
 
-**Leases and capacity.** Before user code starts, each delivery spends one
-Heartbeat RPC to prove its lease is still owned. The SDK then renews at one
-third of the broker-granted duration. Every Heartbeat pins that original
-grant rather than consulting a broker default that may have changed. A
-capacity token stays occupied through validation, handler execution, and
-Ack/Nack confirmation, so `Concurrency` bounds all of it.
+**Leases and capacity.** A fresh delivery starts on its credit's deadline: the
+lease clock counts from the moment the broker sent that credit, so the handler
+starts with no RPC. A stale one takes one bounded Heartbeat to prove its lease
+is still owned. Either way the SDK then renews at one third of the
+broker-granted duration (G/3), and every Heartbeat pins that original grant
+rather than consulting a broker default that may have changed. A capacity token
+covers the start, the handler and the Ack/Nack confirmation, so `Concurrency`
+bounds all of it (docs/semantics.md §4).
 
 **No metrics dependency.** The SDK imports no metrics library. Set
 `worker.Options.Observer` to receive handler start and finish events, as
@@ -260,7 +263,7 @@ The Java SDK applies the same start rule and writes the same log contract as
 the Go SDK, and `test/accounting` judges its logs unchanged; see
 [docs/design/java-worker-sdk.md](docs/design/java-worker-sdk.md) and
 [docs/design/java-producer-client.md](docs/design/java-producer-client.md).
-Conformance against the Go SDK (Phase 3c) is still to come.
+The two SDKs are held to one contract by the conformance suite; see [Conformance](#conformance).
 
 ## Cron schedules
 
@@ -385,6 +388,44 @@ helm upgrade hopper deploy/helm/hopper --set image.tag=<new>
 
 Handlers must stay idempotent, because side effects can duplicate across the
 Ack-loss window.
+
+## Conformance
+
+The conformance suite holds the Go and Java workers to one contract. Each
+scenario runs a real Compose stack (PostgreSQL, two brokers, three workers, a
+30 s lease), drives it through one fault or workload, and judges the result
+from the database rows and from every worker's saved logs: the Ack is proved
+by the rows, the log contract and a per-process concurrency bound by the logs,
+and stdout must be JSON lines only. The scenarios are the chaos suite's Go
+tests, run against whichever worker image `HOPPER_CONFORMANCE_WORKER` names.
+
+| # | Scenario | Section | Passes when |
+|---|---|---|---|
+| 1 | Burst | §1 | 1,000 short jobs all complete, none twice, every worker ran some |
+| 2 | Concurrency bound | §4 | no process has more deliveries open than its `concurrency`, and one reaches it |
+| 3 | Fail below max attempts | §6 | the job completes on attempt 3, each repeat a `nacked` one |
+| 4 | Fail at max attempts | §7 | the job is `dead` after 3 attempts, the last ending on a nack |
+| 5 | Cancel while running | §10 | the handler stops at its first renewal; the job is `cancelled`, never confirmed |
+| 6 | Cancel after a short handler | §10 | the `Ack` is refused; `cancelled`, attempts 1 |
+| 7 | Cancel at lease time | §10 | never started or stopped at its first renewal; `cancelled`, attempts 1 |
+| 8 | Killed worker | §11.1 | every job completes; every repeat is `killed` |
+| 9 | Broker gone past the lease | §11.2 | each handler stops at its local deadline, 18.5–30.5 s after the kill |
+| 10 | Short PostgreSQL outage | §11.3 | nothing is re-executed |
+| 11 | SIGTERM drain | §11.4 | exit 0, every job once, stderr empty |
+| 12 | Shutdown deadline exceeded | §11.4 | exit 1, one line naming 2/2/0/0, stderr exactly one line |
+| 13 | Mixed fleet | all | scenarios 1 and 8 with two Java and two Go workers on the same queues |
+
+```bash
+scripts/conformance.sh all          # the Go pass, then the Java pass with the mixed fleet
+HOPPER_CONFORMANCE_WORKER=hopper-example-worker:dev go test -tags chaos -count=1 -timeout 60m -v ./test/chaos
+```
+
+CI (`.github/workflows/ci.yml`) runs the checks, the race suite, the Java build
+and the stub check, and both conformance passes, each as one call of
+`scripts/ci.sh`. The workflow has not run on GitHub yet. The design is in
+[docs/design/conformance.md](docs/design/conformance.md), and its measured
+results are in its Results section, with the evidence of the 2026-11-24 passes
+in [docs/bench/conformance/20261124](docs/bench/conformance/20261124).
 
 ## Observability
 
@@ -703,6 +744,9 @@ sleeping.
 ## Development
 
 ### Checks
+
+CI runs these through `scripts/ci.sh` (`go-checks`, `go-test`, `java-build`,
+`java-gen-check`, `conformance`); the commands below are the checks they wrap.
 
 ```bash
 gofmt -l .

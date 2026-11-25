@@ -258,6 +258,8 @@ func TestWorkerShutdownDeadlineReportsAbandonment(t *testing.T) {
 		return event.Message == "shutdown deadline reached"
 	})
 	require.Equal(t, "shutdown deadline reached", deadline.Message)
+	require.Equal(t, 1, deadline.ActiveDeliveries, "the line names what it abandoned (docs/semantics.md §11 item 4)")
+	require.Equal(t, 1, deadline.RunningHandlers, "the line names what it abandoned (docs/semantics.md §11 item 4)")
 	waitErr := p.wait(t, 10*time.Second)
 	require.Error(t, waitErr, p.output())
 	var exitErr *exec.ExitError

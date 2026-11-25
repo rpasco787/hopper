@@ -15,6 +15,14 @@ case "$(uname -s)-$(uname -m)" in
     protoc_sha=765ccb18be73e565bfc3e2ad94e85039ca28f928b3e62b487e51b7b8fdf1dcfb
     grpc_sha=e5dc43dc4c2a31123b6edb62283e98d721edd94d216d946da564ae64e96fcd3b
     ;;
+  Linux-x86_64)
+    # Checked 2026-11-24 and again in Phase 3c Task 18 against Maven Central's
+    # .sha1 files (bb3742d0c403ab2c01a307adc1a33460ad8c1ba4 and
+    # 19389e4a786d57d4f73ba8af5887ca406aff3c3e). CI runs this branch.
+    os=linux-x86_64
+    protoc_sha=f6ee22d65361338459208da8bff801c9ca689741cba9187b34990dd45198f864
+    grpc_sha=e0701e7a47cc8e486c62a4abedecdecc2ae9a8cadd66a690f5a35f56b1d4a540
+    ;;
   *)
     echo "java-gen.sh: no pinned checksums for $(uname -s)-$(uname -m); add them from Maven Central's .sha1 files" >&2
     exit 2

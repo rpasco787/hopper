@@ -1,0 +1,31 @@
+# Merged over docker-compose.yml and compose.yaml only when
+# HOPPER_CONFORMANCE_WORKER names a worker image (stack_test.go,
+# docs/design/conformance.md). The worker service then runs that image, which
+# the suite never builds, instead of the Go worker built from the tree.
+# worker-go is the Go worker built from the tree, which only the mixed fleet
+# starts. Relative paths resolve against the first file's directory, the
+# repository root.
+services:
+  worker:
+    build: !reset null
+    image: ${HOPPER_CONFORMANCE_WORKER:?set by the conformance suite}
+    pull_policy: never
+    # The Java image sizes its heap at 75% of the memory it sees
+    # (-XX:MaxRAMPercentage=75); unlimited, that is the whole Docker VM, for
+    # every worker. Phase 3c's measurement settled this value (D9).
+    mem_limit: ${HOPPER_CONFORMANCE_WORKER_MEMORY:-384m}
+  worker-go:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: worker
+    depends_on:
+      - broker
+    environment:
+      HOPPER_BROKER: ${HOPPER_CHAOS_WORKER_BROKER:-broker:9090}
+      HOPPER_CONCURRENCY: "4"
+      HOPPER_SHUTDOWN_TIMEOUT: ${HOPPER_CHAOS_SHUTDOWN_TIMEOUT:-45s}
+      HOPPER_LOG_LEVEL: info
+      HOPPER_METRICS_LISTEN: 0.0.0.0:9092
+    stop_grace_period: 60s

@@ -183,8 +183,10 @@ returning j.*;
   worker starts a handler under **the start rule**, then renews at one third of
   G. Every Heartbeat sends that original grant explicitly; it does not
   reselect a broker default that may have changed since delivery. A successful
-  RPC creates a conservative local deadline from the monotonic request-start
-  instant with scheduling slack; that estimate is neither a new store guard nor
+  ownership check or renewal moves a conservative local deadline to its own
+  monotonic request-start instant plus G, less scheduling slack. A fresh
+  delivery's first deadline comes from its credit's send instead (the start
+  rule, below); that estimate is neither a new store guard nor
   permission to revive an already expired local lease. If ownership is
   definitively rejected, the job was cancelled, or the local deadline expires,
   the SDK cancels the handler's `context`. A handler should stop, but Go
@@ -542,8 +544,10 @@ lease is granted and not acked:
    `worker: TestAFastFailedRenewalCostsOneInterval`,
    `TestASlowFailedRenewalCanSpendTheLease`,
    `TestAConfirmationHasOnlyWhatIsLeftOfTheLease` and
-   `TestALateConfirmationStillLandsBeforeTheDeadline`, which pin the check
-   path with an unexported option, since a fresh delivery takes none; the start
+   `TestALateConfirmationStillLandsBeforeTheDeadline`, the first two driving one
+   heartbeat's check and renewals directly, the last two pinning the check path
+   with an unexported option (`checkEveryDelivery`, in both SDKs), since a fresh
+   delivery takes none; the start
    rule by `worker: TestFreshDeadlineCountsFromTheCreditSend`,
    `TestAFreshDeliveryStartsWithoutTheOwnershipCheck`,
    `TestAStaleDeliveryStillTakesTheCheck`,
@@ -627,7 +631,8 @@ lease is granted and not acked:
    overhead left over. A delivery still active at the deadline is abandoned,
    its handler context is cancelled, and its lease expires normally. The SDK
    reports separate active-delivery, running-handler, acquisition, and
-   confirmation counts; `cmd/worker` logs the abandonment and exits nonzero.
+   confirmation counts, in its `shutdown deadline reached` line and its returned
+   error; `cmd/worker` logs the abandonment and exits nonzero.
    Size the budget to the slowest handler, and remember that an uncooperative
    Go handler cannot be forcibly stopped.
 
@@ -1200,6 +1205,17 @@ logged, and a lease id appears only under the `lease_id` key. The Java example
 worker (`java/hopper-example-worker`) writes the same messages with the same
 fields; `test/accounting` judges its logs unchanged (§15).
 
+`lease stream opened` does not mean the same in the two SDKs. Go's worker logs
+it after `LeaseJobs` has returned and the subscribe message has been sent, so
+a connection exists; run against `127.0.0.1:1`, where nothing listens, for 3 s,
+it logged the line 0 times (2026-11-24). The Java worker logs it when it hands
+the subscription to grpc-java, which starts the call before any transport
+exists; against the same port it logged the line 5 times in 3 s, each followed
+at once by `lease stream closed` and `lease stream failed; reconnecting`. A
+worker's line is therefore not evidence that a broker has it. The broker's line
+of that name, carrying the worker's id, is: the conformance suite waits for it
+before it counts a worker as ready.
+
 **Metrics endpoints.**
 
 | Binary | Flag | Env | Default |
@@ -1465,6 +1481,19 @@ not in this table.
 | A job cancelled while its handler runs is stopped at its first renewal, G/3 after the start, and not confirmed | `TestJavaWorkerStopsACancelledJobAtItsFirstRenewal`, a 20 s `sleep` job cancelled through the Java client | 2 (2026-11-23): at `e39bd1c`, then at `3461424` | the first run **failed**: the client cancelled 15.7 ms after the lease, before the worker's ownership check (the delivery was stale, 5.2 s after its credit), which was refused `FAILED_PRECONDITION`; the handler never started and nothing was confirmed, as in the Go SDK, but it is not the running case. The driver now cancels 2 s after `LEASED`. The rerun passed: the delivery, stale by 4.6 s, took the check; stopped 10.05 s after the handler started (G/3 = 10 s); no `job confirmed`. The live run exercises the renewal branch; the case where a job is cancelled before a fresh delivery's handler starts is `FreshnessTest`'s, on the manual clock |
 | A drain that outlasts its budget exits 1 and reports what it abandoned | `scripts/java-smoke.sh abandon`, two 20 s jobs, a 2 s shutdown budget; image at `e39bd1c` | 1 (2026-11-23) | pass: exit 1; one `shutdown deadline reached` line with `active_deliveries` 2, `running_handlers` 2, `acquiring` 0, `confirming` 0; stderr `worker: worker: shutdown deadline reached with 2 active deliveries (2 running handlers, 0 acquiring a lease, 0 awaiting confirmation)`; both jobs completed after the restart |
 | The Java log check can fail | `TestJavaWorkerLog` on damaged copies of the runs' logs | 1 each (2026-11-23) | the first `job started` deleted: fails, `completed, but no worker logged its start`; one non-JSON line added: fails, `every line the Java worker printed must be a JSON record`; a nack's `job confirmed` deleted: fails, no nack explains the job running again. An ack's `job confirmed` deleted: **passes**, because accounting proves a completed job's Ack from its row, for the Go worker too |
+| The deadline line names the four counts | `worker: TestTheDeadlineLineNamesTheFourCounts` (the line is parsed as JSON); `integration: TestWorkerShutdownDeadlineReportsAbandonment`, asserting `active_deliveries` and `running_handlers`, at `03b220e` | red on the unfixed code (`counts` rendered `{}`: "the deadline line names running_handlers"), then green; the `worker` and `test/integration` packages pass, 124.2 s for the latter (2026-11-24) | pass: Go's line now carries `active_deliveries`, `running_handlers`, `acquiring` and `confirming` by name, as Java's does |
+| The scheduler's term-release test waits for the failed term's log line | `scheduler: TestReconcileFailsWhenTheClockIsUnavailable` (`internal/scheduler/file_test.go`, changed in `b693656`; assertions unchanged) | before: 30 of 2,000 runs failed alone and 15 of 1,500 with `-cpu 1,2,4` beside a race suite, at `file_test.go:195` with "scheduler term won" and "term released" logged but not "clock down". A 20 ms sleep after the term on a scratch copy failed the old test 20 of 20 and the new one 0 of 20. After: `-count=500` and `-race -count=2000` (2026-11-24) | fixed: 0 failures in either |
+| The accounting judges: the log contract apart from the Ack, the concurrency bound, the conformance judge and the evidence format | `test/accounting`: 90 tests, among them `TestACompletedJobWithoutItsAckLineIsAProblem`, `TestTheBoundCountsFromStartToTheTerminalLine`, `TestJudgeChecksCancels`, `TestJudgeChecksExpiredAndDeadline`, `TestEvidenceRoundTrips`; `d395390`, `e008770`, `f6dca58` | 3 (`-count=3`, 2026-11-24), then 1 | pass: 270 of 270. One equivalent mutant in the bound (a repeated first line re-sets a map key and changes neither the peak nor the first excess) is kept as written |
+| The chaos suite is unchanged when no worker image is named | the compiled test list, `docker compose config` with the variable unset, and two unit tests (`TestTheChaosSuiteStillRunsTheGoWorkerFromTheTree`, `TestANamedWorkerImageIsRunNotBuilt`); then `go test -tags chaos -count=1 ./test/chaos` against the Go worker, before (`f6dca58`) and after (`e0fb10b`) the image switch | 2 full passes (2026-11-24, AC power, no sleep, 0 leftovers) | pass: the same 9 tests and 4 subtests, 605.6 s before and 600.4 s after (−0.9%); the same render (sha 9866278f2722). Counts of the same kind: 0 repeats in the control, broker restarts, age-outs and rebalance; the long outage 12 repeats, all `lost`; the kill run 9 kills, 36 repeats all `killed`, 9 processes cut, 36 handlers interrupted, both times; PostgreSQL graceful `UNAVAILABLE` 42 `Ack`s before and 46 after, crash 50 and 46, `INTERNAL` none |
+| The Go worker meets the conformance contract on all 12 scenarios | `scripts/ci.sh conformance`, the Go pass: `TestConformanceKilledWorker`, `…BrokerGoneLongerThanTheLease`, `…ShortPostgresOutage`, `…SigtermDrainsCleanly`, `…ShutdownDeadlineExceeded`, `TestConformanceQuietRun` (7 subtests); the mixed fleet skips without a named image; at `89b4d21` with the scripts later committed as `d485947` | 1 pass (2026-11-24, 15:03:49–15:14:50 with the Java pass) | pass first time: 301.9 s against the 660 s estimated and the 10-minute aim. Worker stdout all JSON and stderr empty in every scenario except the deadline's one line; the concurrency bound held (no process over its own, the burst's workers all at 4 of 4); kill: 4 handlers interrupted, 4 repeats all `killed`; broker gone: 3 repeats `lost`; PostgreSQL: sessions failed 2.96–3.17 s, 0 repeats; SIGTERM: exit 0, 0 repeats; deadline: exit 1, counts 2/2/0/0. Cancels: running stopped at its first renewal, short had its `Ack` refused, at lease time stopped at its first renewal |
+| The Java worker meets it too | the same pass with `HOPPER_CONFORMANCE_WORKER=hopper-example-worker:dev` (image `61a44b130a45`, built from `java/` by the script) | the same run | pass first time: 353.6 s against 840 s estimated. The same counts as Go on every scenario: kill 4 interrupted and 4 `killed` repeats, 3 `lost` repeats with a broker gone, PostgreSQL sessions failed 2.98–3.19 s and 0 repeats, SIGTERM exit 0, the deadline line 2/2/0/0 with stderr identical to Go's. The cancel at lease time was never started (`lease not confirmed; leaving the job to be redelivered`), where Go stopped it at its first renewal; both are accepted outcomes. Each gated handler's local expiry after a broker kill fell 27.2–27.5 s after it in both SDKs' Task 12 runs (window 18.5–30.5 s) |
+| A fleet of two Java and two Go workers on the same queues | `TestConformanceMixedFleet/Burst` and `/Kill`, in the Java pass (it skips without the image) | 1 pass (2026-11-24); first run alone 62.9 s | pass: 55.2 s in the full pass. Burst: 1,000 jobs over four workers, every worker ran jobs, peaks 4 of 4. Kill: 2,000 jobs, 2 processes cut and 8 handlers interrupted (4 on the Java worker, 4 on the Go worker), 8 repeats all `killed` |
+| Every check can fail | `test/accounting` `TestEvidence` over damaged copies of the passes' own evidence; `negative-controls.txt` | 25 damaged runs (20 rows on Java, and the 5 daggered rows again on Go) against 16 undamaged baselines (2026-11-24) | 16 of 16 baselines clean; 25 of 25 damaged runs fail with the line the row names; 0 passed, so no equivalent mutant and no judge was strengthened. A driver bug found on the first pass (it picked a job outside the scenario's rows) was fixed in the driver |
+| The chaos suite against the Java worker, five times | `HOPPER_CONFORMANCE_WORKER=hopper-example-worker:dev go test -tags chaos -count=1 ./test/chaos`, five invocations in a row | 5 (2026-11-24, 15:35–16:30, AC power, no sleep, 0 leftovers) | **4 of 5**: 628.9, 619.6, 615.6 and 782.9 s pass in full. Pass 2 (625.95 s) failed `TestBrokerRestartLosesNothing/crash` with one job started twice: an `Ack` in flight when the broker was killed failed `UNKNOWN: channel closed`, which the Java worker did not retry (next row). Pass 5 ran 783 s with no cause found (`TestStreamsSpreadBackAfterABrokerReturns` 271 s against about 150 s). Counts in `chaos-java-5.txt`; the five passes ran against the image from before the fix. A pass against the rebuilt image (2026-11-24) is in the next row |
+| A write onto a just-closed connection is the network, not a refusal | `worker (Java): NetworkStatusTest` (3 tests), `hopper-worker` 190 tests | the new tests red (2 of 3), then the module green (2026-11-24, `a595053`) | pass: `UNKNOWN` with a `ClosedChannelException` cause (grpc-netty's status for such a write; Go's gRPC says `UNAVAILABLE`) is retried by a confirmation and does not end a lease on a renewal; an `UNKNOWN` without that cause still does. The suite against the rebuilt image: one void pass (17:32, the laptop hibernated 14 s in) and one clean pass (19:46-19:57, 639.5 s, 9 tests and 4 subtests, 0 repeated starts in the broker crash, no sleep, 0 leftovers). One pass, where the failure was 1 in 5 |
+| The window tests pin the check path | `worker: TestAFastFailedRenewalCostsOneInterval`, `TestASlowFailedRenewalCanSpendTheLease`, `TestAConfirmationHasOnlyWhatIsLeftOfTheLease`, `TestALateConfirmationStillLandsBeforeTheDeadline`, and the four of `WindowTest` in `hopper-worker`; the mutant "a failed renewal moves the deadline", on a scratch copy | the old tests `-count=3`; the new setup `-count=3`; clean `-count=5`; Java three builds (2026-11-24, `b3abfbe`) | the mutant survived the old tests (`ok`) and died with `checkEveryDelivery(true)` in the last two (3 of 3 failed; the clean tree passed 5 of 5). Java: `hopper-worker` 4 of 4 three times; the module counts proto 20, client 38, worker 187, example worker 45, all green |
+| The Linux codegen pins | `scripts/java-gen.sh`'s `Linux-x86_64` case: both binaries downloaded from Maven Central and checksummed, never executed | 1 (2026-11-24) | protoc 4.36.2 SHA-256 `f6ee22d6…f864`, SHA-1 `bb3742d0…1ba4`; protoc-gen-grpc-java 1.85.1 SHA-256 `e0701e7a…a540`, SHA-1 `19389e4a…3c3e`; each SHA-1 equals Maven's own `.sha1`. The Linux branch has not run |
+| The CI steps, through one script | `scripts/ci.sh go-checks`, `go-test`, `java-build`, `java-gen-check` (and `conformance`, above) | 1 each (2026-11-24, 15:33–15:35) | exit 0 each: the checks (buf, helm lint, promtool in a container), 15 of 15 Go packages, `BUILD SUCCESSFUL`, `java stubs are current`. The workflow's 11 `uses:` lines are each pinned by a 40-character commit. **First GitHub Actions run: not done** |
 
 The Phase 2 rows are tabulated per run in [failover/summary.md](failover/summary.md).
 After a promotion the new primary has no synchronous standby for a few seconds,

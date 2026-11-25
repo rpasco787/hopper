@@ -10,6 +10,7 @@
 # HOPPER_CHAOS_WORKER_BROKER and HOPPER_CHAOS_STREAM_AGE let a test opt into
 # round robin across both brokers and short stream ages.
 # HOPPER_CHAOS_CONFIRM_BATCH sets the brokers' confirmation batch size: 64, the broker default, unless given; 1 turns batching off.
+# HOPPER_CHAOS_SHUTDOWN_TIMEOUT sets the workers' shutdown budget: 45s, the base file's, unless given.
 services:
   postgres:
     ports:
@@ -35,3 +36,6 @@ services:
       # The restart tests need to know which broker every worker is on, so
       # workers dial `broker` unless a test opts into the shared name.
       HOPPER_BROKER: ${HOPPER_CHAOS_WORKER_BROKER:-broker:9090}
+      # The base file's budget unless a test sets its own: the conformance
+      # suite's shutdown-deadline scenario uses 2s.
+      HOPPER_SHUTDOWN_TIMEOUT: ${HOPPER_CHAOS_SHUTDOWN_TIMEOUT:-45s}

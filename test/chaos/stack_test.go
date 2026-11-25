@@ -1,4 +1,4 @@
-//go:build chaos
+//go:build chaos || conformance
 
 package chaos
 
@@ -33,8 +33,35 @@ import (
 // project is the Compose project every test runs in, one test at a time.
 const project = "hopper-chaos"
 
-// composeFiles are docker-compose.yml with the suite's changes merged over it.
-var composeFiles = []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml"}
+// workerImage is the worker image the stack runs, from
+// HOPPER_CONFORMANCE_WORKER. Empty is the Go worker built from the working
+// tree, which is all the chaos suite ran before Phase 3c. Any other value is
+// an image that already exists, such as hopper-example-worker:dev: the suite
+// runs it as the worker service and never builds it
+// (docs/design/conformance.md).
+var workerImage = os.Getenv("HOPPER_CONFORMANCE_WORKER")
+
+// composeFiles are docker-compose.yml with the suite's changes merged over it,
+// and worker-image.yaml over both when a worker image is named.
+var composeFiles = stackFiles(workerImage)
+
+func stackFiles(image string) []string {
+	files := []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml"}
+	if image != "" {
+		files = append(files, "-f", "worker-image.yaml")
+	}
+	return files
+}
+
+// buildServices are what TestMain builds from the working tree: both brokers,
+// and the Go worker, as the worker service or, when another image runs as
+// that, as worker-go beside it for the mixed fleet.
+func buildServices(image string) []string {
+	if image == "" {
+		return []string{"broker", "broker-standby", "worker"}
+	}
+	return []string{"broker", "broker-standby", "worker-go"}
+}
 
 // Limits on every external call. Each is generous for its operation. Together
 // they make every call return, so a failure reaches the test's cleanup, which
@@ -58,11 +85,20 @@ const (
 
 // TestMain builds the broker and worker images from the working tree once, so
 // every test runs the code under test rather than an image left over from
-// another build.
+// another build. A worker image named by HOPPER_CONFORMANCE_WORKER is checked
+// for, not built: the suite runs it as it is.
 func TestMain(m *testing.M) {
+	if workerImage != "" {
+		// The suite runs this image and never builds it, so it must be there.
+		out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", workerImage).CombinedOutput()
+		if err != nil {
+			log.Fatalf("HOPPER_CONFORMANCE_WORKER=%s: %v: %s; build it first (scripts/conformance.sh java does)",
+				workerImage, err, bytes.TrimSpace(out))
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), buildLimit)
-	cmd := exec.CommandContext(ctx, "docker", append(append([]string{"compose", "-p", project}, composeFiles...),
-		"build", "broker", "broker-standby", "worker")...)
+	cmd := exec.CommandContext(ctx, "docker", append(append(append([]string{"compose", "-p", project}, composeFiles...),
+		"build"), buildServices(workerImage)...)...)
 	// compose.yaml requires its port variables even to build.
 	cmd.Env = append(os.Environ(), portEnv("1", "2", "3")...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr

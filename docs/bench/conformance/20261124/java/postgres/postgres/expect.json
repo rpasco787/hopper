@@ -1,0 +1,12 @@
+{
+  "scenario": "postgres",
+  "mode": "execution",
+  "first_lease": [
+    "01a20fd4-3ae3-73f7-abff-135a1f5697ca",
+    "01a20fd4-3ae4-7a82-a7e1-e6c0e8766b7b",
+    "01a20fd4-3ae5-751b-bf76-34904053ebd3",
+    "01a20fd4-3ae5-7cae-b575-725baa83850c",
+    "01a20fd4-3ae6-74b6-a29a-56fc313b8769",
+    "01a20fd4-3ae6-7c2b-9f63-72eb95d22806"
+  ]
+}

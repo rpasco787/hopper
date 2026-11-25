@@ -1,0 +1,15 @@
+{
+  "scenario": "cancel-running",
+  "mode": "attempts",
+  "rows": {
+    "01a20fd1-5973-7ed8-a30f-6dc26c2d56a2": {
+      "state": "cancelled",
+      "attempts": 1,
+      "starts": 1
+    }
+  },
+  "cancels": {
+    "01a20fd1-5973-7ed8-a30f-6dc26c2d56a2": "stopped at its first renewal"
+  },
+  "grant": 30000000000
+}
