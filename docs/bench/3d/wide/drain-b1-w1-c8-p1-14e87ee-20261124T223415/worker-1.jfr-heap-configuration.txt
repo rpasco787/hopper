@@ -1,0 +1,13 @@
+
+Heap Configuration
+------------------
+
+Initial Heap Size: 16.0 MB
+
+Minimum Heap Size: 8.0 MB
+
+Maximum Heap Size: 768.0 MB
+
+If Compressed Oops Are Used: true
+
+Compressed Oops Mode: 32-bit

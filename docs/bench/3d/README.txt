@@ -62,3 +62,45 @@ Decisions taken while running
   medians are warm 8,088 above cold 7,699. Java's startup (drain 4,119 ms,
   steady 2,634) is far above the predicted 1,500 ms; its warm steady CPU
   (915 ms per 1k) is below its cold drain CPU (1,491), as predicted.
+- Task 14: before the loop, no stray `bash scripts/bench.sh` process,
+  `docker ps -q` empty, on AC power. wide/loop.sh is the plan's text
+  verbatim, checked with `bash -n` only (no shellcheck on this host). It ran
+  2026-11-25 06:27:44-06:35:33 UTC (8 min): 8 rows, harness 88a8271 (clean),
+  no FAILED line, no rejected.txt, sleeps.txt empty, so D17 needed no rerun.
+  Every row has max_leased 10,000 and retried 0. peaks.txt: both proof
+  processes held 10,000 deliveries open at once, PASS, go test exit 0.
+  pinning/control.txt was rerun by the loop on the measured image
+  (hopper-bench/worker-java:ref-14e87ee, sha256:ddd75cf7...): 1 event at
+  0 ms, 0 at 20 ms, PASS. It replaces the smoke's uncommitted control.txt
+  (run on hopper-example-worker:dev).
+- Task 14, the pins (for java.md; a finding, not fixed here, §1): 72
+  jdk.VirtualThreadPinned events in the java-proof recording, not ~50 and not
+  all in the first second as predicted. Every one is a first use of a class:
+  58 "Contended monitor enter" (56 "Freeze or preempt failed (2)" in
+  BuiltinClassLoader.loadClass, e.g. from Execution.run:46; 2 "Native or VM
+  frame on stack" in ReferencedKeyMap.intern) and 14 "Object.wait", each
+  "Waited for initialization of <class> by another thread" (Jackson
+  JsonEncoding and UTF8StreamJsonParser, AckRequest, HeartbeatRequest,
+  Confirmer$Outcome, HandlerStatus, grpc ClientCalls$GrpcFuture). They come
+  in two bursts: 24 at 06:34:39 (the first deliveries, about 1 s after the
+  JVM started) and 48 at 06:34:54 (the first completions, 15 s later, when
+  the ack path's classes load for the first time). None while the handlers
+  sleep. Longest 38.0 ms (twice, Jackson ByteSourceJsonBootstrapper
+  .constructParser, at 06:34:39.284); the rest under 8 ms. Follow-up:
+  preload or initialize those classes before the first delivery (or an AOT
+  cache, D18), so the first bursts don't pin carriers.
+- Task 14, the java-proof JFR views (for java.md): Serial collector
+  (UseSerialGC from the command line), heap 16 MB initial, 768 MB max; 51 GC
+  pauses, 312 ms in all, median 3.47 ms, largest 107 ms (the one old
+  collection, GC 51 at 06:34:54, as the completions began); heap after GC at
+  its highest on the plateau 73.1 MB (GC 48, 06:34:40, after which no GC ran
+  until 06:34:54), 80.7 MB at its highest overall (GC 54, during the
+  completions); native memory committed at its maximum: Java heap 171.8 MB,
+  Tracing (JFR) 21.3, Code 20.0, Metaspace 19.0, Shared class space 12.7,
+  Arena 12.6, Other 12.2, Symbol 4.1, Class 2.9, NMT 2.2, Thread Stack 0.4
+  (virtual threads' stacks are heap StackChunks); Java threads peak 21 (OS
+  threads from /proc: 29 in this run, 25 in every java-wide run).
+- Task 14, prediction misses (for java.md): Go's peak RSS 210 MiB
+  (208-212), not 110; Java's 249 MiB (220-251), under the predicted 300.
+  Threads Go 9 (predicted 12), Java 25 (predicted 30). The pin count and
+  timing above.

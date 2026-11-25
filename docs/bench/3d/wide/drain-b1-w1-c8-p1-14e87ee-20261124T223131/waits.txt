@@ -1,0 +1,4 @@
+samples|16
+active_mean|0.06
+type|Client|1|100.0
+event|Client|ClientRead|1|100.0

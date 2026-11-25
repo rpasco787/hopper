@@ -1,0 +1,30 @@
+
+                                                                                          Allocation by Class
+
+Object Type                                                                                                                                                                         Allocation Pressure
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -------------------
+byte[]                                                                                                                                                                                           38.61%
+jdk.internal.vm.StackChunk                                                                                                                                                                        9.07%
+java.lang.Object[]                                                                                                                                                                                8.54%
+char[]                                                                                                                                                                                            4.16%
+java.util.LinkedHashMap$Entry                                                                                                                                                                     3.89%
+java.time.Instant                                                                                                                                                                                 2.91%
+io.github.rpasco787.hopper.worker.Backoff                                                                                                                                                         2.57%
+java.lang.String                                                                                                                                                                                  2.16%
+java.nio.ByteBuffer[]                                                                                                                                                                             1.53%
+java.util.ArrayList$Itr                                                                                                                                                                           1.29%
+io.github.rpasco787.hopper.worker.Confirmer$Result                                                                                                                                                1.21%
+io.grpc.netty.shaded.io.netty.buffer.UnpooledSlicedByteBuf                                                                                                                                        1.13%
+java.util.concurrent.ConcurrentLinkedQueue$Node                                                                                                                                                   1.09%
+java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask                                                                                                                              1.05%
+com.google.protobuf.CodedInputStream$ArrayDecoderOldVarint                                                                                                                                        0.76%
+java.time.LocalTime                                                                                                                                                                               0.69%
+io.grpc.netty.shaded.io.netty.handler.codec.http2.Http2CodecUtil$SimpleChannelPromiseAggregator                                                                                                   0.66%
+io.grpc.internal.ClientCallImpl$ClientStreamListenerImpl$1MessagesAvailable                                                                                                                       0.62%
+java.nio.HeapByteBuffer                                                                                                                                                                           0.61%
+io.grpc.CallOptions                                                                                                                                                                               0.61%
+io.grpc.internal.RetriableStream$State                                                                                                                                                            0.60%
+io.grpc.netty.shaded.io.netty.util.AsciiString[]                                                                                                                                                  0.59%
+io.github.rpasco787.hopper.proto.v1.AckRequest                                                                                                                                                    0.56%
+java.util.concurrent.ForkJoinTask$AdaptedRunnableAction                                                                                                                                           0.56%
+java.nio.DirectByteBuffer                                                                                                                                                                         0.56%
