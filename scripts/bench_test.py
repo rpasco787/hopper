@@ -12,13 +12,30 @@ import unittest
 # BENCH_TEST_RETRIED the drain's retried jobs, BENCH_TEST_NO_WAITS=1 makes the
 # wait-event sampler come back empty, and BENCH_TEST_STATS_DELAY makes stats
 # collect for that many seconds before printing, as the real one does.
+# The workers are BENCH_TEST_WORKER_IDS (two by default), each with its first
+# 12 characters as hostname, as Docker's are. BENCH_TEST_COMPLETED is the
+# successive answers to a count of completed jobs (the last repeats),
+# BENCH_TEST_LEASED the rows leased now, BENCH_TEST_TICKS_<LABEL> each worker's
+# CPU ticks in the /proc snapshot of that label (default 100),
+# BENCH_TEST_MEMORY each worker's memory limit in bytes, BENCH_TEST_EXITED=1
+# makes the workers exited, and BENCH_TEST_NO_JFR=1 leaves docker cp nothing.
+# The warm-throughput query answers its offset plus 21, so a test sees the offset.
 FAKE_DOCKER = r'''#!/usr/bin/env python3
-import os, sys, time
+import json, os, re, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 trace = Path(os.environ['BENCH_TEST_TRACE'])
 def event(name):
     with trace.open('a') as f: f.write(name + '\n')
+def events():
+    return trace.read_text().splitlines() if trace.exists() else []
+ids = os.environ.get('BENCH_TEST_WORKER_IDS', 'a1b2c3d4e5f6aaaa f6e5d4c3b2a1bbbb').split()
+def number(c):
+    return ids.index(c) + 1 if c in ids else 0
+def completed():
+    seq = os.environ.get('BENCH_TEST_COMPLETED', '1').split(',')
+    event('completed count')
+    return seq[min(events().count('completed count'), len(seq)) - 1]
 if args[0] == 'info':
     print(os.environ.get('BENCH_TEST_NCPU', '8'))
 elif args[0] == 'stats':
@@ -31,6 +48,46 @@ elif args[0] == 'stats':
     print('hopper-bench-broker-1,50%')
     print('hopper-bench-worker-1,20%')
     time.sleep(0.02)
+elif args[0] == 'inspect':
+    if '--format' in args:
+        i = args.index('--format')
+        fmt, targets = args[i + 1], args[i + 2:]
+        for c in targets:
+            if '.State.Pid' in fmt: print(c, 100 + number(c))
+            elif 'Networks' in fmt: print('hopper-bench_default')
+            elif '.Name' in fmt: print('/hopper-bench-worker-%d' % number(c))
+    else:
+        exited = os.environ.get('BENCH_TEST_EXITED') == '1'
+        print(json.dumps([{
+            'Id': c, 'Name': '/hopper-bench-worker-%d' % number(c), 'Image': 'sha256:fake',
+            'Config': {'Hostname': c[:12], 'Env': ['HOPPER_LOG_LEVEL=warn']},
+            'State': {'StartedAt': '2026-11-25T00:00:00.000000000Z', 'Running': not exited,
+                      'OOMKilled': False, 'ExitCode': 3 if exited else 0, 'Pid': 100 + number(c)},
+            'HostConfig': {'Memory': int(os.environ.get('BENCH_TEST_MEMORY', '0')), 'MemorySwap': 0,
+                           'CpusetCpus': ''},
+        } for c in args[1:]]))
+elif args[0] == 'run':
+    event('docker run: ' + ' '.join(args))
+    if '--pid=host' in args:
+        i = args.index('snapshot')
+        label, pairs = args[i + 1], args[i + 2:]
+        ticks = int(os.environ.get('BENCH_TEST_TICKS_' + label.upper(), '100'))
+        print('clk_tck 100')
+        for c, pid in zip(pairs[0::2], pairs[1::2]):
+            print('== %s %s %s' % (label, c, pid))
+            print('%s (app) S 1 1 1 0 -1 4194560 10 0 0 0 %d %d 0 0 20 0 9 0 5 0'
+                  % (pid, ticks - ticks // 2, ticks // 2))
+            print('Name:\tapp\nVmHWM:\t   20480 kB\nVmRSS:\t   19456 kB\nThreads:\t9')
+    elif any('PrintFlagsFinal' in a for a in args):
+        print('     bool UseSerialGC                              = true                                      {product} {command line}')
+    elif 'wget' in args:
+        print('fake profile')
+elif args[0] == 'cp':
+    event('docker cp: ' + ' '.join(args[1:]))
+    if os.environ.get('BENCH_TEST_NO_JFR') != '1':
+        Path(args[2]).write_text('JFR')
+elif args[0] == 'logs':
+    print('{"time":"2026-11-25T00:00:01Z","level":"INFO","msg":"worker starting"}')
 elif args[0] == 'compose':
     event('compose files: ' + ' '.join(a for a in args if a.endswith(('.yml', '.yaml'))))
     if 'up' in args:
@@ -41,7 +98,11 @@ elif args[0] == 'compose':
     elif 'exec' in args:
         sql = args[-1]
         event('sql: ' + ' '.join(sql.split())[:60])
-        if "where state = 'completed'" in sql: print('1')
+        if "filter (where state = 'completed')" in sql:
+            print('%s|%s' % (completed(), os.environ.get('BENCH_TEST_LEASED', '3')))
+        elif 'offset' in sql: print(int(re.search(r'offset (\d+)', sql).group(1)) + 21)
+        elif 'floor(extract' in sql: print('0|5\n1|7')
+        elif "where state = 'completed'" in sql: print(completed())
         elif 'to_regclass' in sql: print('t')
         elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
@@ -60,7 +121,6 @@ elif args[0] == 'compose':
         elif 'n_live_tup' in sql: print('12:00:00|10|5.0|3|4|0')
         elif 'with next as' in sql: print('0.500|12.0')
     elif 'config' in args:
-        import json
         services = {}
         path = next((a for a in args if a.endswith('settings.yaml')), None)
         if path and os.environ.get('BENCH_TEST_IGNORE_SETTINGS') != '1':
@@ -72,10 +132,18 @@ elif args[0] == 'compose':
                     svc = line.strip().rstrip(':')
                     services[svc] = {'environment': {}}
         print(json.dumps({'services': services}))
-    elif 'logs' in args: print('"lease stream opened"\n' * 16, end='')
+    elif 'ps' in args:
+        print('\n'.join(ids))
+    elif 'logs' in args:
+        for c in ids:
+            for _ in range(8):
+                print(json.dumps({'time': '2026-11-25T00:00:00.250000000Z', 'level': 'INFO',
+                                  'msg': 'lease stream opened', 'worker_id': c[:12] + '-1'}))
     elif 'run' in args:
         event('compose run: ' + ' '.join(args))
-        print('{}')
+        print(json.dumps({'throughput': 1000, 'retried': 0, 'enqueue': {'p50_ms': 1, 'p99_ms': 2},
+                          'pickup': {'p50_ms': 1, 'p99_ms': 3}, 'end_to_end': {'p50_ms': 2, 'p99_ms': 4},
+                          'offered_rate': 1000, 'max_lag_ms': 5}))
 '''
 
 # Stands in for curl. It counts its calls in BENCH_TEST_CURLS and reports Ack
@@ -358,7 +426,7 @@ class BenchmarkTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = run_bench(root, scenario='steady')
-            # The fake's loadgen JSON is {}, so steady's numbers are empty; only the waits matter here.
+            # Only the waits matter here.
             self.assertTrue((evidence_dir(root) / 'waits.psv').exists(), result.stderr)
 
     def test_no_sample_lands_after_the_run(self):
