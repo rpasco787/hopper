@@ -706,6 +706,19 @@ every hypothesis tried, and what is left are in
 this section used to show (9,191 jobs/s) were taken on a different layout and
 could not be reproduced on today's setup.
 
+Every number above is at 8 workers × 16 slots, the benchmark's default
+layout, and that layout costs one broker throughput. In one interleaved loop
+of seven layouts ([H6 in docs/scaling.md](docs/scaling.md#h6-per-stream-credit-and-the-8--16-layout)),
+one build (`14e87ee`) drained 24,330 jobs/s at 2 workers × 256 slots against
+11,348 at 8 × 16 (2.14×). Both levers count: more credit per stream helps
+(8 × 64 drained 1.75× 8 × 16) and so do fewer streams at the same slots
+(2 × 256 drained 1.23× 8 × 64), because each lease call then returns more
+rows: 5.98 a call at 8 × 16 against 31.19 at 2 × 256. That loop ran faster
+throughout than the one behind the table, so compare its layouts with each
+other, not with the table. The before-and-after table compares builds at one
+layout; it is not the broker's ceiling. Reproduce with
+`bash docs/bench/1b/h6/loop.sh` (about 35 minutes).
+
 Since 2026-11-23 the worker skips its ownership check for a delivery that
 arrives within a tenth of its lease after the credit that bought it. In a
 separate interleaved loop, not comparable with the table above, that took

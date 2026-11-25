@@ -25,9 +25,11 @@ half of statement time. H1, H3's payload sweep and H4 identified what remains:
 the Heartbeat before every handler, row copies for payloads of about 1,500
 bytes, and more lease calls as the same slots are split over more streams.
 (Update 2026-11-23: the Heartbeat before every handler is now skipped for
-fresh deliveries; see "Done" under H4.) Measured end to end in one loop, the `after` build drains 1.74×, 1.67× and
-1.45× faster than `before` at 1, 2 and 4 brokers, with 5.0×, 3.6× and 2.4× fewer
-commits per job, but more brokers still cost throughput against one
+fresh deliveries; see "Done" under H4.) (H6, 2026-11-25: the 8 × 16 layout
+holds one broker to about half its drain, 11,348 jobs/s against 24,330 at
+2 × 256.) Measured end to end in one loop, the `after` build drains 1.74×,
+1.67× and 1.45× faster than `before` at 1, 2 and 4 brokers, with 5.0×, 3.6×
+and 2.4× fewer commits per job, but more brokers still cost throughput against one
 PostgreSQL.
 
 ## Setup
@@ -41,8 +43,9 @@ PostgreSQL.
   needs separate machines (cloud session A). Phase 0 gave a lone broker one
   CPU, so its numbers aren't directly comparable with these.
 - 8 workers × 16 slots (128 at every broker count), 40,000 jobs of 300 bytes,
-  drained after a preload. PostgreSQL 16, `synchronous_commit=on`,
-  `fsync=on`, `wal_sync_method=fdatasync`.
+  drained after a preload. H6 measures what this layout costs at one broker.
+  PostgreSQL 16, `synchronous_commit=on`, `fsync=on`,
+  `wal_sync_method=fdatasync`.
 
 ## Baseline
 
@@ -503,6 +506,121 @@ the setup can sustain, which the H3 drift attempts showed this setup could not
 establish (above). The `-wakeups` switch was therefore not built. The mechanism
 and the measurement remain as the improvement plan describes them.
 
+### H6: per-stream credit and the 8 × 16 layout
+
+- **Setup:** REF `14e87ee` (the broker and Go worker on `main` at `e12da74`;
+  only `cmd/worker`'s debug server differs), harness `edac070` (the
+  `lease_rows_per_call` and `lease_calls_per_job` columns from `912b63b`, plus
+  the loop). 1 broker, Go workers, `PIN=1`, 300-byte jobs, 140,000 jobs per
+  drain, `WARM_JOBS=100000`, every worker limited to 384 MiB, metrics off.
+  Seven arms (below), five runs each in one 35-run loop rotated each
+  repetition, under `caffeinate -dimsu`, on AC power. Ran 2026-11-25,
+  21:34:21–22:07:07 UTC. Zero failed or rejected runs, zero retried jobs.
+  Evidence: [results](bench/1b/h6/results.csv), [loop](bench/1b/h6/loop.sh),
+  [loop log](bench/1b/h6/loop.log), [prediction](bench/1b/h6/prediction.txt),
+  [per-arm medians](bench/1b/h6/lease.txt), [summary](bench/1b/h6/summary.md),
+  [decision](bench/1b/h6/decision.txt).
+- **Why:** every 1b loop measured one broker at 8 workers × 16 slots, the
+  harness default inherited from Phase 0's layout, never tuned. In the 3d
+  layout loop the same Go build drained 1.92× faster at 1 × 128 on the same CPUs.
+  If credit per stream caps the batches, the one-broker baseline that the
+  broker-count curve and any shard comparison start from is a layout's
+  number, not the broker's.
+- **What the code settles:** a lease asks for min(credit, 32) rows
+  (`internal/broker/lease.go:189`), so a 16-slot stream leases at most 16 rows a
+  call; 8 × 16 leased about 6, under that cap, because only the credit returned
+  since the last lease can be spent. Acks are batched per broker, not per
+  stream (`internal/broker/service.go:156`): ack statements applied about 15
+  rows at both 8 × 16 and 2 × 64, so the "and ack batches" half of the
+  hypothesis is rejected by reading. Drains here are closed loops
+  (`max_leased` 120-126 of 128 in the layout loop), so total slots is a third
+  variable, which is why the loop has seven arms, not three.
+- **Prediction:** [prediction.txt](bench/1b/h6/prediction.txt), written before
+  the first run. Its verdicts held for Q1 to Q3, and for Q4 it said "yes, but
+  not the whole loss". Its numbers did not: six arms came in 27-36% above it,
+  and the lease-batch-6 arm, predicted to beat 8 × 16 by about 55%, lost to it
+  by 6%.
+- **The anchors were missed, and the loop was kept.** The prediction named
+  8 × 16 outside 6,000–9,000 jobs/s, or 2 × 64 outside 11,500–14,500, as a sign
+  of a wrong measurement. Both were outside: 11,348 and 18,803 against the
+  layout loop's 7,356 and 12,946 for the same build, CPUs and memory limit.
+  The stack files of an 8 × 16 run here (`machine.txt`, `cpuset.yaml`,
+  `broker.env`, `settings.yaml`, `postgres.yaml`, `workers-mem.yaml`) are
+  identical to a layout-loop 8 × 16 run's; `workers.json` differs only in
+  container ids, times and the order of the same environment variables, and
+  `pool.txt` only in counts. What the run directories do show is that the
+  work was the same and each statement was cheaper: 23,389 lease calls at 6.0
+  rows and about 477 blocks a call, against 23,425 at 6.0 and 464, but a lease
+  mean of 0.559 ms against 0.795 and a per-job update mean of 0.313 ms against
+  0.444, with 14.0 s of waiting for an empty broker pool against 33.7 s. So
+  PostgreSQL ran each statement about 30% faster this evening than in the
+  morning's layout loop. Why is not known. Two hypotheses, neither tested: the
+  layout loop interleaved Java arms (eight JVMs on the workers' CPUs) whose
+  after-effects reached the Go runs that followed them, or the laptop carried
+  other load in the morning. Every comparison below is
+  between arms of this one loop, so the verdicts stand; the absolute numbers
+  are this evening's and are not comparable with other loops.
+- **Results** (five-run medians; CPU is % of the two CPUs PostgreSQL and the
+  broker each have):
+
+  | Arm | Streams | Slots | Credit/stream | jobs/s (range) | warm jobs/s | Lease rows/call | Lease calls/job | Commits/job | Max leased | PostgreSQL CPU | Broker CPU |
+  |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|
+  | 8 × 16 | 8 | 128 | 16 | 11,348 (10,438–13,082) | 10,491 | 5.98 | 0.167 | 0.30 | 102 | 118 | 62 |
+  | 4 × 32 | 4 | 128 | 32 | 16,095 (15,485–16,856) | 14,856 | 10.33 | 0.097 | 0.19 | 111 | 102 | 62 |
+  | 2 × 64 | 2 | 128 | 64 | 18,803 (18,564–20,233) | 19,502 | 17.40 | 0.057 | 0.14 | 124 | 93 | 64 |
+  | 1 × 128 | 1 | 128 | 128 | 19,798 (19,398–21,088) | 20,216 | 27.89 | 0.036 | 0.11 | 94 | 76 | 57 |
+  | 8 × 64 | 8 | 512 | 64 | 19,797 (19,374–22,210) | 22,163 | 15.86 | 0.063 | 0.09 | 385 | 95 | 65 |
+  | 2 × 256 | 2 | 512 | 256 | 24,330 (23,604–24,769) | 26,560 | 31.19 | 0.032 | 0.07 | 192 | 88 | 70 |
+  | 2 × 64, lease batch 6 | 2 | 128 | 64 | 10,682 (10,360–10,813) | 9,821 | 5.97 | 0.168 | 0.36 | 29 | 110 | 54 |
+
+- **Decision rule** (fixed before the run; "helps", "worse" and "no measurable
+  effect" are `bench_compare`'s, on cold throughput). Q1, is 8 × 16 about half
+  of one broker: confirmed if the best arm is at least 1.67× 8 × 16 and helps
+  against it, rejected if no arm helps against 8 × 16, partly otherwise. Q2,
+  credit per stream or stream count: credit matters if 8 × 64 helps against
+  8 × 16; streams matter if 8 × 64 is worse than 2 × 256 (the same 512 slots,
+  8 streams against 2); the answer is credit only, streams only, both or
+  neither. Q3, is a 128-slot drain slot-bound: yes if 2 × 256 helps against
+  2 × 64. Q4, are rows per lease call the mechanism: yes if the lease-batch-6
+  arm is worse than 2 × 64 and leases at most 6.0 rows a call (median); if, in
+  addition, it shows no measurable effect against 8 × 16, small lease batches
+  account for the whole 8 × 16 loss.
+- **Verdicts:**
+  - **Q1 confirmed.** The best arm is 2 × 256 at 24,330 jobs/s, 2.144× 8 × 16
+    (helps); 8 × 16 is 0.47× the best. Every other arm also helps against
+    8 × 16 (1.418× to 1.745×) except the lease-batch-6 arm.
+  - **Q2 both.** 8 × 64 against 8 × 16: 1.745×, helps (credit). 8 × 64 against
+    2 × 256: 0.814×, worse (streams).
+  - **Q3 yes.** 2 × 256 against 2 × 64: 1.294×, helps.
+  - **Q4 yes, but the "whole loss" clause is not met.** Lease batch 6 against
+    2 × 64: 0.568×, worse, at a median 5.97 rows a call. Against 8 × 16: 0.941×,
+    which is *worse* (past the 5% line, with overlapping ranges), not "no
+    measurable effect", so by the letter of the rule the clause fails. It
+    fails on the far side: two streams held to 6 rows a call drained slightly
+    slower than 8 × 16, not faster.
+- **What saturates at the best arm:** nothing the harness flags (`saturated`
+  is "none" in every arm). At 2 × 256 PostgreSQL used 88% of its two CPUs and
+  the broker 70% of its two; Lock and LWLock waits were 47% of
+  active-backend samples. The lease batch is at its cap: 31.19 rows a call
+  against `DefaultLeaseBatch` = 32, so at this layout `MaxLeaseBatch`, not the
+  credit, bounds each call. Neither 512-slot arm filled its slots
+  (`max_leased` 192 and 385 of 512).
+- **Conclusion:** the 8 × 16 number is a layout's, not the broker's. On the
+  same build and CPUs one broker drained 24,330 jobs/s at 2 workers × 256
+  slots against 11,348 at 8 × 16, with no CPU saturated and each lease call
+  returning 31 rows, at the 32-row cap. Both levers move it: more credit per
+  stream at eight streams (1.75×) and fewer streams at the same 512 slots
+  (2 × 256 is 1.23× 8 × 64), and at two streams more slots help too, because
+  more credit comes back between leases. Rows per lease call is the
+  mechanism: holding 2 × 64 to 6 rows a call cost it 43% and brought it to
+  just under 8 × 16, at the same 0.17 lease calls per job. Lease calls per
+  job, which H1 said to measure, are lowest where throughput is highest
+  (0.032 at 2 × 256) and highest where it is lowest (0.17 at 8 × 16 and lease
+  batch 6), though not in strict order between: 8 × 64 matches 1 × 128 at
+  nearly twice the calls per job.
+  Why 16 slots: it was the harness default, inherited from Phase 0 and never
+  tuned, and at one broker it cost more than half the drain.
+
 ## After
 
 Phase 1b before and after, measured in **one** interleaved loop: `before` is
@@ -588,5 +706,17 @@ Not measured in Phase 1b:
   and so the storage-settings migration: three attempts, none usable (see H3).
 - **H5, NOTIFY under load,** and so the `-wakeups` switch.
 - **H1 as a coalescer.** The gate was not met, but jobs/s halved as the same
-  128 slots were split over 4 to 16 streams, so lease calls per job, not
-  lease latency, is the thing to measure next.
+  128 slots were split over 4 to 16 streams. H6 measured lease calls per job:
+  0.167 at 8 × 16 against 0.032 at 2 × 256, and forcing 2 × 64 to 8 × 16's
+  6 rows a call (0.168 calls per job) took it to just under 8 × 16's
+  throughput ([H6](#h6-per-stream-credit-and-the-8--16-layout)). So fewer,
+  fuller lease calls are what a coalescer would buy; at 2 × 256 a call
+  already takes 31 of its 32-row cap. No coalescer is planned.
+- **The broker-count curve at a credit-rich layout.** The 1/2/4-broker table
+  was measured at 8 × 16; at four brokers that is two streams per broker.
+  Rerun it at a layout H6 shows is not credit-starved (for example 8 × 64, so
+  every broker count gets at least two well-fed streams) before quoting how
+  throughput scales with brokers.
+- **Shard comparisons use one layout.** Phase 4's shard chart must compare
+  against a one-broker baseline measured at the same layout and in the same
+  loop.

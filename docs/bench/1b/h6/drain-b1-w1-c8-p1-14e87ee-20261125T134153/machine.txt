@@ -1,0 +1,6 @@
+host: Apple M2
+docker: 8 CPUs, 4109217792 bytes, server 29.1.3
+pinned: 1
+worker: go
+worker memory: 384m
+warm jobs: 100000

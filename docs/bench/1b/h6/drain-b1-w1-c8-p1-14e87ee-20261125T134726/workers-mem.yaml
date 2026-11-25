@@ -1,0 +1,6 @@
+# Written by scripts/bench.sh: WORKER_MEM for every worker service, swap included.
+services:
+  worker: {mem_limit: 384m, memswap_limit: 384m}
+  worker-b: {mem_limit: 384m, memswap_limit: 384m}
+  worker-c: {mem_limit: 384m, memswap_limit: 384m}
+  worker-d: {mem_limit: 384m, memswap_limit: 384m}
