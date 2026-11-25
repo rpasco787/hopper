@@ -1,4 +1,7 @@
-package main
+// Package debughttp serves Go's runtime profiles for -debug-listen on
+// cmd/broker and cmd/worker (docs/semantics.md §14), for profiling under load
+// (scripts/bench.sh PROFILE=1 and WORKER_PPROF).
+package debughttp
 
 import (
 	"net/http"
@@ -6,8 +9,8 @@ import (
 	"time"
 )
 
-// newDebugServer serves the runtime profiles, for profiling a broker under
-// load (scripts/bench.sh PROFILE=1). It is off unless -debug-listen is set.
+// NewServer serves the runtime profiles. It is off unless a binary's
+// -debug-listen is set.
 //
 // The handlers are registered on a private mux rather than by importing
 // net/http/pprof for its side effect, which would put them on
@@ -18,7 +21,7 @@ import (
 // There is no write timeout: a CPU profile or trace streams for as long as
 // the caller asked, and pprof refuses a duration longer than the server's
 // write timeout.
-func newDebugServer() *http.Server {
+func NewServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /debug/pprof/", pprof.Index) // index, heap, goroutine, allocs, block, mutex
 	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)

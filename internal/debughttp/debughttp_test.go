@@ -1,4 +1,4 @@
-package main
+package debughttp
 
 import (
 	"io"
@@ -10,7 +10,7 @@ import (
 )
 
 func TestDebugServerServesProfilesButNotTheCommandLine(t *testing.T) {
-	srv := httptest.NewServer(newDebugServer().Handler)
+	srv := httptest.NewServer(NewServer().Handler)
 	t.Cleanup(srv.Close)
 
 	get := func(path string) (int, string) {

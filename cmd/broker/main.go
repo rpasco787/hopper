@@ -37,6 +37,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/rpasco787/hopper/internal/broker"
+	"github.com/rpasco787/hopper/internal/debughttp"
 	"github.com/rpasco787/hopper/internal/metrics"
 	"github.com/rpasco787/hopper/internal/scheduler"
 	"github.com/rpasco787/hopper/internal/store/postgres"
@@ -488,7 +489,7 @@ func run(args []string) error {
 	if debugLis != nil {
 		// Profiling is a diagnostic, not a dependency: if it fails, say so and
 		// keep serving the queue.
-		debugSrv = newDebugServer()
+		debugSrv = debughttp.NewServer()
 		go func() {
 			if err := debugSrv.Serve(debugLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				logger.Error("debug server stopped", "err", err)
