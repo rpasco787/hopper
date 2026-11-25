@@ -1,5 +1,52 @@
-Phase 3d: the Go worker against the Java worker. Task 19 writes the rest of
-this file.
+Phase 3d: the Go worker against the Java worker. The write-up is
+docs/bench/java.md; this file indexes the evidence and records every decision
+taken while running.
+
+The measured ref: 14e87ee (ref.txt). Every loop except profile/ builds the
+brokers and workers from it with git archive; the harness (scripts/) is the
+working tree's, and each row's harness column records its commit. profile/
+builds from d9370e1, the HEAD that added cmd/worker -debug-listen (D16).
+
+What each directory holds, and what made it
+- common.sh: shared by every loop: the measured ref, the preflight checks
+  (tree at HEAD outside docs/, no other container, 8 CPUs, AC power), the
+  sleep check for a loop's window, and row lookups.
+- prediction.txt: written before any pilot or loop run; java.md's "Against
+  the prediction" checks each line.
+- pilot/ (pilot/run.sh, warmup.py): six runs that set the loops' settings by
+  the plan's rules R1-R4: decision.txt says why, settings.env holds them,
+  warmup.txt is warmup.py's output. Not results.
+- compare/ (compare/loop.sh): the comparison, drain and steady x Go and Java
+  x 5, interleaved and rotated. results.csv, summary.md, decision.txt
+  (bench_compare.py, go control, java treatment), loop-settings.txt,
+  loop.log, sleeps.txt, and one evidence directory per run.
+- wide/ (wide/loop.sh): 10,000 handlers on one worker, 3 runs per SDK at warn
+  and one proof run each at info. peaks.txt holds the pinned-event count and
+  TestPeaks' output; the java-proof run's directory (...T223415) holds the
+  JFR text extracts (worker-1.jfr-*.txt). The loop also reruns
+  pinning/control.sh on the measured image.
+- pinning/ (pinning/control.sh, PinControl.java): the positive control for
+  the pinned-event count; control.txt is its result in the measured image.
+- profile/ (profile/loop.sh): Part E's diagnostics at d9370e1: a Go and a
+  Java drain with profiles, and a Go 10,000-handler run with heap and
+  goroutine profiles. worker-cpu-top.txt, worker-memstats.txt,
+  worker-goroutines.txt, worker-goroutine.txt, worker-heap.txt and the Java
+  run's worker-1.jfr-*.txt are the committed extracts.
+
+What stays local (gitignored; .gitignore, plan section 6 and D15)
+- raw worker logs (*.stdout, *.stderr): per-run logs of up to 140,000 jobs,
+  large, and summarized by the committed rows and extracts;
+- JFR recordings (*.jfr) and Go CPU profiles (worker-cpu.pprof): binary and
+  large; their text extracts are committed beside them;
+- logs.txt and broker-cpu.pprof, as before Phase 3d.
+They stay in each evidence directory on the machine that ran it.
+
+Reading a .jfr
+  "$(/usr/libexec/java_home -v 25)/bin/jfr" summary <file>
+  "$(/usr/libexec/java_home -v 25)/bin/jfr" view --width 200 pinned-threads <file>
+  "$(/usr/libexec/java_home -v 25)/bin/jfr" print --events jdk.VirtualThreadPinned <file>
+The host JDK's bin/jfr is not on PATH; common.sh's JFR_TOOL points at it.
+Go profiles: go tool pprof -top <dir>/worker-cpu.pprof.
 
 Decisions taken while running
 - Task 2's test expected '1200', a plan arithmetic error: the data give 60 + 80
@@ -119,3 +166,14 @@ Decisions taken while running
   (JFR=25 as planned), so its hot-methods view is the early, JIT-heavy part of
   the drain, not a steady state: compiler-statistics reports 21.5 s of
   compilation time and gc-pauses 1.22 s over that window.
+- Task 19, java.md: the ramp paragraph sums each compare drain's rate.psv
+  into seconds; no extract was added. The slog.With attribution (11.1%) is
+  `go tool pprof -peek 'slog.\(\*Logger\).With$'` on the local
+  worker-cpu.pprof of profile/...T224141; the committed worker-cpu-top.txt
+  shows the same cost as appendJSONMarshal, 10.2% cumulative. The verdicts
+  were re-run with scripts/bench_compare.py (go control, java treatment) and
+  match compare/decision.txt and wide/decision.txt.
+- Task 19, the 3d target: "within 10% of Go" (D14) is not met (0.266x cold,
+  0.355x warm), and "zero pinning events" is not met (72, all class loading
+  and initialization). Both are reported as measured; nothing was retuned to
+  move them.
