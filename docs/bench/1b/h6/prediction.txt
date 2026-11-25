@@ -1,0 +1,47 @@
+H6 prediction, written 2026-11-25 21:32 UTC before the first loop run.
+Loop: docs/bench/1b/h6/loop.sh, harness 912b63b, REF 14e87ee.
+Decision rule: D5 in docs/plans/2026-11-25-stream-credit-and-silent-leader.md (copied into scaling.md H6).
+
+What the code says (read 2026-11-25 at e12da74):
+- A lease asks for min(credit received, 32) rows (internal/broker/lease.go:189). A 16-slot
+  stream can never lease more than 16 a call, but Go 8x16 leased 5.9-6.0 a call in
+  docs/bench/3d/layout: under the cap. What binds is how much credit has come back
+  since the stream last leased.
+- Acks are batched per broker, not per stream (internal/broker/service.go:156); ack rows per
+  statement were 14.9-15.1 at 8x16 and 14.8-14.9 at 2x64. Credit per stream does not cap them.
+- max_leased was 120-126 of 128 in every layout arm: these drains are closed loops, so
+  total slots is a variable of its own.
+Anchors (docs/bench/3d/layout, 3 runs, same REF; a sanity range, not a comparison):
+  Go 8x16 7,356 (6,472-7,474); 2x64 12,946 (12,945-13,014); 1x128 14,153 (13,461-14,692).
+Seen before writing this (Task A2's smoke, JOBS=20000, one run each, scratch, not counted):
+  2x64 lb6 12,091 jobs/s, 5.81 rows a call, max_leased 30 of 128;
+  8x64 15,569 jobs/s, 12.43 rows a call, max_leased 235 of 512.
+
+Predictions (median jobs/s, median lease rows per call):
+- go-w8c16 7,300, 6.0; go-w4c32 10,500, 11; go-w2c64 12,900, 17.5; go-w1c128 14,000, 28.
+  The 128-slot curve rises as streams fall, because each stream gets more credit back
+  between its leases and so takes more rows per call: fewer lease calls per job.
+- go-w8c64 14,500, 12. Against go-w8c16: helps, because 4x the credit per stream roughly
+  doubles rows per call and halves lease calls per job, and 4x the slots keeps the loop full.
+- go-w2c256 15,500, 30 (near the 32 cap). Against go-w2c64: helps, about +20%: 128 slots
+  is part of what holds a 2-stream drain back, since 2x64 still leases well under 32 a call.
+  go-w8c64 against it: worse (about -6%, a low-confidence call): at the same 512 slots,
+  8 streams split the returned credit four ways and lease about half the rows a call.
+- go-w2c64-lb6 11,500, <= 6. Against go-w2c64: worse (about -10%). Against go-w8c16: helps
+  (about +55%). The smoke's max_leased of 30 says lb6 doesn't even fill its slots and still
+  far outruns 8x16, so small batches are not the whole 8x16 loss: 8 concurrent lease
+  streams cost more than their rows per call alone explain (more concurrent lease
+  statements per job in flight, PostgreSQL CPU spent on calls, not rows).
+- The best arm: go-w2c256, about 2.1x go-w8c16. What limits it: none of PostgreSQL CPU
+  (expect about 90-110 of 200), broker CPU or workers reaches its ceiling; it is bound by
+  the closed loop's per-job round trip and the per-job commits of the ack path, with the
+  lease path no longer the main cost.
+- Q1 confirmed (best/8x16 about 2.1x, helps). Q2 both (credit helps at 8 streams; 8
+  streams worse than 2 at 512 slots, the weaker half of the call).
+  Q3 yes. Q4 yes, but part of the 8x16 loss, not the whole: lb6 against 8x16 says helps,
+  not no measurable effect.
+What would prove the measurement wrong rather than the hypothesis:
+- go-w8c16 outside 6,000-9,000 jobs/s, or go-w2c64 outside 11,500-14,500 (the layout
+  anchors); lb6 leasing more than 6 rows a call; max_leased above workers x slots;
+  lease_rows_per_call or lease_calls_per_job empty in any row; a retried job; any FAILED
+  line; a non-empty sleeps.txt; Docker containers other than the bench stack at start.
