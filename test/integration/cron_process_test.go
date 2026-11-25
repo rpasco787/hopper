@@ -56,8 +56,15 @@ const processSchedulerInterval = 50 * time.Millisecond
 // process that logs JSON to stdout, so the broker reuses it.
 func startBrokerProcess(t *testing.T, binary, appName, cronFile string, extraArgs ...string) *workerProcess {
 	t.Helper()
+	return startBrokerProcessWithDSN(t, binary, dsnWithApplicationName(t, appName), cronFile, extraArgs...)
+}
+
+// startBrokerProcessWithDSN is startBrokerProcess for a broker that reaches
+// PostgreSQL some other way, through a proxy for instance.
+func startBrokerProcessWithDSN(t *testing.T, binary, dsn, cronFile string, extraArgs ...string) *workerProcess {
+	t.Helper()
 	args := []string{
-		"-dsn", dsnWithApplicationName(t, appName), "-listen", "127.0.0.1:0",
+		"-dsn", dsn, "-listen", "127.0.0.1:0",
 		"-metrics-listen", "127.0.0.1:0",
 		"-cron-file", cronFile, "-scheduler-interval", processSchedulerInterval.String(),
 		"-shutdown-timeout", "2s", "-log-level", "info",
