@@ -15,8 +15,13 @@
 #                  (default none). A Java worker's heap is 75% of it (-XX:MaxRAMPercentage=75)
 #   WORKER_JVM     WORKER=java: the JVM's flags, space-separated (default -XX:+UseSerialGC)
 #   JOBS           drain: jobs to preload (default 40000)
+#   WARM_JOBS      drain: also report warm_throughput, over the jobs that finished after
+#                  the WARM_JOBS-th completion (default 0: not reported)
 #   RATE DURATION PRODUCERS BATCH WORK_MS
-#                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0)
+#                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0). WORK_MS
+#                  also sets a drain's preloaded handler time
+#   WARMUP         steady: seconds of the same load, under its own run id, before the
+#                  measured run (default 0)
 #   DB_MAX_CONNS   the brokers' pool size; unset keeps the binary's default
 #   SYNC_COMMIT    PostgreSQL synchronous_commit (default on; off is a diagnostic)
 #   PG_ARGS        extra server settings as name=value words, e.g. "commit_delay=200 commit_siblings=5"
@@ -85,6 +90,17 @@ if [ -n "${WORKER_JVM:-}" ]; then
   case "$WORKER_JVM" in *[\"\'\\]*) echo "WORKER_JVM may not contain quotes or backslashes" >&2; exit 2 ;; esac
 fi
 java_opts="$java_flags"
+jobs="${JOBS:-40000}"
+for knob in JOBS WARM_JOBS WARMUP WORK_MS; do
+  case "${!knob:-0}" in *[!0-9]*) echo "$knob must be a whole number" >&2; exit 2 ;; esac
+done
+if [ "${WARM_JOBS:-0}" != 0 ]; then
+  [ "$scenario" = drain ] || { echo "WARM_JOBS applies to drain only" >&2; exit 2; }
+  [ "$WARM_JOBS" -lt "$jobs" ] || { echo "WARM_JOBS must be less than JOBS" >&2; exit 2; }
+fi
+if [ "${WARMUP:-0}" != 0 ] && [ "$scenario" != steady ]; then
+  echo "WARMUP applies to steady only" >&2; exit 2
+fi
 payload_bytes="${PAYLOAD_BYTES:-0}"
 variant="${VARIANT:-}"
 case "$variant" in *,*) echo "VARIANT may not contain a comma" >&2; exit 2 ;; esac
@@ -108,6 +124,10 @@ if [ -z "$variant" ]; then
   for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL WORKER_JVM; do
     [ -z "${!knob:-}" ] || { echo "$knob changes the run: name it with VARIANT" >&2; exit 2; }
   done
+  [ "${WARMUP:-0}" = 0 ] || { echo "WARMUP changes the run: name it with VARIANT" >&2; exit 2; }
+  if [ "$scenario" = drain ] && [ "${WORK_MS:-0}" != 0 ]; then
+    echo "WORK_MS changes the drain: name it with VARIANT" >&2; exit 2
+  fi
   [ "${EXPLAIN:-0}" != 1 ] || { echo "EXPLAIN changes the run: name it with VARIANT" >&2; exit 2; }
 fi
 # The instruments (this script, loadgen and the Compose files) always come
@@ -248,6 +268,7 @@ fi
   echo "worker: $worker_sdk"
   echo "worker memory: ${worker_mem:-none}"
   if [ "$worker_sdk" = java ]; then echo "java opts: $java_opts"; fi
+  if [ "$scenario" = drain ]; then echo "warm jobs: ${WARM_JOBS:-0}"; else echo "warmup: ${WARMUP:-0}s"; fi
 } >"$dir/machine.txt"
 if [ "$worker_sdk" = java ]; then
   # The JVM's own account of its heap, collector and CPUs, through the image's
@@ -445,8 +466,8 @@ profile() {
 
 case "$scenario" in
 drain)
-  jobs="${JOBS:-40000}"
-  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" -wait=false -json >"$dir/preload.json"
+  loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" \
+    -work-ms "${WORK_MS:-0}" -wait=false -json >"$dir/preload.json"
   sql "vacuum analyze jobs" >/dev/null
   settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
@@ -458,10 +479,19 @@ drain)
   sample & samplers="$!"
   waits & samplers="$samplers $!"
   if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
+  workers_started=$SECONDS
   start_workers
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
+  # Progress four times a second, and the rows leased at that moment: at most
+  # the workers' slots, because the broker leases only against credit a worker
+  # sent for a free slot (docs/design/credit-anchored-freshness.md).
+  max_leased=0
   deadline=$((SECONDS + 600))
-  until [ "$(sql "select count(*) from jobs where state = 'completed'")" -ge "$jobs" ]; do
+  while :; do
+    IFS='|' read -r done_jobs leased <<<"$(sql "select count(*) filter (where state = 'completed'),
+      count(*) filter (where state = 'leased') from jobs")"
+    if [ "${leased:-0}" -gt "$max_leased" ]; then max_leased="$leased"; fi
+    [ "${done_jobs:-0}" -lt "$jobs" ] || break
     [ "$SECONDS" -lt "$deadline" ] || { echo "drain did not finish within 10 minutes" >&2; exit 1; }
     sleep 0.25
   done
@@ -475,11 +505,26 @@ drain)
     select round(count(*) / extract(epoch from max(finished_at) - min(leased_at))),
            count(*) filter (where attempts > 1)
     from jobs" | tr '|' ',')"
+  # Completions per tenth of a second from the first lease: how long the
+  # workers take to reach their pace.
+  {
+    echo "# tenths of a second since the first lease|jobs completed in it"
+    sql "select floor(extract(epoch from j.finished_at - s.t0) * 10)::int, count(*)
+         from jobs j, (select min(leased_at) as t0 from jobs) s
+         where j.state = 'completed' group by 1 order by 1"
+  } >"$dir/rate.psv"
+  if [ "${WARM_JOBS:-0}" != 0 ]; then
+    # The pace once warm: the jobs that finished after the WARM_JOBS-th
+    # completion, over the time from it to the last.
+    warm_throughput="$(sql "select round((count(*) - 1) / nullif(extract(epoch from max(finished_at) - min(finished_at)), 0))
+      from (select finished_at from jobs where state = 'completed' order by finished_at offset $((WARM_JOBS - 1))) w")"
+  fi
   completed="$jobs"
   enqueue_p50=""; enqueue_p99=""; pickup_p50=""; pickup_p99=""; e2e_p50=""; e2e_p99=""
   offered=""; max_lag=""; kept_up=""
   ;;
 steady)
+  workers_started=$SECONDS
   start_workers
   waits_once
   # Every worker has a stream open before the offered load starts.
@@ -489,6 +534,14 @@ steady)
     [ "$SECONDS" -lt "$deadline" ] || { echo "the workers did not all open lease streams" >&2; exit 1; }
     sleep 0.25
   done
+  if [ "${WARMUP:-0}" != 0 ]; then
+    # The same load first, under its own run id, so the measured run meets warm
+    # workers: compiled, with pools and connections open. loadgen reads back
+    # only its own run's jobs, and every count below starts after this.
+    loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${WARMUP}s" -run warmup \
+      -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" \
+      -json >"$dir/warmup.json"
+  fi
   settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
   counters_before="$(counters)"
@@ -627,6 +680,9 @@ read -r worker_cpu_per_1k worker_peak_rss worker_threads startup_ms <<<"$w"
 for v in worker_cpu_per_1k worker_peak_rss worker_threads startup_ms; do
   if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
 done
+if [ "$scenario" = drain ] && [ "$max_leased" -gt $((workers * concurrency)) ]; then
+  reject "$max_leased rows were leased at once, more than the workers' $((workers * concurrency)) slots"
+fi
 # Batch size as submitted: confirmation RPCs per batch statement (a batch's
 # rows are only what it applied). Fallback share: one-row statements per RPC.
 # Both per kind, and blank when no batch statement ran, as with batching off.

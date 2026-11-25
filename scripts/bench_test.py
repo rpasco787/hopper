@@ -637,6 +637,69 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn('WORKER_MEM must be a size such as 384m or 1g', result.stderr)
 
+    def test_drain_reports_warm_throughput_and_its_rate_curve(self):
+        # 1,000 jobs, and 1,000 Acks so the drain's Ack check passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', WARM_JOBS='100', BENCH_TEST_COMPLETED='1000',
+                               BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['warm_throughput'], '120')
+            # The fake answers the query's offset plus 21: offset 99 is the 100th completion.
+            self.assertIn('0|5', (evidence_dir(root) / 'rate.psv').read_text())
+            self.assertIn('warm jobs: 100', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_warm_jobs_and_warmup_belong_to_their_scenarios(self):
+        for scenario, kw, msg in [('drain', {'JOBS': '10', 'WARM_JOBS': '10'}, 'WARM_JOBS must be less than JOBS'),
+                                  ('steady', {'WARM_JOBS': '5'}, 'WARM_JOBS applies to drain only'),
+                                  ('drain', {'WARMUP': '5', 'VARIANT': 'w'}, 'WARMUP applies to steady only'),
+                                  ('drain', {'WARM_JOBS': 'some'}, 'WARM_JOBS must be a whole number')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_steady_warmup_runs_first_and_counts_nothing(self):
+        # 600 jobs completed by the warm-up, 1,600 by the end: the measured run's 1,000
+        # carry the 1,000 commits between the two snapshots.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, scenario='steady', WARMUP='5', VARIANT='warm', BENCH_TEST_COMPLETED='600,1600')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            loads = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertEqual(len(loads), 2, loads)
+            self.assertIn('-duration 5s', loads[0])
+            self.assertIn('-run warmup', loads[0])
+            self.assertNotIn('-run warmup', loads[1])
+            [row] = rows(root)
+            self.assertEqual(row['commits_per_job'], '1.00')
+            self.assertTrue((evidence_dir(root) / 'warmup.json').exists())
+
+    def test_drain_records_the_most_rows_leased_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_LEASED='7')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['max_leased'], '7')
+
+    def test_more_rows_leased_than_slots_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKERS='1', CONCURRENCY='2', BENCH_TEST_LEASED='3')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("3 rows were leased at once, more than the workers' 2 slots",
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_drain_preload_carries_work_ms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORK_MS='15000', VARIANT='wide')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [preload] = [e for e in trace(root) if e.startswith('compose run: ')]
+            self.assertIn('-work-ms 15000', preload)
+
 
 if __name__ == '__main__':
     unittest.main()
