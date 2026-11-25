@@ -232,22 +232,35 @@ type QueueDepthSource interface {
 	QueueDepths(ctx context.Context) ([]QueueDepth, error)
 }
 
-// Wakeups is implemented by stores that can tell every broker that jobs may
-// have become leasable, so an idle lease stream need not wait out its poll
-// interval. It is separate from Store, like QueueDepthSource, because only the
-// broker's lease streams use it. Both halves are hints: a lost announcement
-// costs a stream one poll interval, never a job (docs/semantics.md §9).
-type Wakeups interface {
+// Announcer tells every broker's listeners that queues may have leasable
+// jobs. A hint: a lost announcement costs a stream one poll interval, never a
+// job (docs/semantics.md §9).
+type Announcer interface {
 	// Announce tells every listener, in this process and others, that each of
 	// queues may have leasable jobs.
 	Announce(ctx context.Context, queues []string) error
+}
 
+// Listener delivers announcements made by any broker. A sharded store has
+// one per shard (sharded.Store.Listeners).
+type Listener interface {
 	// Listen calls wake("") once it is listening, meaning "any queue may have
 	// leasable jobs": announcements made before then were not delivered. It
 	// then calls wake with each announced queue, synchronously and in order,
 	// until ctx ends or the connection fails, and returns why. It holds one
 	// connection for as long as it runs.
 	Listen(ctx context.Context, wake func(queue string)) error
+}
+
+// Wakeups is both halves on one database. It is implemented by stores that
+// can tell every broker that jobs may have become leasable, so an idle lease
+// stream need not wait out its poll interval. It is separate from Store, like
+// QueueDepthSource, because only the broker's lease streams use it. Both
+// halves are hints: a lost announcement costs a stream one poll interval,
+// never a job (docs/semantics.md §9).
+type Wakeups interface {
+	Announcer
+	Listener
 }
 
 // LeaseRef names one delivery: a job and the lease token it was delivered under.
