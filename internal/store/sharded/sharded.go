@@ -32,8 +32,12 @@ type Shard interface {
 type Store struct {
 	shards []Shard
 	health *health
-	next   atomic.Uint64 // the rotation for unkeyed enqueues, leases and announcements
-	logger *slog.Logger
+	// Each kind of call keeps its own rotation. Sharing one let a broker's
+	// announcement after each enqueue, and its lease polls between them,
+	// advance the enqueue rotation in step, so with N shards and N calls per
+	// enqueue every unkeyed job landed on the same shard.
+	enqueues, leases, announcements rotation
+	logger                          *slog.Logger
 }
 
 var (
@@ -69,8 +73,11 @@ func (s *Store) Listeners() []store.Listener {
 	return out
 }
 
-// rotate returns the next shard to start from.
-func (s *Store) rotate() int { return int((s.next.Add(1) - 1) % uint64(len(s.shards))) }
+// rotation hands out start shards in turn.
+type rotation struct{ next atomic.Uint64 }
+
+// start returns the next shard to start from, of n.
+func (r *rotation) start(n int) int { return int((r.next.Add(1) - 1) % uint64(n)) }
 
 // saw notes what a call to shard i says about that shard's health and
 // returns its error, naming the shard. errors.Is and errors.As see through it.

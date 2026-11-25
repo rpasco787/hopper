@@ -27,7 +27,7 @@ func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time
 		first    error
 		answered bool
 	)
-	for _, i := range s.health.order(s.rotate(), time.Now()) {
+	for _, i := range s.health.order(s.leases.start(len(s.shards)), time.Now()) {
 		if len(got) >= n {
 			break
 		}

@@ -40,6 +40,24 @@ func TestUnkeyedEnqueueRotates(t *testing.T) {
 	}
 }
 
+// TestUnkeyedEnqueueRotatesBetweenOtherCalls: a broker announces after each
+// enqueue and polls leases between them. Those calls must not move the
+// enqueue rotation, or every unkeyed job could land on one shard: with N
+// shards and N calls per enqueue, each enqueue would start where the last did.
+func TestUnkeyedEnqueueRotatesBetweenOtherCalls(t *testing.T) {
+	s, _ := newSharded(t)
+	for range 300 {
+		_, _, err := s.Enqueue(ctxT(t), store.EnqueueParams{Queue: "q"})
+		require.NoError(t, err)
+		require.NoError(t, s.Announce(ctxT(t), []string{"q"}))
+		_, err = s.Lease(ctxT(t), []string{"absent"}, 1, time.Minute, "w")
+		require.NoError(t, err)
+	}
+	for shard := range testShards {
+		require.Equal(t, 100, rowsOn(t, shard), "shard %d", shard)
+	}
+}
+
 func TestUnkeyedEnqueueGoesAroundADownShard(t *testing.T) {
 	s, _ := withDead(t, 1)
 	start := time.Now()

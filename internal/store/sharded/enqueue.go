@@ -18,7 +18,7 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 		job, inserted, err := s.shards[i].Enqueue(ctx, p)
 		return job, inserted, s.saw(i, err)
 	}
-	return s.enqueueUnkeyed(ctx, p, s.rotate())
+	return s.enqueueUnkeyed(ctx, p, s.enqueues.start(len(s.shards)))
 }
 
 // enqueueUnkeyed tries the healthy shards from start. It moves on only after
@@ -52,7 +52,7 @@ func (s *Store) EnqueueMany(ctx context.Context, ps []store.EnqueueParams) ([]st
 	out := make([]store.EnqueueResult, len(ps))
 	errs := make([]error, len(ps))
 	groups := make([][]int, n)
-	start, unkeyed := s.rotate(), 0
+	start, unkeyed := s.enqueues.start(n), 0
 	for k, p := range ps {
 		var i int
 		if p.IdempotencyKey != nil {

@@ -203,7 +203,7 @@ func (s *Store) Announce(ctx context.Context, queues []string) error {
 		return nil
 	}
 	var first error
-	for _, i := range s.health.order(s.rotate(), time.Now()) {
+	for _, i := range s.health.order(s.announcements.start(len(s.shards)), time.Now()) {
 		err := s.saw(i, s.shards[i].Announce(ctx, queues))
 		if err == nil {
 			return nil
