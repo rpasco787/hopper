@@ -104,3 +104,18 @@ Decisions taken while running
   (208-212), not 110; Java's 249 MiB (220-251), under the predicted 300.
   Threads Go 9 (predicted 12), Java 25 (predicted 30). The pin count and
   timing above.
+- Part E ran, at d9370e1 (HEAD after Task 17, per D16), not ref.txt's
+  14e87ee. The loop's three runs were accepted first time; sleeps.txt is
+  empty. Their throughputs (go-profile 5,162, java-profile 1,710 jobs/s at
+  200,000 jobs) are diagnostics, not results: profiling costs CPU and the
+  drain is longer than Task 13's.
+- Task 18, the memstats extract: the plan's grep named StackInuse and
+  StackSys, but Go's heap?debug=1 text prints one line, "# Stack = inuse /
+  sys", so the extract had no stack line. loop.sh greps for "Stack" instead
+  (same anchors, one line per run, as strict), and the extract was re-made
+  from the saved worker-heap.txt with that regex; no run was repeated. The
+  stack is the wide run's largest item (121 MiB of 204 MiB Sys).
+- Task 18, the Java recording covers JVM start plus ~21 s of a ~117 s drain
+  (JFR=25 as planned), so its hot-methods view is the early, JIT-heavy part of
+  the drain, not a steady state: compiler-statistics reports 21.5 s of
+  compilation time and gc-pauses 1.22 s over that window.

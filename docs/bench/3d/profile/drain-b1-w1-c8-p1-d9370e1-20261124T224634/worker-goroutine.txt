@@ -1,0 +1,106 @@
+goroutine profile: total 30016
+10000 @ 0x9a608 0x747d8 0x4c9424 0xa17d4
+#	0x4c9423	github.com/rpasco787/hopper/worker.(*heartbeat).monitor+0xe3	github.com/rpasco787/hopper/worker/heartbeat.go:299
+
+10000 @ 0x9a608 0x747d8 0x4c96f0 0xa17d4
+#	0x4c96ef	github.com/rpasco787/hopper/worker.(*heartbeat).renew+0xef	github.com/rpasco787/hopper/worker/heartbeat.go:328
+
+10000 @ 0x9a608 0x747d8 0x535edc 0x4c7dec 0x4c7718 0x4cffc8 0xa17d4
+#	0x535edb	main.sleepHandler+0xcb							github.com/rpasco787/hopper/cmd/worker/handlers.go:45
+#	0x4c7deb	github.com/rpasco787/hopper/worker.invoke+0xab				github.com/rpasco787/hopper/worker/execute.go:152
+#	0x4c7717	github.com/rpasco787/hopper/worker.(*Worker).execute+0x3d7		github.com/rpasco787/hopper/worker/execute.go:77
+#	0x4cffc7	github.com/rpasco787/hopper/worker.(*session).dispatch.func1+0x77	github.com/rpasco787/hopper/worker/stream.go:278
+
+3 @ 0x9a608 0x28ff0 0x28b64 0x364344 0xa17d4
+#	0x364343	google.golang.org/grpc/internal/grpcsync.(*CallbackSerializer).run+0xd3	google.golang.org/grpc@v1.83.2/internal/grpcsync/callback_serializer.go:114
+
+1 @ 0x2e3d4 0x9c8c4 0x4d3ecc 0xa17d4
+#	0x9c8c3		os/signal.signal_recv+0x113	runtime/sigqueue.go:152
+#	0x4d3ecb	os/signal.loop+0x1b		os/signal/signal_unix.go:23
+
+1 @ 0x5794c 0x99344 0x44ab94 0x44a840 0x4480a4 0x4e7004 0x4e7830 0x3e74d8 0x3e8c44 0x3f45f0 0x3e5b80 0xa17d4
+#	0x44ab93	runtime/pprof.writeRuntimeProfile+0xb3	runtime/pprof/pprof.go:848
+#	0x44a83f	runtime/pprof.writeGoroutine+0x4f	runtime/pprof/pprof.go:781
+#	0x4480a3	runtime/pprof.(*Profile).WriteTo+0x143	runtime/pprof/pprof.go:405
+#	0x4e7003	net/http/pprof.handler.ServeHTTP+0x433	net/http/pprof/pprof.go:272
+#	0x4e782f	net/http/pprof.Index+0xaf		net/http/pprof/pprof.go:391
+#	0x3e74d7	net/http.HandlerFunc.ServeHTTP+0x37	net/http/server.go:2338
+#	0x3e8c43	net/http.(*ServeMux).ServeHTTP+0x193	net/http/server.go:2903
+#	0x3f45ef	net/http.serverHandler.ServeHTTP+0xaf	net/http/server.go:3413
+#	0x3e5b7f	net/http.(*conn).serve+0x59f		net/http/server.go:2137
+
+1 @ 0x9a608 0x5b330 0x99800 0x100ae8 0x104700 0x1046f1 0x1b92f8 0x1cd094 0x1cc4bc 0x3ea2c8 0x5387bc 0xa17d4
+#	0x997ff		internal/poll.runtime_pollWait+0x9f		runtime/netpoll.go:351
+#	0x100ae7	internal/poll.(*pollDesc).wait+0x27		internal/poll/fd_poll_runtime.go:84
+#	0x1046ff	internal/poll.(*pollDesc).waitRead+0x20f	internal/poll/fd_poll_runtime.go:89
+#	0x1046f0	internal/poll.(*FD).Accept+0x200		internal/poll/fd_unix.go:618
+#	0x1b92f7	net.(*netFD).accept+0x27			net/fd_unix.go:149
+#	0x1cd093	net.(*TCPListener).accept+0x23			net/tcpsock_posix.go:159
+#	0x1cc4bb	net.(*TCPListener).Accept+0x2b			net/tcpsock.go:387
+#	0x3ea2c7	net/http.(*Server).Serve+0x2a7			net/http/server.go:3551
+#	0x5387bb	main.runWithContext.func3+0x2b			github.com/rpasco787/hopper/cmd/worker/main.go:198
+
+1 @ 0x9a608 0x5b330 0x99800 0x100ae8 0x1050f4 0x1050e1 0x1c8810 0x40d68c 0x40d948 0xf8760 0x3feb58 0x3feb2d 0x3ff12c 0x42a8c4 0x41f7b0 0xa17d4
+#	0x997ff		internal/poll.runtime_pollWait+0x9f								runtime/netpoll.go:351
+#	0x100ae7	internal/poll.(*pollDesc).wait+0x27								internal/poll/fd_poll_runtime.go:84
+#	0x1050f3	internal/poll.(*pollDesc).waitRead+0x113							internal/poll/fd_poll_runtime.go:89
+#	0x1050e0	internal/poll.(*FD).RawRead+0x100								internal/poll/fd_unix.go:715
+#	0x1c880f	net.(*rawConn).Read+0x2f									net/rawconn.go:44
+#	0x40d68b	google.golang.org/grpc/internal/transport/readyreader.(*nonBlockingReader).ReadOnReady+0x9b	google.golang.org/grpc@v1.83.2/internal/transport/readyreader/ready_reader.go:114
+#	0x40d947	google.golang.org/grpc/internal/transport/readyreader.(*bufReadyReader).Read+0x177		google.golang.org/grpc@v1.83.2/internal/transport/readyreader/ready_reader.go:221
+#	0xf875f		io.ReadAtLeast+0x8f										io/io.go:335
+#	0x3feb57	io.ReadFull+0x57										io/io.go:354
+#	0x3feb2c	golang.org/x/net/http2.readFrameHeader+0x2c							golang.org/x/net@v0.58.0/http2/frame.go:250
+#	0x3ff12b	golang.org/x/net/http2.(*Framer).ReadFrameHeader+0x5b						golang.org/x/net@v0.58.0/http2/frame.go:513
+#	0x42a8c3	google.golang.org/grpc/internal/transport.(*framer).readFrame+0x43				google.golang.org/grpc@v1.83.2/internal/transport/http_util.go:493
+#	0x41f7af	google.golang.org/grpc/internal/transport.(*http2Client).reader+0x14f				google.golang.org/grpc@v1.83.2/internal/transport/http2_client.go:1707
+
+1 @ 0x9a608 0x747d8 0x4101f8 0x41094c 0x42f9e4 0xa17d4
+#	0x4101f7	google.golang.org/grpc/internal/transport.(*controlBuffer).get+0x137	google.golang.org/grpc@v1.83.2/internal/transport/controlbuf.go:420
+#	0x41094b	google.golang.org/grpc/internal/transport.(*loopyWriter).run+0x6b	google.golang.org/grpc@v1.83.2/internal/transport/controlbuf.go:595
+#	0x42f9e3	google.golang.org/grpc/internal/transport.NewHTTP2Client.func6+0xb3	google.golang.org/grpc@v1.83.2/internal/transport/http2_client.go:478
+
+1 @ 0x9a608 0x747d8 0x41fe7c 0xa17d4
+#	0x41fe7b	google.golang.org/grpc/internal/transport.(*http2Client).keepalive+0x13b	google.golang.org/grpc@v1.83.2/internal/transport/http2_client.go:1781
+
+1 @ 0x9a608 0x747d8 0x42d5c0 0x42d14c 0x42df5c 0x42dba0 0x4a30fc 0x4a3d80 0x4a4a88 0x4b2744 0x4bbab4 0x4b0ea0 0x4b19e0 0x4c45d8 0x4cc0e0 0x4cfe30 0xa17d4
+#	0x42d5bf	google.golang.org/grpc/internal/transport.(*recvBufferReader).readMessageHeaderClient+0x6f	google.golang.org/grpc@v1.83.2/internal/transport/transport.go:302
+#	0x42d14b	google.golang.org/grpc/internal/transport.(*recvBufferReader).ReadMessageHeader+0x3b		google.golang.org/grpc@v1.83.2/internal/transport/transport.go:248
+#	0x42df5b	google.golang.org/grpc/internal/transport.(*transportReader).ReadMessageHeader+0x2b		google.golang.org/grpc@v1.83.2/internal/transport/transport.go:561
+#	0x42db9f	google.golang.org/grpc/internal/transport.(*Stream).ReadMessageHeader+0x9f			google.golang.org/grpc@v1.83.2/internal/transport/transport.go:470
+#	0x4a30fb	google.golang.org/grpc.(*parser).recvMsg+0x3b							google.golang.org/grpc@v1.83.2/rpc_util.go:786
+#	0x4a3d7f	google.golang.org/grpc.recvAndDecompress+0x5f							google.golang.org/grpc@v1.83.2/rpc_util.go:945
+#	0x4a4a87	google.golang.org/grpc.recv+0x77								google.golang.org/grpc@v1.83.2/rpc_util.go:1054
+#	0x4b2743	google.golang.org/grpc.(*csAttempt).recvMsg+0x253						google.golang.org/grpc@v1.83.2/stream.go:1189
+#	0x4bbab3	google.golang.org/grpc.(*clientStream).RecvMsg.func1+0x23					google.golang.org/grpc@v1.83.2/stream.go:1036
+#	0x4b0e9f	google.golang.org/grpc.(*clientStream).withRetry+0x4bf						google.golang.org/grpc@v1.83.2/stream.go:840
+#	0x4b19df	google.golang.org/grpc.(*clientStream).RecvMsg+0xdf						google.golang.org/grpc@v1.83.2/stream.go:1035
+#	0x4c45d7	google.golang.org/grpc.(*GenericClientStream[...]).Recv+0x57					google.golang.org/grpc@v1.83.2/stream_interfaces.go:185
+#	0x4cc0df	github.com/rpasco787/hopper/worker.(*session).read+0x2f						github.com/rpasco787/hopper/worker/stream.go:232
+#	0x4cfe2f	github.com/rpasco787/hopper/worker.(*session).run.func1+0x2f					github.com/rpasco787/hopper/worker/stream.go:195
+
+1 @ 0x9a608 0x747d8 0x437ff8 0xa17d4
+#	0x437ff7	google.golang.org/grpc/internal/resolver/dns.(*dnsResolver).watcher+0x187	google.golang.org/grpc@v1.83.2/internal/resolver/dns/dns_resolver.go:224
+
+1 @ 0x9a608 0x747d8 0x4bb5e4 0xa17d4
+#	0x4bb5e3	google.golang.org/grpc.newClientStreamWithParams.func4+0x83	google.golang.org/grpc@v1.83.2/stream.go:442
+
+1 @ 0x9a608 0x747d8 0x4ca488 0xa17d4
+#	0x4ca487	github.com/rpasco787/hopper/worker.(*lifecycle).watch+0x67	github.com/rpasco787/hopper/worker/lifecycle.go:95
+
+1 @ 0x9a608 0x747d8 0x4cc5fc 0x4cbdc4 0x4ce68c 0x4ce0dc 0x5389f8 0x537f18 0x538508 0x5385d0 0x61d10 0xa17d4
+#	0x4cc5fb	github.com/rpasco787/hopper/worker.(*session).write+0x9b	github.com/rpasco787/hopper/worker/stream.go:287
+#	0x4cbdc3	github.com/rpasco787/hopper/worker.(*session).run+0x4b3		github.com/rpasco787/hopper/worker/stream.go:200
+#	0x4ce68b	github.com/rpasco787/hopper/worker.(*Worker).consume+0x27b	github.com/rpasco787/hopper/worker/worker.go:258
+#	0x4ce0db	github.com/rpasco787/hopper/worker.(*Worker).Run+0x9b		github.com/rpasco787/hopper/worker/worker.go:206
+#	0x5389f7	main.run.func1+0x37						github.com/rpasco787/hopper/cmd/worker/main.go:265
+#	0x537f17	main.runWithContext+0xc67					github.com/rpasco787/hopper/cmd/worker/main.go:216
+#	0x538507	main.run+0xc7							github.com/rpasco787/hopper/cmd/worker/main.go:264
+#	0x5385cf	main.main+0x5f							github.com/rpasco787/hopper/cmd/worker/main.go:269
+#	0x61d0f		runtime.main+0x37f						runtime/proc.go:302
+
+1 @ 0x9a608 0x747d8 0x4d42c4 0xa17d4
+#	0x4d42c3	os/signal.NotifyContext.func1+0x73	os/signal/signal.go:304
+
+1 @ 0xa17d4
+

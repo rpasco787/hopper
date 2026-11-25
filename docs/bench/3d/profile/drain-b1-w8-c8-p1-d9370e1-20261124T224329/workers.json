@@ -1,0 +1,282 @@
+[
+  {
+    "Id": "89e14756d1eed67e989dc65f1854ffdcce33374ac39fe8294d70fd40a4bb724a",
+    "Name": "/hopper-bench-worker-1",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "89e14756d1ee",
+      "Env": [
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:07.336020847Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31070
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "98c671e56c2a1542d3e05b7c8a20e8862bc5d0402e1578eba6bc29563bc515c7",
+    "Name": "/hopper-bench-worker-2",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "98c671e56c2a",
+      "Env": [
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:07.827451666Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31252
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "57a455df0cd3f0e8ebc4ae502032533e50cda59895500d7be3fb7a97c9485ecd",
+    "Name": "/hopper-bench-worker-3",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "57a455df0cd3",
+      "Env": [
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:08.570999625Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31524
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "297ec55a0fe5e2d5aaf67c8e9791a1259ad15a8e2bbd88d958ea4d8bc3afd517",
+    "Name": "/hopper-bench-worker-4",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "297ec55a0fe5",
+      "Env": [
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:08.0761995Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31349
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "4e6145210de8d140863651fe1b20616007808349fba417021f0f44bc036e8b92",
+    "Name": "/hopper-bench-worker-5",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "4e6145210de8",
+      "Env": [
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:08.262329625Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31437
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "b437b60ad079e5206bcd996e6de719331d26e147e519801cd6b304936d1a57db",
+    "Name": "/hopper-bench-worker-6",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "b437b60ad079",
+      "Env": [
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:09.152572959Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31717
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "1d267c5cb8ca8c1ea50ff48c026d74f82f7e7d3650e2cec5254d10bc54792099",
+    "Name": "/hopper-bench-worker-7",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "1d267c5cb8ca",
+      "Env": [
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:07.58855368Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31169
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "09ed2bda28bdb9acb739227cf00486721e97a7f17ab160f5eb5c8cec33942b1b",
+    "Name": "/hopper-bench-worker-8",
+    "Image": "sha256:81493555883ae756b144769890b41a88750bf7c529564ff84f944da58b7a236d",
+    "Config": {
+      "Hostname": "09ed2bda28bd",
+      "Env": [
+        "HOPPER_DEBUG_LISTEN=",
+        "JAVA_OPTS=-XX:+UseSerialGC -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=25s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=16",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_METRICS_LISTEN=",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "JAVA_HOME=/opt/java/openjdk",
+        "LANG=en_US.UTF-8",
+        "LANGUAGE=en_US:en",
+        "LC_ALL=en_US.UTF-8",
+        "JAVA_VERSION=jdk-25.0.5+8"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-25T06:44:08.863539292Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 31614
+    },
+    "HostConfig": {
+      "Memory": 402653184,
+      "MemorySwap": 402653184,
+      "CpusetCpus": "4-6"
+    }
+  }
+]

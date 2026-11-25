@@ -1,0 +1,48 @@
+File: app
+Build ID: d89eeff4f84919006e417dbca30e5c05dd0ba99b
+Type: cpu
+Time: 2026-11-24 22:42:30 PST
+Duration: 10s, Total samples = 1.08s (10.80%)
+Showing nodes accounting for 0.79s, 73.15% of 1.08s total
+Showing top 40 nodes out of 332
+      flat  flat%   sum%        cum   cum%
+     0.19s 17.59% 17.59%      0.19s 17.59%  internal/runtime/syscall/linux.Syscall6
+     0.08s  7.41% 25.00%      0.08s  7.41%  runtime.futex
+     0.04s  3.70% 28.70%      0.04s  3.70%  runtime.nanotime
+     0.03s  2.78% 31.48%      0.05s  4.63%  runtime.scanObject
+     0.02s  1.85% 33.33%      0.14s 12.96%  google.golang.org/grpc.(*clientStream).withRetry
+     0.02s  1.85% 35.19%      0.04s  3.70%  google.golang.org/grpc/internal/transport.(*ClientStream).RecvCompress
+     0.02s  1.85% 37.04%      0.03s  2.78%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+     0.02s  1.85% 38.89%      0.02s  1.85%  internal/sync.(*Mutex).Lock
+     0.02s  1.85% 40.74%      0.02s  1.85%  runtime.asyncPreempt
+     0.02s  1.85% 42.59%      0.02s  1.85%  runtime.mallocgcSmallScanNoHeader
+     0.02s  1.85% 44.44%      0.02s  1.85%  runtime.mallocgcSmallScanNoHeaderSC2
+     0.02s  1.85% 46.30%      0.02s  1.85%  runtime.memmove
+     0.02s  1.85% 48.15%      0.02s  1.85%  runtime.readvarint (inline)
+     0.01s  0.93% 49.07%      0.01s  0.93%  context.(*valueCtx).Done
+     0.01s  0.93% 50.00%      0.02s  1.85%  context.WithDeadlineCause
+     0.01s  0.93% 50.93%      0.01s  0.93%  encoding/json/internal/jsonopts.(*Struct).Join
+     0.01s  0.93% 51.85%      0.01s  0.93%  encoding/json/v2.makeMethodArshaler.func1.1
+     0.01s  0.93% 52.78%      0.02s  1.85%  golang.org/x/net/http2/hpack.(*Encoder).WriteField
+     0.01s  0.93% 53.70%      0.07s  6.48%  google.golang.org/grpc.(*GenericClientStream[go.shape.struct { github.com/rpasco787/hopper/gen/hopper/v1.state google.golang.org/protobuf/internal/impl.MessageState "protogen:\"open.v1\""; Msg github.com/rpasco787/hopper/gen/hopper/v1.isLeaseJobsRequest_Msg "protobuf_oneof:\"msg\""; github.com/rpasco787/hopper/gen/hopper/v1.unknownFields []uint8; github.com/rpasco787/hopper/gen/hopper/v1.sizeCache int32 },go.shape.struct { github.com/rpasco787/hopper/gen/hopper/v1.state google.golang.org/protobuf/internal/impl.MessageState "protogen:\"open.v1\""; Job *github.com/rpasco787/hopper/gen/hopper/v1.Job "protobuf:\"bytes,1,opt,name=job,proto3\" json:\"job,omitempty\""; github.com/rpasco787/hopper/gen/hopper/v1.unknownFields []uint8; github.com/rpasco787/hopper/gen/hopper/v1.sizeCache int32 }]).Recv
+     0.01s  0.93% 54.63%      0.03s  2.78%  google.golang.org/grpc/encoding/proto.(*codecV2).Marshal
+     0.01s  0.93% 55.56%      0.02s  1.85%  google.golang.org/grpc/internal/transport.(*controlBuffer).getOnceLocked
+     0.01s  0.93% 56.48%      0.14s 12.96%  google.golang.org/grpc/internal/transport.(*framer).readFrame
+     0.01s  0.93% 57.41%      0.01s  0.93%  google.golang.org/grpc/internal/transport.(*http2Client).createAudience
+     0.01s  0.93% 58.33%      0.02s  1.85%  google.golang.org/grpc/mem.ReadUnsafe (inline)
+     0.01s  0.93% 59.26%      0.01s  0.93%  google.golang.org/protobuf/internal/impl.(*MessageInfo).getUnknownBytes (inline)
+     0.01s  0.93% 60.19%      0.01s  0.93%  internal/abi.(*Type).IsDirectIface
+     0.01s  0.93% 61.11%      0.01s  0.93%  internal/runtime/atomic.(*UnsafePointer).Load
+     0.01s  0.93% 62.04%      0.01s  0.93%  internal/runtime/atomic.(*UnsafePointer).StoreNoWB (inline)
+     0.01s  0.93% 62.96%      0.11s 10.19%  io.ReadAtLeast
+     0.01s  0.93% 63.89%      0.01s  0.93%  log/slog.(*JSONHandler).Enabled
+     0.01s  0.93% 64.81%      0.11s 10.19%  log/slog.appendJSONMarshal
+     0.01s  0.93% 65.74%      0.01s  0.93%  reflect.Value.Elem
+     0.01s  0.93% 66.67%      0.01s  0.93%  runtime.(*gcControllerState).addScannableStack
+     0.01s  0.93% 67.59%      0.01s  0.93%  runtime.(*gcControllerState).releaseNextGCMarkWorker
+     0.01s  0.93% 68.52%      0.01s  0.93%  runtime.(*mheap).allocNeedsZero
+     0.01s  0.93% 69.44%      0.02s  1.85%  runtime.(*mheap).initSpan
+     0.01s  0.93% 70.37%      0.01s  0.93%  runtime.(*mspan).nextFreeIndex
+     0.01s  0.93% 71.30%      0.01s  0.93%  runtime.(*mspan).typePointersOfUnchecked
+     0.01s  0.93% 72.22%      0.01s  0.93%  runtime.(*spanScanOwnership).or
+     0.01s  0.93% 73.15%      0.01s  0.93%  runtime.(*spanSet).reset

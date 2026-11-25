@@ -1,0 +1,14 @@
+File: app
+Build ID: d89eeff4f84919006e417dbca30e5c05dd0ba99b
+Type: cpu
+Time: 2026-11-24 22:47:04 PST
+Duration: 5.01s, Total samples = 10ms (  0.2%)
+Showing nodes accounting for 10ms, 100% of 10ms total
+      flat  flat%   sum%        cum   cum%
+      10ms   100%   100%       10ms   100%  runtime.(*timers).adjust
+         0     0%   100%       10ms   100%  runtime.(*timers).check
+         0     0%   100%       10ms   100%  runtime.findRunnable
+         0     0%   100%       10ms   100%  runtime.mcall
+         0     0%   100%       10ms   100%  runtime.park_m
+         0     0%   100%       10ms   100%  runtime.schedule
+         0     0%   100%       10ms   100%  runtime.stealWork
