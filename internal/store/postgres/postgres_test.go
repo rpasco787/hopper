@@ -127,7 +127,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	var n int
 	require.NoError(t, pool.QueryRow(ctx,
 		"select count(*) from schema_migrations").Scan(&n))
-	require.Equal(t, 2, n, "second Migrate must not re-record either migration")
+	require.Equal(t, 3, n, "second Migrate must not re-record any migration")
 }
 
 func TestMigrateCreatedJobsTable(t *testing.T) {
@@ -211,5 +211,5 @@ func TestMigrateIsSafeUnderConcurrentStartup(t *testing.T) {
 	var n int
 	require.NoError(t, racePool.QueryRow(ctx,
 		"select count(*) from schema_migrations").Scan(&n))
-	require.Equal(t, 2, n, "each migration must be recorded exactly once")
+	require.Equal(t, 3, n, "each migration must be recorded exactly once")
 }
