@@ -528,6 +528,48 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('the Ack histograms saw 0 calls for 1 jobs', (evidence_dir(root) / 'rejected.txt').read_text())
 
+    def test_row_carries_worker_cpu_memory_threads_and_startup(self):
+        # Two workers at 100 ticks (1 s) each since they started, 1,000 jobs
+        # (and 1,000 Acks, so the drain's Ack check passes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', BENCH_TEST_COMPLETED='1000', BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['worker_sdk'], row['worker_cpu_ms_per_1k'], row['worker_peak_rss_mib'],
+                              row['worker_threads'], row['startup_ms']), ('go', '2000', '20.0', '9', '250'))
+            ev = evidence_dir(root)
+            self.assertIn('== end a1b2c3d4e5f6aaaa 101', (ev / 'proc.txt').read_text())
+            self.assertTrue((ev / 'worker-1.stdout').exists())
+            self.assertTrue((ev / 'worker-2.stdout').exists())
+            self.assertIn('"Hostname": "a1b2c3d4e5f6"', (ev / 'workers.json').read_text())
+            self.assertIn('lease stream opened', (ev / 'brokers.log').read_text())
+
+    def test_steady_counts_worker_cpu_between_its_snapshots(self):
+        # 40 ticks before the measured run and 100 after, on each of two workers: 1.2 s for 1,000 jobs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, scenario='steady', BENCH_TEST_TICKS_BEFORE='40',
+                               BENCH_TEST_TICKS_AFTER='100', BENCH_TEST_COMPLETED='0,1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_cpu_ms_per_1k'], '1200')
+            events = trace(root)
+            snaps = [i for i, e in enumerate(events) if e.startswith('docker run: ') and '--pid=host' in e]
+            measured = next(i for i, e in enumerate(events) if e.startswith('compose run: ') and '-rate' in e)
+            self.assertEqual(len(snaps), 2, events)
+            self.assertLess(snaps[0], measured)
+            self.assertGreater(snaps[1], measured)
+
+    def test_a_worker_that_exited_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, BENCH_TEST_EXITED='1')
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(rows(root), [])
+            self.assertIn('worker-1 exited during the run (exit 3, OOM-killed false)',
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -38,9 +38,15 @@
 #
 # Each run keeps machine.txt (the Docker VM), waits.psv/waits.txt (active
 # PostgreSQL backends by wait event, once a second) and, with PIN=1,
-# cpuset.yaml. A run with no wait samples, no broker CPU samples, no lease
-# statement or (drain) any retried job writes rejected.txt and no row.
-# Summarize a results.csv with scripts/bench_summary.py.
+# cpuset.yaml. For the workers it keeps proc.txt (each worker process's /proc
+# stat and status at the measured interval's ends, read from the VM's PID
+# namespace), workers.json (their docker inspect, trimmed), brokers.log (the
+# brokers' lines, for startup) and <worker>.stdout and .stderr;
+# scripts/bench_workers.py turns them into the worker columns. A run with no
+# wait samples, no broker CPU samples, no lease statement, (drain) any retried
+# job, or a worker that exited, was OOM-killed or has no /proc statistics
+# writes rejected.txt and no row. Summarize a results.csv with
+# scripts/bench_summary.py.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -55,6 +61,9 @@ concurrency="${CONCURRENCY:-16}"
 case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
+worker_sdk=go
+worker_mem=""
+mem_bytes=0
 payload_bytes="${PAYLOAD_BYTES:-0}"
 variant="${VARIANT:-}"
 case "$variant" in *,*) echo "VARIANT may not contain a comma" >&2; exit 2 ;; esac
@@ -113,7 +122,7 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
@@ -141,6 +150,10 @@ services:
 EOF
   files+=(-f "$dir/cpuset.yaml")
 fi
+# Throwaway helper containers (the /proc reader, profile fetches) run on
+# loadgen's CPU under PIN=1, away from every measured role.
+helper=(--rm)
+if [ "$pin" = 1 ]; then helper+=(--cpuset-cpus 7); fi
 # The server's command line for this run, kept as evidence. It replaces the
 # overlay's command, which stays for anyone running the stack by hand. (The
 # array is never empty when expanded: bash 3.2, macOS's, treats an empty
@@ -224,6 +237,8 @@ fi
 
 samplers=""
 profiler=""
+warm_throughput=""
+max_leased=""
 cleanup() {
   stop_samplers
   compose logs --no-color >"$dir/logs.txt" 2>&1 || true
@@ -264,6 +279,29 @@ for i in 0 1 2 3; do
 done
 start_workers() {
   compose up -d --no-build --no-deps "${scale[@]}" "${worker_services[@]}" >/dev/null
+}
+# Worker containers, stopped ones too, so a worker that died is still judged.
+worker_ids() { compose ps -a -q "${worker_services[@]}"; }
+# /hopper-bench-worker-b-1 -> worker-b-1
+container_name() {
+  local n
+  n="$(docker inspect --format '{{.Name}}' "$1")"
+  echo "${n#/hopper-bench-}"
+}
+# Every worker process's /proc/<pid>/stat and status, read from the Docker VM's
+# PID namespace by a throwaway container of the stack's own PostgreSQL image,
+# each pair after a line "== <label> <container> <pid>". stat's utime and stime
+# count every thread of the process, a JVM's compiler and collector threads too.
+proc_snapshot() { # label
+  local pairs
+  # shellcheck disable=SC2046 # one word per container
+  pairs="$(docker inspect --format '{{.Id}} {{.State.Pid}}' $(worker_ids))" || return 0
+  # shellcheck disable=SC2016,SC2086 # $1 and $2 are the helper's own; one word per id and pid
+  docker run "${helper[@]}" --pid=host --entrypoint sh postgres:16-alpine -c '
+    label=$1; shift
+    echo "clk_tck $(getconf CLK_TCK)"
+    while [ $# -ge 2 ]; do echo "== $label $1 $2"; cat "/proc/$2/stat" "/proc/$2/status"; shift 2; done
+  ' snapshot "$1" $pairs >>"$dir/proc.txt" 2>&1 || true
 }
 brokers_arg="broker:9090"; metrics_ports="16091"
 if [ "$brokers" -ge 2 ]; then brokers_arg="$brokers_arg,broker-standby:9090"; metrics_ports="$metrics_ports 16092"; fi
@@ -368,6 +406,7 @@ drain)
     [ "$SECONDS" -lt "$deadline" ] || { echo "drain did not finish within 10 minutes" >&2; exit 1; }
     sleep 0.25
   done
+  proc_snapshot end
   stop_samplers
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
@@ -394,8 +433,10 @@ steady)
   settle_stats
   sql "select pg_stat_statements_reset()" >/dev/null
   counters_before="$(counters)"
+  completed_before="$(sql "select count(*) from jobs where state = 'completed'")"
   sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
+  proc_snapshot before
   sample & samplers="$!"
   waits & samplers="$samplers $!"
   if [ "${TRACE:-0}" = 1 ]; then tracer & samplers="$samplers $!"; fi
@@ -403,6 +444,7 @@ steady)
   loadgen -broker "$brokers_arg" -rate "${RATE:-1000}" -duration "${DURATION:-30s}" \
     -producers "${PRODUCERS:-8}" -batch "${BATCH:-1}" -work-ms "${WORK_MS:-0}" -payload-bytes "$payload_bytes" -json >"$dir/loadgen.json"
   stop_samplers
+  proc_snapshot after
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
   read -r throughput retried enqueue_p50 enqueue_p99 pickup_p50 pickup_p99 e2e_p50 e2e_p99 offered max_lag <<<"$(jq -r '
@@ -411,7 +453,7 @@ steady)
   # Keeping up: at least 98% of offered, no call a second late.
   kept_up="$(awk -v t="$throughput" -v o="$offered" -v l="$max_lag" \
     'BEGIN { print (o > 0 && t >= 0.98 * o && l < 1000) ? "yes" : "no" }')"
-  completed="$(sql "select count(*) from jobs where state = 'completed'")"
+  completed=$(($(sql "select count(*) from jobs where state = 'completed'") - completed_before))
   ;;
 esac
 stop_samplers
@@ -507,6 +549,25 @@ read -r heartbeat_calls heartbeat_p99 <<<"$hist"
 if [ "$scenario" = drain ] && [ "$ack_calls" -lt "$jobs" ]; then
   reject "the Ack histograms saw $ack_calls calls for $jobs jobs"
 fi
+# The workers: their logs, how they ran, and what they cost.
+for id in $(worker_ids); do
+  name="$(container_name "$id")"
+  docker logs "$id" >"$dir/$name.stdout" 2>"$dir/$name.stderr" || true
+done
+# shellcheck disable=SC2046 # one word per container
+docker inspect $(worker_ids) | jq '[.[] | {Id, Name, Image,
+    Config: {Hostname: .Config.Hostname, Env: .Config.Env},
+    State: {StartedAt: .State.StartedAt, Running: .State.Running, OOMKilled: .State.OOMKilled,
+            ExitCode: .State.ExitCode, Pid: .State.Pid},
+    HostConfig: {Memory: .HostConfig.Memory, MemorySwap: .HostConfig.MemorySwap,
+                 CpusetCpus: .HostConfig.CpusetCpus}}]' >"$dir/workers.json" || true
+# shellcheck disable=SC2086 # one word per service
+compose logs --no-color --no-log-prefix $broker_services >"$dir/brokers.log" 2>&1 || true
+w="$(python3 scripts/bench_workers.py "$dir" "$completed" "$mem_bytes" 2>&1)" || reject "$w"
+read -r worker_cpu_per_1k worker_peak_rss worker_threads startup_ms <<<"$w"
+for v in worker_cpu_per_1k worker_peak_rss worker_threads startup_ms; do
+  if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
+done
 # Batch size as submitted: confirmation RPCs per batch statement (a batch's
 # rows are only what it applied). Fallback share: one-row statements per RPC.
 # Both per kind, and blank when no batch statement ran, as with batching off.
@@ -519,7 +580,7 @@ for v in ack_batch ack_fallback_pct heartbeat_batch heartbeat_fallback_pct; do
   if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
 done
 
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$dir"
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"
