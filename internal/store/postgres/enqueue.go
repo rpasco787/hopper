@@ -85,6 +85,9 @@ func (s *Store) Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, 
 		if err != nil {
 			return store.Job{}, false, wrap("enqueue: generate id", err)
 		}
+		if s.shard >= 0 {
+			id = store.StampShard(id, s.shard)
+		}
 
 		// The ::timestamptz cast on $6 is needed because Postgres cannot infer
 		// the parameter's type from a bare comparison against now() inside CASE.
