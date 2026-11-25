@@ -1,0 +1,15 @@
+{"time":"2026-11-25T05:34:07.025111125Z","level":"INFO","msg":"metrics queues","count":3}
+{"time":"2026-11-25T05:34:07.030446083Z","level":"WARN","msg":"listening beyond loopback: the API is plaintext and unauthenticated, so anyone who can connect can read and mutate every job, including lease tokens","addr":"0.0.0.0:9090"}
+{"time":"2026-11-25T05:34:07.030478583Z","level":"INFO","msg":"confirmation batching on","batch":64,"flights":2}
+{"time":"2026-11-25T05:34:07.030907583Z","level":"INFO","msg":"scheduler configured","enabled":false,"interval":"5s","definitions":2}
+{"time":"2026-11-25T05:34:07.030948916Z","level":"INFO","msg":"metrics listening","addr":"[::]:9091"}
+{"time":"2026-11-25T05:34:07.030989875Z","level":"WARN","msg":"debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect","addr":"[::]:6060"}
+{"time":"2026-11-25T05:34:07.030993958Z","level":"INFO","msg":"broker listening","addr":"[::]:9090","lease_duration":"30s","reaper_interval":"1s","retention":"24h0m0s","db_max_conns":16,"lease_stream_max_age":"5m0s","max_connection_age":"5m0s"}
+{"time":"2026-11-25T05:34:43.513571253Z","level":"INFO","msg":"lease stream opened","worker_id":"6cbae6a98588-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:44.881347045Z","level":"INFO","msg":"lease stream opened","worker_id":"11bb667ab854-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:44.884522712Z","level":"INFO","msg":"lease stream opened","worker_id":"b991e7fd7ba3-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:45.890030379Z","level":"INFO","msg":"lease stream opened","worker_id":"600ec4d23b1b-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:46.372382713Z","level":"INFO","msg":"lease stream opened","worker_id":"a505313f73e6-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:46.391027463Z","level":"INFO","msg":"lease stream opened","worker_id":"7dd646b1db2f-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:46.508914796Z","level":"INFO","msg":"lease stream opened","worker_id":"ed3af1902c32-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-25T05:34:47.520625338Z","level":"INFO","msg":"lease stream opened","worker_id":"f214663e51e0-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}

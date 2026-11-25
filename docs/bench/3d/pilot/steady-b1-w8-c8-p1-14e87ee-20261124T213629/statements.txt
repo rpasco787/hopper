@@ -1,0 +1,17 @@
+calls|total_ms|pct_of_total|mean_ms|rows_per_call|blks_per_call|query
+31185|2899|42.5|0.093|1.0|20.3|with next as ( select c.id from unnest($1::text[]) as q(queue), lateral ( select id, prior
+26748|1685|24.7|0.063|1.1|17.9|with mine as ( select j.id from unnest($1::uuid[], $2::uuid[]) as c(id, lease_id) join job
+30000|1632|23.9|0.054|1.0|5.2|insert into jobs (id, queue, payload, priority, max_attempts, run_at, idempotency_key, sta
+92|208|3.0|2.256|978.3|1595.7|select id, queue, payload, state, priority, run_at, attempts, max_attempts, lease_id, leas
+315|159|2.3|0.505|1.0|10.9|update jobs set state = 'completed', finished_at = now(), updated_at = now() where id = $1
+2|127|1.9|63.449|1.0|5077.0|select count(*) from jobs where state = $1
+9|68|1.0|7.579|0.9|2554.9|select queue, 'available' as state, count(*) as count from jobs where state = 'available' 
+46|15|0.2|0.324|0.0|19.8|select id, queue, attempts, max_attempts from jobs where state = 'leased' and lease_expire
+26|11|0.2|0.427|2.7|3.0|select to_char(clock_timestamp(), $1), $2, $3, $4 union all select to_char(clock_timestamp
+37|8|0.1|0.224|3.4|56.5|with mine as ( select j.id, c.dur_us from unnest($1::uuid[], $2::uuid[], $3::int8[]) as c(
+176|3|0.0|0.017|1.0|0.0|select pg_notify($1, q) from unnest($2::text[]) as q
+46|1|0.0|0.026|0.0|1.0|with due as ( select id from jobs where state = 'scheduled' and run_at <= now() order by r
+2|0|0.0|0.233|1.0|22.0|select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup 
+1|0|0.0|0.304|1.0|0.0|select pg_stat_statements_reset()
+1|0|0.0|0.073|0.0|2.0|with old as ( select id from jobs where state in ($3, $4) and finished_at < $1 order by fi
+total|statements=20|calls=88781|total_ms=6818

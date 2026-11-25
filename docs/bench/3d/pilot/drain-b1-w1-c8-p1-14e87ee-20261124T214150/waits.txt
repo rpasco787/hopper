@@ -1,0 +1,2 @@
+samples|16
+active_mean|0.00
