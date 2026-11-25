@@ -995,8 +995,8 @@ so it cannot collide with another exporter's in a shared Prometheus.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `hopper_queue_depth` | gauge | `queue`, `state` | Rows in `scheduled`, `available`, `leased` and `dead` at this broker's last successful sample |
-| `hopper_queue_depth_last_sample_timestamp_seconds` | gauge | — | Unix time of this broker's last successful depth sample |
+| `hopper_queue_depth` | gauge | `queue`, `state`, `shard` | Rows in `scheduled`, `available`, `leased` and `dead` on one shard at this broker's last successful sample of it; `shard` is `0` without sharding |
+| `hopper_queue_depth_last_sample_timestamp_seconds` | gauge | `shard` | Unix time of this broker's last successful depth sample of that shard |
 | `hopper_jobs_enqueued_total` | counter | `queue` | Rows inserted by `Enqueue`; deduplicated calls excluded |
 | `hopper_jobs_completed_total` | counter | `queue` | Leases acked to `completed` |
 | `hopper_jobs_failed_total` | counter | `queue` | **Failed attempts**, not failed jobs: Nacks applied, whether rescheduled or dead-lettered. A job that fails three times counts 3 |
@@ -1078,8 +1078,8 @@ registered handlers for. No metric is ever labelled with a job id, lease id,
 worker id or error string. Those belong in logs, and per-worker breakdown
 comes from Prometheus's `instance` label.
 
-**Depth.** Every broker refreshes `hopper_queue_depth` every 5s from one
-statement, four `count(*) … group by queue` branches joined with `union all`,
+**Depth.** Every broker refreshes `hopper_queue_depth` every 5s, for each
+shard, from one statement on that shard, four `count(*) … group by queue` branches joined with `union all`,
 one per counted state. Each branch's predicate matches a partial index
 (`jobs_lease_idx`, `jobs_promote_idx`, `jobs_reap_idx`, `jobs_dead_idx`), so its
 cost follows the rows in that state rather than the table. One statement means
@@ -1099,31 +1099,42 @@ because DLQ size is worth watching.
   backlog vanished mid-outage. Instead, the broker exports the stale value with
   its age, and the reader decides.
 
-**Read depth by dropping brokers whose sample is older than 15s, then `max by
-(queue, state)`, never `sum`.** Every broker samples the same database, so two
-healthy brokers each export the full depth, and `sum` would count every job
+**Read depth by dropping each broker's samples of a shard older than 15s, then
+`max` across brokers per shard, then `sum` across shards; never `sum` across
+brokers.** Every broker samples every shard, so two healthy brokers each export
+the full depth of each shard, and summing across brokers would count every job
 once per broker. `max` alone is not safe either: a broker whose sampling failed
 right after it saw a backlog keeps exporting that backlog, and `max` would let
-it outvote healthy brokers that saw the drain. The query is:
+it outvote healthy brokers that saw the drain. Shards hold disjoint jobs, so
+their counts add. The freshness join is on `shard` as well as the broker: each
+shard is sampled on its own, so a broker can be fresh on one shard and stale on
+another (the shard is down). Without `shard` in the join, one shard's failing
+sample would either drop nothing or drop every shard's. Without sharding every
+series carries `shard="0"` and the query reads as before. The query is:
 
 ```promql
-max by (queue, state) (
-  hopper_queue_depth
-  and on (job, instance)
-  (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)
+sum by (queue, state) (
+  max by (queue, state, shard) (
+    hopper_queue_depth
+    and on (job, instance, shard)
+    (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)
+  )
 )
 ```
 
-Total across queues with `sum(max by (queue) (…))`. The 15 is three sample
+Total across queues with `sum(max by (queue, shard) (…))`. The 15 is three sample
 intervals (`metrics.DepthFreshness`). Watch the worst broker's sample age,
-`time() - min(hopper_queue_depth_last_sample_timestamp_seconds)`, because `max`
-would show the freshest broker and hide a stale one.
+`time() - min(hopper_queue_depth_last_sample_timestamp_seconds)`, over every
+broker and shard, because `max` would show the freshest broker and hide a stale
+one.
 
 **When every broker is stale, the query returns nothing, not 0.** That is
 accurate: no one knows the depth. An autoscaler must treat it as an error, not
 as an empty queue. For KEDA's Prometheus scaler, that means
 `ignoreNullValues: false`, so an empty result is an error rather than zero
-depth; see **Autoscaling** below for what the error does.
+depth; see **Autoscaling** below for what the error does. When every broker is
+stale on one shard only (that shard is down), the sum leaves that shard out: it
+reads the other shards' depth, and the worst sample age shows the gap.
 
 **Depth cost.** N brokers each run the grouped count every 5s, and each branch
 reads every row in its state, so the cost grows with the non-terminal backlog.
@@ -1280,15 +1291,16 @@ one worker per 50 of this query (`AverageValue`), between 1 and 20. For
 release `hopper` in namespace `hopper` the query is:
 
 ```promql
-sum(max by (queue) (
+sum(max by (queue, shard) (
   hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available",
                      queue=~"sleep|fail_n_times|cpu_burn"}
-  and on (job, instance)
+  and on (job, instance, shard)
   (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)
 ))
 ```
 
-- **Fresh-only, `max by (queue)`, then one `sum`**, as above. KEDA's
+- **Fresh-only, `max by (queue, shard)`, then one `sum`** across queues and
+  shards, as above. KEDA's
   Prometheus scaler rejects a result with more than one series.
 - **Scoped to this release's brokers.** The Prometheus Operator labels a
   ServiceMonitor's targets with the Service's `namespace` and `job`. Without

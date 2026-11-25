@@ -167,7 +167,7 @@ func TestStaleBrokerKeepsItsLastSnapshot(t *testing.T) {
 		return scrapedValue(t, aMetrics.Addr, "hopper_queue_depth", map[string]string{"queue": "m", "state": "available"}) == 5 &&
 			scrapedValue(t, bMetrics.Addr, "hopper_queue_depth", map[string]string{"queue": "m", "state": "available"}) == 5
 	}, 12*time.Second, 100*time.Millisecond)
-	bSampledAt := scrapedValue(t, bMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", nil)
+	bSampledAt := scrapedValue(t, bMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", map[string]string{"shard": "0"})
 
 	proxy.Stop()
 	stream, err := client.LeaseJobs(ctx)
@@ -188,13 +188,13 @@ func TestStaleBrokerKeepsItsLastSnapshot(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return scrapedValue(t, aMetrics.Addr, "hopper_queue_depth", map[string]string{"queue": "m", "state": "available"}) == 0
 	}, 12*time.Second, 100*time.Millisecond)
-	aSampledAt := scrapedValue(t, aMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", nil)
+	aSampledAt := scrapedValue(t, aMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", map[string]string{"shard": "0"})
 	require.Greater(t, aSampledAt, bSampledAt)
 	require.Eventually(t, func() bool {
 		return time.Since(time.Unix(int64(bSampledAt), 0)) > metrics.DepthFreshness
 	}, metrics.DepthFreshness+5*time.Second, 100*time.Millisecond)
 	require.Equal(t, float64(5), scrapedValue(t, bMetrics.Addr, "hopper_queue_depth", map[string]string{"queue": "m", "state": "available"}))
-	require.Equal(t, bSampledAt, scrapedValue(t, bMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", nil))
+	require.Equal(t, bSampledAt, scrapedValue(t, bMetrics.Addr, "hopper_queue_depth_last_sample_timestamp_seconds", map[string]string{"shard": "0"}))
 	_, _ = b.waitForLog(t, 10*time.Second, func(e processLog) bool { return e.Message == "queue depth sample failed" })
 	select {
 	case <-b.waitDone:

@@ -10,7 +10,7 @@ sleep fail_n_times cpu_burn
 
 {{- define "hopper.depthQuery" -}}
 {{- $brokers := printf "namespace=%q, job=%q" .Release.Namespace (printf "%s-broker" (include "hopper.fullname" .)) -}}
-{{- printf "sum(max by (queue) (hopper_queue_depth{%s, state=\"available\", queue=~%q} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{%s} < 15)))" $brokers (include "hopper.workerQueues" . | splitList " " | join "|") $brokers -}}
+{{- printf "sum(max by (queue, shard) (hopper_queue_depth{%s, state=\"available\", queue=~%q} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds{%s} < 15)))" $brokers (include "hopper.workerQueues" . | splitList " " | join "|") $brokers -}}
 {{- end }}
 
 {{- define "hopper.checkAutoscaling" -}}

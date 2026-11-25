@@ -24,7 +24,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Available by queue",
-      "description": "Jobs ready to lease now, per queue. Every broker samples the same database, so brokers whose last sample is older than 15s are dropped and then max by is taken; summing would count each job once per broker.",
+      "description": "Jobs ready to lease now, per queue. Every broker samples every shard, so each broker's samples of a shard older than 15s are dropped, then the count is max across brokers per shard, then summed across shards; summing across brokers would count each job once per broker.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -53,7 +53,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (queue) (hopper_queue_depth{state=\"available\"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))",
+          "expr": "sum by (queue) (max by (queue, shard) (hopper_queue_depth{state=\"available\"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }
@@ -64,7 +64,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Depth by state",
-      "description": "Scheduled, available and leased jobs across all queues, taken from fresh brokers only and deduplicated per queue with max by before summing.",
+      "description": "Scheduled, available and leased jobs across all queues, from fresh samples only: max across brokers per shard, then summed across shards; summing across brokers would count each job once per broker.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -93,7 +93,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (state) (max by (queue, state) (hopper_queue_depth{state=~\"scheduled|available|leased\"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))",
+          "expr": "sum by (state) (max by (queue, state, shard) (hopper_queue_depth{state=~\"scheduled|available|leased\"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))",
           "legendFormat": "{{state}}",
           "refId": "A"
         }
@@ -104,7 +104,7 @@
       "id": 3,
       "type": "stat",
       "title": "DLQ size",
-      "description": "Dead jobs across all queues, from fresh brokers only, deduplicated per queue before summing.",
+      "description": "Dead jobs across all queues, from fresh samples only: max across brokers per shard, then summed across shards; summing across brokers would count each job once per broker.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -125,7 +125,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(max by (queue) (hopper_queue_depth{state=\"dead\"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))",
+          "expr": "sum(max by (queue, shard) (hopper_queue_depth{state=\"dead\"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -477,7 +477,7 @@
       "id": 11,
       "type": "stat",
       "title": "Worst depth sample age",
-      "description": "Seconds since the least recently sampling broker last read queue depth. It shows the worst broker, so one stale replica is visible; red means that broker is excluded from the depth panels.",
+      "description": "Seconds since the least recently sampling broker last read queue depth, over every shard it samples. It shows the worst broker and shard, so one stale replica is visible; red means that broker's sample of that shard is excluded from the depth panels.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -537,7 +537,7 @@
       "id": 12,
       "type": "table",
       "title": "Depth samples by broker",
-      "description": "Seconds since each broker last sampled queue depth successfully. A broker above 15s is excluded from the depth panels.",
+      "description": "Seconds since each broker last sampled each shard's queue depth successfully. A broker's sample of a shard above 15s is excluded from the depth panels.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -561,7 +561,7 @@
             "uid": "prometheus"
           },
           "expr": "time() - hopper_queue_depth_last_sample_timestamp_seconds",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} shard {{shard}}",
           "refId": "A",
           "instant": true,
           "range": false,

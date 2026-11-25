@@ -38,7 +38,7 @@ const kindAutoscaling = "../../deploy/kind/autoscaling.yaml"
 
 // depthQuery is the worker ScaledObject's query for release hopper in
 // namespace hopper. deploy/prometheus/queries_test.yml tests its semantics.
-const depthQuery = `sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))`
+const depthQuery = `sum(max by (queue, shard) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))`
 
 // canonicalHelm is the Helm that renders the committed deploy/k8s/hopper.yaml.
 // Any Helm 4 runs these tests, but another version may render the same chart

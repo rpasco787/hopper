@@ -87,8 +87,9 @@ func TestDashboardReferencesOnlyRealMetrics(t *testing.T) {
 }
 
 // TestDashboardQueryShape enforces the aggregation rules of docs/semantics.md
-// §14: depth is replicated, so it is read from fresh brokers only and deduped
-// with max, never summed raw; quantiles keep queue; rates track the scrape.
+// §14: depth is replicated, so it is read from fresh (broker, shard) samples
+// only, deduped across brokers with max per shard, then summed across shards,
+// never summed raw; quantiles keep queue; rates track the scrape.
 // deploy/prometheus/queries_test.yml copies these expressions; keep in sync.
 func TestDashboardQueryShape(t *testing.T) {
 	_, targets := loadDashboard(t)
@@ -103,6 +104,8 @@ func TestDashboardQueryShape(t *testing.T) {
 		expr := target.Expr
 		if depthGauge.MatchString(expr) {
 			require.Contains(t, expr, freshness, "depth read without the freshness filter")
+			require.Contains(t, expr, "and on (job, instance, shard)", "freshness must be per broker and shard")
+			require.Regexp(t, `max by \([^)]*\bshard\)`, expr, "dedupe across brokers per shard, then sum the shards")
 		}
 		require.NotContains(t, expr, "sum(hopper_queue_depth", "replicated gauge summed raw")
 		require.NotContains(t, expr, "sum by (queue) (hopper_queue_depth", "replicated gauge summed raw")
