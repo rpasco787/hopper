@@ -557,12 +557,13 @@ drain)
            count(*) filter (where attempts > 1)
     from jobs" | tr '|' ',')"
   # Completions per tenth of a second from the first lease: how long the
-  # workers take to reach their pace.
+  # workers take to reach their pace. The first lease is a scalar subquery,
+  # which runs once; as a join, planned on statistics from before the drain
+  # (no completed rows), it became a nested loop that rescanned jobs per job.
   {
     echo "# tenths of a second since the first lease|jobs completed in it"
-    sql "select floor(extract(epoch from j.finished_at - s.t0) * 10)::int, count(*)
-         from jobs j, (select min(leased_at) as t0 from jobs) s
-         where j.state = 'completed' group by 1 order by 1"
+    sql "select floor(extract(epoch from finished_at - (select min(leased_at) from jobs)) * 10)::int, count(*)
+         from jobs where state = 'completed' group by 1 order by 1"
   } >"$dir/rate.psv"
   if [ "${WARM_JOBS:-0}" != 0 ]; then
     # The pace once warm: the jobs that finished after the WARM_JOBS-th

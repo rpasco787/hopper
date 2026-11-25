@@ -101,7 +101,9 @@ elif args[0] == 'compose':
         if "filter (where state = 'completed')" in sql:
             print('%s|%s' % (completed(), os.environ.get('BENCH_TEST_LEASED', '3')))
         elif 'offset' in sql: print(int(re.search(r'offset (\d+)', sql).group(1)) + 21)
-        elif 'floor(extract' in sql: print('0|5\n1|7')
+        elif 'floor(extract' in sql:
+            event('rate sql: ' + ' '.join(sql.split()))
+            print('0|5\n1|7')
         elif "where state = 'completed'" in sql: print(completed())
         elif 'to_regclass' in sql: print('t')
         elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
@@ -649,6 +651,21 @@ class BenchmarkTest(unittest.TestCase):
             # The fake answers the query's offset plus 21: offset 99 is the 100th completion.
             self.assertIn('0|5', (evidence_dir(root) / 'rate.psv').read_text())
             self.assertIn('warm jobs: 100', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_the_rate_curve_reads_jobs_once_with_its_origin_computed_first(self):
+        # The first lease is a scalar subquery, which PostgreSQL runs once
+        # (an InitPlan). As a join it was planned on the preload's statistics,
+        # which see no completed rows, and a nested loop then re-ran the
+        # min(leased_at) scan for every completed job: the 200,000-job pilot
+        # drain's rate.psv query was still running after 12 minutes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, JOBS='1000', BENCH_TEST_COMPLETED='1000', BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [q] = [e for e in trace(root) if e.startswith('rate sql: ')]
+            self.assertIn('(select min(leased_at) from jobs)', q)
+            self.assertEqual(q.count(' from jobs'), 2, q)  # the curve's scan and the subquery's, no join
+            self.assertNotIn('from jobs j,', q)
 
     def test_warm_jobs_and_warmup_belong_to_their_scenarios(self):
         for scenario, kw, msg in [('drain', {'JOBS': '10', 'WARM_JOBS': '10'}, 'WARM_JOBS must be less than JOBS'),
