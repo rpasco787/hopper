@@ -1,0 +1,489 @@
+clk_tck 100
+== end 09d3aadbcfb985b67617be1b97f0933f6cb17b6d3dab7427f46200f08cb634e8 61165
+61165 (java) S 61142 61165 61165 0 -1 4194560 33638 1116 0 0 2068 200 0 0 20 0 24 0 125063 3453534208 32341 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61165
+Ngid:	0
+Pid:	61165
+PPid:	61142
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61165	1
+NSpid:	61165	1
+NSpgid:	61165	1
+NSsid:	61165	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  132356 kB
+VmRSS:	  129480 kB
+RssAnon:	  107304 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  162188 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     556 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	25
+nonvoluntary_ctxt_switches:	9
+== end 5ede52e1c99c3f54bcfba3778153134bc888a2e690ee5a1a0570024aeaa3f7b9 61616
+61616 (java) S 61590 61616 61616 0 -1 4194560 32855 1118 0 0 1918 176 0 0 20 0 24 0 125218 3453534208 31681 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 4 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61616
+Ngid:	0
+Pid:	61616
+PPid:	61590
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61616	1
+NSpid:	61616	1
+NSpgid:	61616	1
+NSsid:	61616	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  131332 kB
+VmRSS:	  127160 kB
+RssAnon:	  104984 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  161200 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     568 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	21
+nonvoluntary_ctxt_switches:	30
+== end d152f4929cf249a5ba98d8046801e25922da8ac078ad65429ba4dd50853be2ae 61517
+61517 (java) S 61493 61517 61517 0 -1 4194560 32808 1108 0 0 1842 169 0 0 20 0 24 0 125198 3453534208 32053 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61517
+Ngid:	0
+Pid:	61517
+PPid:	61493
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61517	1
+NSpid:	61517	1
+NSpgid:	61517	1
+NSsid:	61517	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  128528 kB
+VmRSS:	  128528 kB
+RssAnon:	  106352 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  157976 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     556 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	23
+nonvoluntary_ctxt_switches:	28
+== end 68462aff491c1ab3332758d8a0e909b257b30cdd8f02128fe3c231da9c9b6645 61272
+61272 (java) S 61222 61272 61272 0 -1 4194560 35012 1110 0 0 1963 190 0 1 20 0 24 0 125095 3453534208 32088 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 6 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61272
+Ngid:	0
+Pid:	61272
+PPid:	61222
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61272	1
+NSpid:	61272	1
+NSpgid:	61272	1
+NSsid:	61272	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  133360 kB
+VmRSS:	  128616 kB
+RssAnon:	  106440 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  161872 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     568 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	21
+nonvoluntary_ctxt_switches:	39
+== end 42496a30433531703bac4e07fbc07a4ca6972a96847318783139093b3c415cc6 61366
+61366 (java) S 61343 61366 61366 0 -1 4194560 34287 1117 0 0 1918 172 0 0 20 0 24 0 125141 3453534208 31020 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61366
+Ngid:	0
+Pid:	61366
+PPid:	61343
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61366	1
+NSpid:	61366	1
+NSpgid:	61366	1
+NSsid:	61366	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  130104 kB
+VmRSS:	  124228 kB
+RssAnon:	  102052 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  160584 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     560 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	25
+nonvoluntary_ctxt_switches:	15
+== end 26489ddfa1f8a8f587d14a60c33ac580071dd19867b4d0460ead64ba9fe07709 61821
+61821 (java) S 61788 61821 61821 0 -1 4194560 31124 1105 0 0 1827 175 0 0 20 0 24 0 125284 3453534208 32025 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 6 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61821
+Ngid:	0
+Pid:	61821
+PPid:	61788
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61821	1
+NSpid:	61821	1
+NSpgid:	61821	1
+NSsid:	61821	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  128140 kB
+VmRSS:	  128140 kB
+RssAnon:	  105964 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  157492 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     556 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	23
+nonvoluntary_ctxt_switches:	20
+== end 4b11c2aa2d0ee576b0fed07ea62779b83e8dd2b658b143e8811ac82d854c73b2 61449
+61449 (java) S 61422 61449 61449 0 -1 4194560 31540 1109 0 0 2004 190 0 1 20 0 24 0 125173 3453534208 33068 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61449
+Ngid:	0
+Pid:	61449
+PPid:	61422
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61449	1
+NSpid:	61449	1
+NSpgid:	61449	1
+NSsid:	61449	1
+Kthread:	0
+VmPeak:	 3429920 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  132468 kB
+VmRSS:	  132468 kB
+RssAnon:	  110292 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  161716 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     564 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	24
+nonvoluntary_ctxt_switches:	18
+== end 9199ce755977526b0dcfcd99300538e201cb29980fbc4784c1e6068e1fa78e29 61737
+61737 (java) S 61711 61737 61737 0 -1 4194560 31798 1107 0 0 1875 173 0 1 20 0 24 0 125255 3453534208 31605 18446744073709551615 1 1 0 0 0 0 0 0 16800975 0 0 0 17 4 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	java
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61737
+Ngid:	0
+Pid:	61737
+PPid:	61711
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61737	1
+NSpid:	61737	1
+NSpgid:	61737	1
+NSsid:	61737	1
+Kthread:	0
+VmPeak:	 3431972 kB
+VmSize:	 3372592 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  126488 kB
+VmRSS:	  126488 kB
+RssAnon:	  104312 kB
+RssFile:	   22176 kB
+RssShmem:	       0 kB
+VmData:	  155788 kB
+VmStk:	     132 kB
+VmExe:	       4 kB
+VmLib:	   23764 kB
+VmPTE:	     560 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	24
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000000
+SigCgt:	2000000101005ccf
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	17
+nonvoluntary_ctxt_switches:	24

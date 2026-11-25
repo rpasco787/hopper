@@ -1,0 +1,123 @@
+clk_tck 100
+== end 1b9feb63717f32a1773874dd0d3ea0549c9fb31b1cc628dfdb658561a2bfde28 67634
+67634 (app) S 67611 67634 67634 0 -1 4194560 12076 0 0 0 400 101 0 0 20 0 9 0 136173 1303576576 5627 18446744073709551615 1 1 0 0 0 0 1002060288 0 2143420159 0 0 0 17 4 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	app
+Umask:	0022
+State:	S (sleeping)
+Tgid:	67634
+Ngid:	0
+Pid:	67634
+PPid:	67611
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	67634	1
+NSpid:	67634	1
+NSpgid:	67634	1
+NSsid:	67634	1
+Kthread:	0
+VmPeak:	 1273024 kB
+VmSize:	 1273024 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   23688 kB
+VmRSS:	   22808 kB
+RssAnon:	   10868 kB
+RssFile:	   11940 kB
+RssShmem:	       0 kB
+VmData:	   83848 kB
+VmStk:	     132 kB
+VmExe:	    5456 kB
+VmLib:	       8 kB
+VmPTE:	     136 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	9
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	fffffffc3bba3a00
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	21
+nonvoluntary_ctxt_switches:	15
+== end 8bf68f482d643085dcd9c0156ad63a89e37f89710ec764de35b300118c667185 67697
+67697 (app) S 67674 67697 67697 0 -1 4194560 9304 0 0 0 372 89 0 0 20 0 10 0 136201 1303838720 5932 18446744073709551615 1 1 0 0 0 0 1002060288 0 2143420159 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	app
+Umask:	0022
+State:	S (sleeping)
+Tgid:	67697
+Ngid:	0
+Pid:	67697
+PPid:	67674
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	67697	1
+NSpid:	67697	1
+NSpgid:	67697	1
+NSsid:	67697	1
+Kthread:	0
+VmPeak:	 1273280 kB
+VmSize:	 1273280 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   24160 kB
+VmRSS:	   24000 kB
+RssAnon:	   12124 kB
+RssFile:	   11876 kB
+RssShmem:	       0 kB
+VmData:	   84104 kB
+VmStk:	     132 kB
+VmExe:	    5456 kB
+VmLib:	       8 kB
+VmPTE:	     132 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	10
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	fffffffc3bba3a00
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	19
+nonvoluntary_ctxt_switches:	16
