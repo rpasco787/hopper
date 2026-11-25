@@ -570,6 +570,73 @@ class BenchmarkTest(unittest.TestCase):
             self.assertIn('worker-1 exited during the run (exit 3, OOM-killed false)',
                           (evidence_dir(root) / 'rejected.txt').read_text())
 
+    def test_go_is_the_default_worker_and_adds_no_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual((row['worker_sdk'], row['worker_mem']), ('go', ''))
+            self.assertNotIn('java.yaml', '\n'.join(trace(root)))
+            self.assertFalse((evidence_dir(root) / 'jvm-flags.txt').exists())
+            self.assertIn('worker: go', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_java_runs_the_java_overlay_and_records_its_jvm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_sdk'], 'java')
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('deploy/bench/java.yaml', call)
+            ev = evidence_dir(root)
+            self.assertIn('java opts: -XX:+UseSerialGC', (ev / 'machine.txt').read_text())
+            self.assertIn('UseSerialGC', (ev / 'jvm-flags.txt').read_text())
+            [probe] = [e for e in trace(root) if 'PrintFlagsFinal' in e]
+            self.assertIn('JAVA_OPTS=-XX:+UseSerialGC -XX:+PrintFlagsFinal -version', probe)
+
+    def test_worker_must_be_go_or_java(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), WORKER='python')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WORKER must be go or java', result.stderr)
+
+    def test_worker_jvm_applies_to_java_only_and_holds_no_quotes(self):
+        for kw, msg in [({'WORKER_JVM': '-Xmx1g'}, 'WORKER_JVM applies to WORKER=java only'),
+                        ({'WORKER': 'java', 'WORKER_JVM': '-Dx="y"'}, 'WORKER_JVM may not contain quotes')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), VARIANT='x', **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_worker_mem_limits_every_worker_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_MEM='384m', BENCH_TEST_MEMORY='402653184')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['worker_mem'], '384m')
+            mem = (evidence_dir(root) / 'workers-mem.yaml').read_text()
+            for svc in ('worker', 'worker-b', 'worker-c', 'worker-d'):
+                self.assertIn(f'  {svc}: {{mem_limit: 384m, memswap_limit: 384m}}', mem)
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('workers-mem.yaml', call)
+
+    def test_a_memory_limit_the_workers_did_not_get_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_MEM='384m')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('worker-1 ran with memory limit 0, not 402653184',
+                          (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_worker_mem_must_be_a_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), WORKER_MEM='lots')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WORKER_MEM must be a size such as 384m or 1g', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

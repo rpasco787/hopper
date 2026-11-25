@@ -1,0 +1,34 @@
+# Merged after deploy/bench/compose.yaml when scripts/bench.sh runs WORKER=java.
+# Every worker service then runs the Java example worker
+# (java/hopper-example-worker: cmd/worker's three queues on the Java SDK),
+# built by scripts/bench.sh from the same ref as the brokers, instead of
+# cmd/worker. Everything else about the services stays as compose.yaml sets
+# it: the broker each dials, the concurrency, the warn log level and the grace
+# periods. scripts/bench.sh's WORKER_MEM limits both workers alike.
+services:
+  worker:
+    image: hopper-bench/worker-java:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    environment: &java-worker-env
+      # The image's start script passes these to the JVM after its own
+      # (-XX:MaxRAMPercentage=75 among them). scripts/bench.sh sets them from
+      # WORKER_JVM (default -XX:+UseSerialGC) and, with JFR, the recording.
+      JAVA_OPTS: "${HOPPER_BENCH_JAVA_OPTS?set by scripts/bench.sh}"
+      # The Java example worker serves neither, and says so at warn when given one.
+      HOPPER_METRICS_LISTEN: ""
+      HOPPER_DEBUG_LISTEN: ""
+
+  worker-b:
+    image: hopper-bench/worker-java:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    environment: *java-worker-env
+
+  worker-c:
+    image: hopper-bench/worker-java:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    environment: *java-worker-env
+
+  worker-d:
+    image: hopper-bench/worker-java:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
+    pull_policy: never
+    environment: *java-worker-env

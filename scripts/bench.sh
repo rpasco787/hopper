@@ -9,6 +9,11 @@
 #   REF            build broker and worker from this git ref (default: the working tree)
 #   BROKERS        1, 2 or 4 (default 1); workers split evenly, one worker service per broker, and producers alternate
 #   WORKERS        worker containers (default 4), CONCURRENCY slots each (default 16)
+#   WORKER         go (default) runs cmd/worker; java runs the Java example worker
+#                  (java/hopper-example-worker), built from REF's java/ (deploy/bench/java.yaml)
+#   WORKER_MEM     every worker container's memory limit, with no swap beyond it, e.g. 384m
+#                  (default none). A Java worker's heap is 75% of it (-XX:MaxRAMPercentage=75)
+#   WORKER_JVM     WORKER=java: the JVM's flags, space-separated (default -XX:+UseSerialGC)
 #   JOBS           drain: jobs to preload (default 40000)
 #   RATE DURATION PRODUCERS BATCH WORK_MS
 #                  steady: the offered load (default 1000 jobs/s, 30s, 8, 1, 0)
@@ -61,9 +66,25 @@ concurrency="${CONCURRENCY:-16}"
 case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
-worker_sdk=go
-worker_mem=""
+worker_sdk="${WORKER:-go}"
+case "$worker_sdk" in go | java) ;; *) echo "WORKER must be go or java" >&2; exit 2 ;; esac
+worker_mem="${WORKER_MEM:-}"
 mem_bytes=0
+if [ -n "$worker_mem" ]; then
+  [[ "$worker_mem" =~ ^[1-9][0-9]*[kmg]$ ]] || { echo "WORKER_MEM must be a size such as 384m or 1g" >&2; exit 2; }
+  n="${worker_mem%?}"
+  case "$worker_mem" in
+    *k) mem_bytes=$((n * 1024)) ;;
+    *m) mem_bytes=$((n * 1048576)) ;;
+    *g) mem_bytes=$((n * 1073741824)) ;;
+  esac
+fi
+java_flags="${WORKER_JVM:--XX:+UseSerialGC}"
+if [ -n "${WORKER_JVM:-}" ]; then
+  [ "$worker_sdk" = java ] || { echo "WORKER_JVM applies to WORKER=java only" >&2; exit 2; }
+  case "$WORKER_JVM" in *[\"\'\\]*) echo "WORKER_JVM may not contain quotes or backslashes" >&2; exit 2 ;; esac
+fi
+java_opts="$java_flags"
 payload_bytes="${PAYLOAD_BYTES:-0}"
 variant="${VARIANT:-}"
 case "$variant" in *,*) echo "VARIANT may not contain a comma" >&2; exit 2 ;; esac
@@ -84,7 +105,7 @@ done
 # that changes one must name itself or the summary would pool it with
 # default runs.
 if [ -z "$variant" ]; then
-  for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL; do
+  for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL WORKER_JVM; do
     [ -z "${!knob:-}" ] || { echo "$knob changes the run: name it with VARIANT" >&2; exit 2; }
   done
   [ "${EXPLAIN:-0}" != 1 ] || { echo "EXPLAIN changes the run: name it with VARIANT" >&2; exit 2; }
@@ -101,22 +122,33 @@ fi
 
 # Images. A ref is built from `git archive`, so uncommitted files never leak
 # into it, and its images are reused across runs; the working tree is rebuilt
-# every time.
+# every time. The Java worker builds from java/ alone, as its Dockerfile asks.
+go_bins="broker"
+if [ "$worker_sdk" = go ]; then go_bins="broker worker"; fi
 if [ -n "${REF:-}" ]; then
   sha="$(git rev-parse --short "${REF}^{commit}")"
   tag="ref-$sha"
-  for bin in broker worker; do
+  for bin in $go_bins; do
     if ! docker image inspect "hopper-bench/$bin:$tag" >/dev/null 2>&1; then
       git archive --format=tar "$sha" |
         docker build -q -f deploy/docker/Dockerfile --build-arg BINARY="$bin" -t "hopper-bench/$bin:$tag" - >/dev/null
     fi
   done
+  if [ "$worker_sdk" = java ] && ! docker image inspect "hopper-bench/worker-java:$tag" >/dev/null 2>&1; then
+    git cat-file -e "$sha:java/hopper-example-worker/Dockerfile" 2>/dev/null ||
+      { echo "$sha has no java/hopper-example-worker to build" >&2; exit 2; }
+    git archive --format=tar "$sha:java" |
+      docker build -q -f hopper-example-worker/Dockerfile -t "hopper-bench/worker-java:$tag" - >/dev/null
+  fi
 else
   sha="$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- . || echo -dirty)"
   tag="wt" # rebuilt every run; the previous build is left dangling
-  for bin in broker worker; do
+  for bin in $go_bins; do
     docker build -q -f deploy/docker/Dockerfile --build-arg BINARY="$bin" -t "hopper-bench/$bin:$tag" . >/dev/null
   done
+  if [ "$worker_sdk" = java ]; then
+    docker build -q -f java/hopper-example-worker/Dockerfile -t "hopper-bench/worker-java:$tag" java >/dev/null
+  fi
 fi
 # loadgen is the measuring instrument, so it always comes from the working tree.
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
@@ -130,6 +162,7 @@ fi
 dir="$out/$scenario-b$brokers-w$workers-c$vm_cpus-p$pin-$sha-$(date +%Y%m%dT%H%M%S)"
 mkdir -p "$dir"
 files=(-f docker-compose.yml -f deploy/bench/compose.yaml)
+if [ "$worker_sdk" = java ]; then files+=(-f deploy/bench/java.yaml); fi
 if [ "$pin" = 1 ]; then
   cat >"$dir/cpuset.yaml" <<'EOF'
 # Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
@@ -176,6 +209,18 @@ for kv in ${PG_ARGS:-}; do pg_settings+=("$kv"); done
   echo ']'
 } >"$dir/postgres.yaml"
 files+=(-f "$dir/postgres.yaml")
+# One memory limit for every worker container, with no swap beyond it, so both
+# SDKs run under the same ceiling and a Java heap is sized from it.
+if [ -n "$worker_mem" ]; then
+  {
+    echo "# Written by scripts/bench.sh: WORKER_MEM for every worker service, swap included."
+    echo "services:"
+    for svc in worker worker-b worker-c worker-d; do
+      printf '  %s: {mem_limit: %s, memswap_limit: %s}\n' "$svc" "$worker_mem" "$worker_mem"
+    done
+  } >"$dir/workers-mem.yaml"
+  files+=(-f "$dir/workers-mem.yaml")
+fi
 # Per-run settings, as a Compose file of their own merged after the bench
 # overlay. Compose prefers a service's environment to its env_file, and a
 # later file's environment to an earlier one's, so this is the one place a
@@ -200,13 +245,27 @@ fi
   echo "host: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)"
   echo "docker: $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes, server {{.ServerVersion}}')"
   echo "pinned: $pin"
+  echo "worker: $worker_sdk"
+  echo "worker memory: ${worker_mem:-none}"
+  if [ "$worker_sdk" = java ]; then echo "java opts: $java_opts"; fi
 } >"$dir/machine.txt"
+if [ "$worker_sdk" = java ]; then
+  # The JVM's own account of its heap, collector and CPUs, through the image's
+  # start script, under the workers' memory limit and CPU set.
+  probe=(--rm)
+  if [ -n "$worker_mem" ]; then probe+=(--memory "$worker_mem" --memory-swap "$worker_mem"); fi
+  if [ "$pin" = 1 ]; then probe+=(--cpuset-cpus 4-6); fi
+  docker run "${probe[@]}" -e "JAVA_OPTS=$java_flags -XX:+PrintFlagsFinal -version" "hopper-bench/worker-java:$tag" 2>&1 |
+    grep -E ' (MaxHeapSize|InitialHeapSize|MaxRAMPercentage|UseSerialGC|UseG1GC|UseParallelGC|UseZGC|ActiveProcessorCount) |version' \
+      >"$dir/jvm-flags.txt" || true
+fi
 label="${LABEL:-$scenario $sha}"
 : >"$dir/broker.env"
 [ -n "${DB_MAX_CONNS:-}" ] && echo "HOPPER_DB_MAX_CONNS=$DB_MAX_CONNS" >>"$dir/broker.env"
 
 export HOPPER_BENCH_TAG="$tag" HOPPER_BENCH_BROKER_ENV="$dir/broker.env"
 export HOPPER_BENCH_SYNC_COMMIT="${SYNC_COMMIT:-on}" HOPPER_BENCH_CONCURRENCY="$concurrency"
+export HOPPER_BENCH_JAVA_OPTS="$java_opts"
 compose() { docker compose -p hopper-bench "${files[@]}" "$@"; }
 sql() { compose exec -T postgres psql -U hopper -d hopper -qAt -c "$1"; }
 # Commits and WAL across the database, and how updates landed on jobs, as
