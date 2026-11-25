@@ -332,3 +332,31 @@ func TestPassFiresOneBatchPerCheck(t *testing.T) {
 		"a Check must never be followed by two DueSchedules calls before the next Check")
 	require.Len(t, f.dueCallsSnapshot(), 2, "pass must not drain more than one batch per check")
 }
+
+func TestLeaderTTL(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		interval, field time.Duration
+		want            time.Duration
+	}{
+		{"the 3s floor", 50 * time.Millisecond, 0, 3 * time.Second},
+		{"three intervals", 5 * time.Second, 0, 15 * time.Second},
+		{"set", 5 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond},
+		{"raised to three intervals", 200 * time.Millisecond, 300 * time.Millisecond, 600 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Scheduler{Interval: tc.interval, LeaderTTL: tc.field}
+			require.Equal(t, tc.want, s.leaderTTL())
+		})
+	}
+}
+
+func TestTermAsksForTheLeaderTTL(t *testing.T) {
+	f := newFakeStore()
+	s := newTestScheduler(f, nil)
+	s.LeaderTTL = 300 * time.Millisecond
+	r := runScheduler(t, s)
+	requireEventually(t, func() bool { return f.termsStartedCount() >= 1 }, "expected a term to start")
+	r.stopAndWait(t)
+	require.Equal(t, 300*time.Millisecond, f.ttlsSnapshot()[0])
+}

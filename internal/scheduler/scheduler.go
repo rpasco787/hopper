@@ -18,7 +18,7 @@ import (
 // starting in the task that adds reconciliation; the interface is the
 // scheduler's whole store contract and is not worth editing twice.
 type Store interface {
-	TryLeadership(ctx context.Context) (store.Leadership, error)
+	TryLeadership(ctx context.Context, ttl time.Duration) (store.Leadership, error)
 	DueSchedules(ctx context.Context, limit int) ([]store.CronSchedule, time.Time, error)
 	AdvanceSchedule(ctx context.Context, name string, from, to time.Time) (bool, error)
 	Enqueue(ctx context.Context, p store.EnqueueParams) (store.Job, bool, error)
@@ -42,7 +42,13 @@ type Scheduler struct {
 	Store Store
 	// Interval paces both leadership retry and, while leading, the tick.
 	// Default 5s. A schedule fires within roughly one interval of its tick.
-	Interval  time.Duration
+	Interval time.Duration
+	// LeaderTTL is how long this scheduler's database session may run no
+	// statement before PostgreSQL ends it and frees the role
+	// (store.Store.TryLeadership): the bound on a silent leader. Zero takes
+	// DefaultLeaderTTL(Interval). Anything under three intervals is raised to
+	// three, because a healthy leader can be idle on its session for up to two.
+	LeaderTTL time.Duration
 	BatchSize int // default 100
 	Logger    *slog.Logger
 	// Definitions, when non-empty, are reconciled into cron_schedules at the
@@ -56,6 +62,23 @@ func (s *Scheduler) interval() time.Duration {
 		return 5 * time.Second
 	}
 	return s.Interval
+}
+
+// minLeaderTTL is the floor under DefaultLeaderTTL, so a fast test interval
+// doesn't make a loaded machine's slow statement look like a silent leader.
+const minLeaderTTL = 3 * time.Second
+
+// DefaultLeaderTTL is the leader TTL for a scheduler interval: three
+// intervals, and never under three seconds (docs/semantics.md §13).
+func DefaultLeaderTTL(interval time.Duration) time.Duration {
+	return max(3*interval, minLeaderTTL)
+}
+
+func (s *Scheduler) leaderTTL() time.Duration {
+	if s.LeaderTTL <= 0 {
+		return DefaultLeaderTTL(s.interval())
+	}
+	return max(s.LeaderTTL, 3*s.interval())
 }
 
 func (s *Scheduler) batchSize() int {
@@ -105,7 +128,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // short timeout, so a cancelled Run still releases rather than depending on
 // the session dying on its own.
 func (s *Scheduler) term(ctx context.Context) error {
-	lead, err := s.Store.TryLeadership(ctx)
+	lead, err := s.Store.TryLeadership(ctx, s.leaderTTL())
 	if err != nil {
 		return err
 	}

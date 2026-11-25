@@ -44,9 +44,10 @@ type fakeStore struct {
 	termLimit      int // 0 = unlimited terms may be won
 	termsStarted   int
 	tryLeaderCalls int
-	tryLeaderErr   error // when set, TryLeadership always fails with this
-	checkErr       error // when set, every Check fails with this
-	checkFailAfter int   // when > 0, Check fails once len(dueCalls) >= this
+	ttls           []time.Duration // ttl passed on each TryLeadership call
+	tryLeaderErr   error           // when set, TryLeadership always fails with this
+	checkErr       error           // when set, every Check fails with this
+	checkFailAfter int             // when > 0, Check fails once len(dueCalls) >= this
 	checks         int
 	releases       int
 
@@ -85,10 +86,11 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{now: time.Now(), dedup: map[string]store.Job{}, existing: map[string]bool{}}
 }
 
-func (f *fakeStore) TryLeadership(context.Context) (store.Leadership, error) {
+func (f *fakeStore) TryLeadership(_ context.Context, ttl time.Duration) (store.Leadership, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tryLeaderCalls++
+	f.ttls = append(f.ttls, ttl)
 	if f.leaderHeld {
 		return nil, store.ErrNotLeader
 	}
@@ -276,6 +278,12 @@ func (f *fakeStore) releaseCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.releases
+}
+
+func (f *fakeStore) ttlsSnapshot() []time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Duration(nil), f.ttls...)
 }
 
 func (f *fakeStore) termsStartedCount() int {

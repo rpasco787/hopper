@@ -430,5 +430,11 @@ type Store interface {
 	// ErrNotLeader when another process holds the role. Leadership occupies
 	// one connection for its whole term (see the implementation), so a pool
 	// sized for N concurrent queries serves N-1 while a process leads.
-	TryLeadership(ctx context.Context) (Leadership, error)
+	//
+	// ttl bounds how long the role outlives a holder that has gone silent: a
+	// paused process, or a network path that drops packets without resetting
+	// the connection. Once the holder's session has run no statement for ttl,
+	// the database ends it and the role is free. A holder keeps the role by
+	// calling Check well within ttl. ttl must be at least a millisecond.
+	TryLeadership(ctx context.Context, ttl time.Duration) (Leadership, error)
 }
