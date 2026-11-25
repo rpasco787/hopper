@@ -40,6 +40,12 @@
 #   STATS_SETTLE   seconds to wait before each snapshot of cumulative statistics (default 11)
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
 #   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
+#   JFR            WORKER=java drains: a JFR recording (settings=profile, pinned virtual
+#                  threads at any duration) of this many seconds from each JVM's start,
+#                  copied to <worker>.jfr JFR_SETTLE (default 5) seconds after it ends
+#   WORKER_PPROF   WORKER=go drains: this many seconds after the workers start, the first
+#                  worker's heap and goroutine profiles and a CPU profile of
+#                  WORKER_PPROF_SECONDS (default 5); needs a cmd/worker with -debug-listen
 #   OUT            evidence root (default ${TMPDIR:-/tmp}/hopper-bench); LABEL names the row
 #   KEEP           1 leaves the stack up afterwards
 #
@@ -91,9 +97,22 @@ if [ -n "${WORKER_JVM:-}" ]; then
 fi
 java_opts="$java_flags"
 jobs="${JOBS:-40000}"
-for knob in JOBS WARM_JOBS WARMUP WORK_MS; do
+for knob in JOBS WARM_JOBS WARMUP WORK_MS JFR JFR_SETTLE WORKER_PPROF WORKER_PPROF_SECONDS; do
   case "${!knob:-0}" in *[!0-9]*) echo "$knob must be a whole number" >&2; exit 2 ;; esac
 done
+if [ -n "${JFR:-}" ]; then
+  { [ "$worker_sdk" = java ] && [ "$scenario" = drain ]; } || { echo "JFR applies to WORKER=java drains only" >&2; exit 2; }
+  [ "$JFR" -gt 0 ] || { echo "JFR must be at least 1 second" >&2; exit 2; }
+  # A fixed duration, because a recording left for exit is lost: the example
+  # worker halts in its shutdown hook. Pinned threads at any duration (JFR's
+  # default threshold is 20 ms); the startup lines off, so stdout stays JSON.
+  java_opts="$java_opts -XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=${JFR}s,jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off"
+fi
+if [ -n "${WORKER_PPROF:-}" ]; then
+  { [ "$worker_sdk" = go ] && [ "$scenario" = drain ]; } || { echo "WORKER_PPROF applies to WORKER=go drains only" >&2; exit 2; }
+  # cmd/worker serves its profiles only when asked (docs/semantics.md §14).
+  WORKER_ENV="${WORKER_ENV:+$WORKER_ENV }HOPPER_DEBUG_LISTEN=0.0.0.0:6060"
+fi
 if [ "${WARM_JOBS:-0}" != 0 ]; then
   [ "$scenario" = drain ] || { echo "WARM_JOBS applies to drain only" >&2; exit 2; }
   [ "$WARM_JOBS" -lt "$jobs" ] || { echo "WARM_JOBS must be less than JOBS" >&2; exit 2; }
@@ -121,7 +140,7 @@ done
 # that changes one must name itself or the summary would pool it with
 # default runs.
 if [ -z "$variant" ]; then
-  for knob in BROKER_ENV WORKER_ENV PG_ARGS BENCH_SQL WORKER_JVM; do
+  for knob in BROKER_ENV WORKER_PPROF WORKER_ENV PG_ARGS BENCH_SQL WORKER_JVM; do
     [ -z "${!knob:-}" ] || { echo "$knob changes the run: name it with VARIANT" >&2; exit 2; }
   done
   [ "${WARMUP:-0}" = 0 ] || { echo "WARMUP changes the run: name it with VARIANT" >&2; exit 2; }
@@ -129,6 +148,7 @@ if [ -z "$variant" ]; then
     echo "WORK_MS changes the drain: name it with VARIANT" >&2; exit 2
   fi
   [ "${EXPLAIN:-0}" != 1 ] || { echo "EXPLAIN changes the run: name it with VARIANT" >&2; exit 2; }
+  [ "${JFR:-0}" = 0 ] || { echo "JFR changes the run: name it with VARIANT" >&2; exit 2; }
 fi
 # The instruments (this script, loadgen and the Compose files) always come
 # from the working tree, whatever REF says, so each row names their revision
@@ -318,6 +338,8 @@ fi
 samplers=""
 profiler=""
 warm_throughput=""
+pprofer=""
+jfr_missing=""
 max_leased=""
 cleanup() {
   stop_samplers
@@ -382,6 +404,24 @@ proc_snapshot() { # label
     echo "clk_tck $(getconf CLK_TCK)"
     while [ $# -ge 2 ]; do echo "== $label $1 $2"; cat "/proc/$2/stat" "/proc/$2/status"; shift 2; done
   ' snapshot "$1" $pairs >>"$dir/proc.txt" 2>&1 || true
+}
+# WORKER_PPROF seconds after the workers start: the first worker's heap and
+# goroutine profiles (text, ending with the runtime's memory statistics) and a
+# CPU profile, fetched over the Compose network by a throwaway container.
+worker_pprof() {
+  sleep "$WORKER_PPROF"
+  local id host net
+  id="$(compose ps -q worker | head -n 1)"
+  host="$(docker inspect --format '{{.Name}}' "$id")"
+  host="${host#/}"
+  net="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$id" | head -n 1)"
+  fetch() {
+    docker run "${helper[@]}" --network "$net" --entrypoint wget postgres:16-alpine -qO- "http://$host:6060/debug/pprof/$1"
+  }
+  fetch 'heap?debug=1' >"$dir/worker-heap.txt" &&
+    fetch 'goroutine?debug=1' >"$dir/worker-goroutine.txt" &&
+    fetch "profile?seconds=${WORKER_PPROF_SECONDS:-5}" >"$dir/worker-cpu.pprof" ||
+    echo "no worker profile: does $sha's cmd/worker have -debug-listen?" >&2
 }
 brokers_arg="broker:9090"; metrics_ports="16091"
 if [ "$brokers" -ge 2 ]; then brokers_arg="$brokers_arg,broker-standby:9090"; metrics_ports="$metrics_ports 16092"; fi
@@ -482,6 +522,7 @@ drain)
   workers_started=$SECONDS
   start_workers
   if [ "${PROFILE:-0}" = 1 ]; then profile & profiler=$!; fi
+  if [ -n "${WORKER_PPROF:-}" ]; then worker_pprof & pprofer=$!; fi
   # Progress four times a second, and the rows leased at that moment: at most
   # the workers' slots, because the broker leases only against credit a worker
   # sent for a free slot (docs/design/credit-anchored-freshness.md).
@@ -499,6 +540,16 @@ drain)
   stop_samplers
   pool_snapshot after
   if [ -n "$profiler" ]; then wait "$profiler" || true; fi
+  if [ -n "$pprofer" ]; then wait "$pprofer" || true; fi
+  if [ -n "${JFR:-}" ]; then
+    # Each recording is written when it ends, JFR seconds after its JVM started.
+    until [ $((SECONDS - workers_started)) -ge $((JFR + ${JFR_SETTLE:-5})) ]; do sleep 1; done
+    for id in $(worker_ids); do
+      name="$(container_name "$id")"
+      docker cp "$id:/tmp/hopper.jfr" "$dir/$name.jfr" >/dev/null 2>&1 || true
+      [ -s "$dir/$name.jfr" ] || jfr_missing="${jfr_missing:+$jfr_missing }$name"
+    done
+  fi
   # The drain runs from the first lease to the last completion, on the
   # database's clock; every job must have completed on its first lease.
   IFS=, read -r throughput retried <<<"$(sql "
@@ -683,6 +734,7 @@ done
 if [ "$scenario" = drain ] && [ "$max_leased" -gt $((workers * concurrency)) ]; then
   reject "$max_leased rows were leased at once, more than the workers' $((workers * concurrency)) slots"
 fi
+[ -z "$jfr_missing" ] || reject "no JFR recording from $jfr_missing"
 # Batch size as submitted: confirmation RPCs per batch statement (a batch's
 # rows are only what it applied). Fallback share: one-row statements per RPC.
 # Both per kind, and blank when no batch statement ran, as with batching off.

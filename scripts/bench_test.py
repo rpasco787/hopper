@@ -700,6 +700,65 @@ class BenchmarkTest(unittest.TestCase):
             [preload] = [e for e in trace(root) if e.startswith('compose run: ')]
             self.assertIn('-work-ms 15000', preload)
 
+    def test_jfr_records_each_java_worker_and_keeps_the_recordings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java', JFR='1', JFR_SETTLE='0', VARIANT='jfr')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            ev = evidence_dir(root)
+            opts = (ev / 'machine.txt').read_text()
+            self.assertIn('-XX:StartFlightRecording=filename=/tmp/hopper.jfr,settings=profile,duration=1s,'
+                          'jdk.VirtualThreadPinned#threshold=0ms -Xlog:jfr+startup=off', opts)
+            self.assertTrue((ev / 'worker-1.jfr').exists())
+            self.assertTrue((ev / 'worker-2.jfr').exists())
+            # The flags probe runs the JVM without the recording.
+            [probe] = [e for e in trace(root) if 'PrintFlagsFinal' in e]
+            self.assertNotIn('StartFlightRecording', probe)
+
+    def test_a_missing_recording_rejects_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER='java', JFR='1', JFR_SETTLE='0', VARIANT='jfr', BENCH_TEST_NO_JFR='1')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('no JFR recording from worker-1 worker-2', (evidence_dir(root) / 'rejected.txt').read_text())
+
+    def test_profiles_need_their_worker_and_a_drain(self):
+        for scenario, kw, msg in [('drain', {'JFR': '1'}, 'JFR applies to WORKER=java drains only'),
+                                  ('steady', {'JFR': '1', 'WORKER': 'java'}, 'JFR applies to WORKER=java drains only'),
+                                  ('drain', {'JFR': '0', 'WORKER': 'java'}, 'JFR must be at least 1 second'),
+                                  ('drain', {'WORKER_PPROF': '1', 'WORKER': 'java'},
+                                   'WORKER_PPROF applies to WORKER=go drains only')]:
+            with self.subTest(kw=kw), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, VARIANT='p', **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(msg, result.stderr)
+
+    def test_worker_pprof_fetches_three_profiles_from_the_first_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, WORKER_PPROF='0', WORKER_PPROF_SECONDS='1', VARIANT='pprof')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            ev = evidence_dir(root)
+            self.assertIn('  worker:\n    environment:\n      HOPPER_DEBUG_LISTEN: "0.0.0.0:6060"\n',
+                          (ev / 'settings.yaml').read_text())
+            fetches = [e for e in trace(root) if e.startswith('docker run: ') and 'wget' in e]
+            for path in ('heap?debug=1', 'goroutine?debug=1', 'profile?seconds=1'):
+                self.assertTrue(any(f'http://hopper-bench-worker-1:6060/debug/pprof/{path}' in e for e in fetches),
+                                fetches)
+            for f in ('worker-heap.txt', 'worker-goroutine.txt', 'worker-cpu.pprof'):
+                self.assertTrue((ev / f).exists(), f)
+
+    def test_new_knobs_need_a_variant(self):
+        for scenario, kw, knob in [('steady', {'WARMUP': '5'}, 'WARMUP'),
+                                   ('drain', {'WORKER': 'java', 'JFR': '1'}, 'JFR'),
+                                   ('drain', {'WORKER_PPROF': '0'}, 'WORKER_PPROF'),
+                                   ('drain', {'WORKER': 'java', 'WORKER_JVM': '-Xmx1g'}, 'WORKER_JVM'),
+                                   ('drain', {'WORK_MS': '5'}, 'WORK_MS')]:
+            with self.subTest(knob=knob), tempfile.TemporaryDirectory() as tmp:
+                result = run_bench(Path(tmp), scenario=scenario, **kw)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f'{knob} changes the', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
