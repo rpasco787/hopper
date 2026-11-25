@@ -770,11 +770,6 @@ under a new lease, and `attempts` accounts for every one (§15).
   `postgres.mode=cloudnativepg` adds replication and failover through the
   CloudNativePG operator 1.30.2, still with no backups, no connection
   pooler, no monitoring and `sslmode=disable`.
-- **A leader whose database session goes silent.** A scheduler leader's
-  `Check` has no deadline of its own. A session that stops answering without
-  being reset (a partition, not a crash) keeps the role, and the server keeps
-  its lock, until TCP gives up, so cron pauses meanwhile. Nothing fires twice.
-  Phase 5 measures it.
 - **Reads and refusals that see a cancelled wait (§11, item 7).** A row whose
   wait for the standby was cancelled is visible on the primary at once.
   hopper no longer reports work as done on the strength of one, but
@@ -842,9 +837,11 @@ because its distroless runtime image has no zoneinfo database.
 does work only while it holds a session-scoped advisory lock taken with
 `pg_try_advisory_lock` on a dedicated connection held out of the pool for the
 whole leadership term. Losers retry every `-scheduler-interval` (default 5s).
-The lock is released by an explicit unlock or by the session ending, so a
-leader that crashes, is `SIGKILL`ed, or loses its connection loses the role,
-and another broker takes it on its next retry. Leadership costs the holder one
+The lock is released by an explicit unlock or by the session ending. A leader
+that crashes, is `SIGKILL`ed, or has its connection reset loses the role at
+once, and another broker takes it on its next retry. One that goes silent
+instead (stopped, suspended, or behind a path that drops packets without
+resetting anything) loses it after the leader TTL (below). Leadership costs the holder one
 connection from its pool. The lock is per database: every hopper process
 pointed at one database contends for one role. Setting `-scheduler=false`
 takes a broker out of the contest.
@@ -885,6 +882,26 @@ leader. An ambiguous check failure (a timeout) is treated as lost leadership,
 and so is any store error: the term ends, the lock is released, and the role
 goes back up for contention.
 
+**A silent leader.** The leader's session carries `idle_session_timeout` set
+to the leader TTL: three `-scheduler-interval`s, never under 3s (15s at the
+default). A healthy leader runs a statement on that session, its `Check`, at
+least every two intervals, so it never comes near the TTL. A leader that
+stops running statements, whether it is paused or cut off, has its session
+ended by PostgreSQL once the TTL passes. That drops the lock with no help from
+the leader, and another broker takes the role on its next retry, so a silent
+leader costs cron at most the TTL plus one interval (20s at the default). The
+leader gives up on its own side too. Every store call in a term (the attempt,
+the reconciliation, each `Check`, each pass and the release) runs under a
+third of the TTL. A leader cut off from PostgreSQL therefore stops firing
+within two thirds of the TTL after its last answered `Check`, a third before
+PostgreSQL can hand the role on. That ordering narrows the window in which
+two brokers both act as leader. It doesn't close it, because a paused process
+can't watch its own deadlines, so safety still rests on the idempotency key
+and the guarded advance. A pass that outlasts a third of the TTL on a slow but
+reachable database ends the term too, and the role goes back up for
+contention. The timeout is set on the leader's session only, and reset before
+that connection returns to the pool.
+
 **Fire, then advance.** Per due schedule, the scheduler enqueues the tick and
 then advances `next_run_at`, as two statements rather than one transaction. A
 crash between them leaves the tick enqueued and the schedule un-advanced; the
@@ -923,7 +940,9 @@ after a late pass or a failover. Use a five-field expression when ticks must
 land on particular wall-clock instants.
 
 **Latency.** A tick fires within roughly one `-scheduler-interval` of its
-instant, plus up to one more interval when leadership has just moved.
+instant, plus up to one more interval when leadership has just moved after a
+crash or a reset, and up to the leader TTL plus one interval when the leader
+went silent.
 
 **Clocks.** Due-ness, the next occurrence, and a newly declared schedule's
 first occurrence all come from the database's clock. `DueSchedules` returns
@@ -1378,6 +1397,10 @@ not in this table.
 | A stale advance from a displaced leader matches no row | `store: TestAdvanceScheduleIsGuarded` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
 | Releasing leadership never returns a locked connection to the pool | `store: TestReleaseDoesNotPoisonThePool` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
 | Three real broker processes: one fires; `SIGKILL` of the leader, twice in succession, hands the role to another broker within one interval each time; every tick pending at a kill fires and no occurrence fires twice | `integration: TestBrokerProcessCronFailsOverOnKill` (three `-race` broker binaries, 50ms `-scheduler-interval`) | 20 (`-count=20`, 40 kills, 2026-09-22) | pass: takeover 7–50ms (median 28ms) |
+| A leader whose path to PostgreSQL goes silent (a proxy drops every byte and passes on no close) ends its own term before PostgreSQL frees the role; the other broker takes over within the leader TTL plus one interval; the pending tick fires once | `integration: TestBrokerProcessGivesUpCronWhenItsDatabasePathGoesSilent` (two `-race` broker binaries, 50ms interval, 3s TTL) | 5 (`-count=5`, 2026-11-25) | pass: stepped down after 1.013–1.048 s, takeover after 2.998–3.002 s. Before the fix: no step-down, no takeover in 6 s |
+| A `SIGSTOP`ped leader loses the role after the TTL; resumed, it finds its session gone and doesn't take the role back | `integration: TestBrokerProcessGivesUpCronWhileStopped` (same) | 5 (`-count=5`, 2026-11-25) | pass: takeover after 2.999–3.001 s. Before the fix: no takeover in 6 s |
+| A silent holder loses the role after its TTL; a holder that checks keeps it; the timeout never reaches the pool | `store: TestLeadershipLapsesWhenTheHolderGoesSilent`, `TestACheckingHolderKeepsTheRole`, `TestLeadershipSetsAndReleaseResetsTheIdleTimeout` (`-race`) | 1 (2026-11-25) | pass |
+| Every store call in a term runs under a third of the TTL; a hung `Check`, pass, attempt or reconciliation ends the term | `scheduler: TestAHungCheckEndsTheTerm`, `TestAHungPassEndsTheTerm`, `TestAHungLeadershipAttemptGivesWayToTheNext`, `TestAHungReconcileEndsTheTermBeforeAnyPass` (`-race`) | 20 (`-count=20`, 2026-11-25) | pass |
 | Two Compose brokers elect one scheduler; stop and `docker kill` of the leader both hand the role over, and cron jobs (including an `America/New_York` schedule in the distroless image) complete | `hopper-session6` Compose demo (`broker` + `broker-standby`, JSON logs + SQL state checks) | 1 (2026-09-22) | pass: graceful takeover in ~4s; after `docker kill` the pending tick fired ~2s late, then skipped ahead; 10/10 `sleep` jobs and the 18:30 UTC `cpu_burn` tick completed |
 | Counters match the database for completions, failed attempts, dead-letters, lease expirations and dedup; wait counts first leases only; an unlisted queue counts under `_other` | `integration: TestMetricsMatchTheDatabase` (in-process broker + SDK worker, `-race`) | 2 (`-count=2`, 2026-09-22) | pass |
 | A retried Ack or Nack is not counted twice; a lost response neither loses nor duplicates a count; a failed store call reports nothing | `store: TestObserverSeesCompletionOnce`, `TestObserverSeesNackOutcome`, `TestObserverCountsOnceAcrossALostResponse`, `TestObserverSilentOnStoreFailure` (`-race`) | 2 (`-count=2`, 2026-09-22) | pass |
