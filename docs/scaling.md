@@ -575,8 +575,8 @@ Separate-plan items that came out of Phase 1b:
   enqueued 1,762 jobs/s when offered 4,000 and 850 jobs/s when offered 1,000
   (`kept_up=no` both times, 10-minute runs, 300-byte jobs, 8 workers, pinned),
   so no steady rate was shown sustainable. The 2026-10-13 steady runs, which
-  kept up at 3,000 jobs/s, lasted 30 seconds on one broker with four workers
-  ([BENCHMARKS.md](BENCHMARKS.md)). A short run keeping up where a long one
+  kept up at 3,000 jobs/s, lasted 30 seconds on one broker with four workers.
+  A short run keeping up where a long one
   does not points at degradation over time (table growth, dead tuples,
   autovacuum): exactly what the unmeasured H3 drift pair was for, so it is the
   first thing to run next. It needs understanding before the phase 4 soak's

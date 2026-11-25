@@ -704,8 +704,7 @@ every hypothesis tried, and what is left are in
 [docs/scaling.md](docs/scaling.md). Reproduce with
 `bash docs/bench/1b/final/loop.sh` (about 25 minutes). The 2026-10-13 numbers
 this section used to show (9,191 jobs/s) were taken on a different layout and
-could not be reproduced on today's setup; they stay, dated, in
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+could not be reproduced on today's setup.
 
 Since 2026-11-23 the worker skips its ownership check for a delivery that
 arrives within a tenth of its lease after the credit that bought it. In a

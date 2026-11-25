@@ -44,8 +44,7 @@ index, and every decision taken while running, are in
 
 - **Hardware and layout.** One laptop: Apple M2, 8 cores, 8 GiB; Docker
   Desktop 29.1.3, a VM with 8 vCPUs and 3.83 GiB; Compose v2.40.3;
-  `postgres:16-alpine` with `synchronous_commit` on
-  ([BENCHMARKS.md](../BENCHMARKS.md#hardware-and-software)). `PIN=1`:
+  `postgres:16-alpine` with `synchronous_commit` on. `PIN=1`:
   PostgreSQL on CPUs 0–1, brokers 2–3, workers 4–6, loadgen 7
   (`cpuset.yaml` in every run). One broker, 8 workers × 16 slots, 300-byte
   jobs, `sleep` handlers of 0 ms: the 1b loops' settings (D1).
