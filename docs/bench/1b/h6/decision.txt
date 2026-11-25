@@ -1,0 +1,70 @@
+== Q2 credit per stream at 8 streams: go-w8c16 -> go-w8c64
+b1 throughput: go-w8c64 19,797 (19,374-22,210) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  1.745x  helps
+b1 warm_throughput: go-w8c64 22,163 (20,897-23,819) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  2.113x  helps
+b1 lease_rows_per_call: go-w8c64 15.86 (15.62-15.87) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  2.652x  helps
+b1 lease_calls_per_job: go-w8c64 0.06 (0.06-0.06) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  2.651x  helps
+b1 commits_per_job: go-w8c64 0.09 (0.09-0.10) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  3.333x  helps
+b1 postgres_cpu: go-w8c64 95.00 (84.00-97.00) vs go-w8c16 118 (114-122)  n=5/5  1.242x  helps
+== Q2 stream count at 512 slots: go-w2c256 -> go-w8c64
+b1 throughput: go-w8c64 19,797 (19,374-22,210) vs go-w2c256 24,330 (23,604-24,769)  n=5/5  0.814x  worse
+b1 warm_throughput: go-w8c64 22,163 (20,897-23,819) vs go-w2c256 26,560 (23,649-26,936)  n=5/5  0.834x  worse
+b1 lease_rows_per_call: go-w8c64 15.86 (15.62-15.87) vs go-w2c256 31.19 (31.16-31.20)  n=5/5  0.508x  worse
+b1 lease_calls_per_job: go-w8c64 0.06 (0.06-0.06) vs go-w2c256 0.03 (0.03-0.03)  n=5/5  0.508x  worse
+b1 commits_per_job: go-w8c64 0.09 (0.09-0.10) vs go-w2c256 0.07 (0.07-0.08)  n=5/5  0.778x  worse
+b1 postgres_cpu: go-w8c64 95.00 (84.00-97.00) vs go-w2c256 88.00 (87.00-91.00)  n=5/5  0.926x  worse
+== stream count at 64 credit (slots differ): go-w2c64 -> go-w8c64
+b1 throughput: go-w8c64 19,797 (19,374-22,210) vs go-w2c64 18,803 (18,564-20,233)  n=5/5  1.053x  no measurable effect
+b1 warm_throughput: go-w8c64 22,163 (20,897-23,819) vs go-w2c64 19,502 (18,447-20,790)  n=5/5  1.136x  helps
+b1 lease_rows_per_call: go-w8c64 15.86 (15.62-15.87) vs go-w2c64 17.40 (17.23-17.42)  n=5/5  0.911x  worse
+b1 lease_calls_per_job: go-w8c64 0.06 (0.06-0.06) vs go-w2c64 0.06 (0.06-0.06)  n=5/5  0.905x  worse
+b1 commits_per_job: go-w8c64 0.09 (0.09-0.10) vs go-w2c64 0.14 (0.13-0.14)  n=5/5  1.556x  helps
+b1 postgres_cpu: go-w8c64 95.00 (84.00-97.00) vs go-w2c64 93.00 (93.00-95.00)  n=5/5  0.979x  no measurable effect
+== Q3 slots at 2 streams: go-w2c64 -> go-w2c256
+b1 throughput: go-w2c256 24,330 (23,604-24,769) vs go-w2c64 18,803 (18,564-20,233)  n=5/5  1.294x  helps
+b1 warm_throughput: go-w2c256 26,560 (23,649-26,936) vs go-w2c64 19,502 (18,447-20,790)  n=5/5  1.362x  helps
+b1 lease_rows_per_call: go-w2c256 31.19 (31.16-31.20) vs go-w2c64 17.40 (17.23-17.42)  n=5/5  1.793x  helps
+b1 lease_calls_per_job: go-w2c256 0.03 (0.03-0.03) vs go-w2c64 0.06 (0.06-0.06)  n=5/5  1.781x  helps
+b1 commits_per_job: go-w2c256 0.07 (0.07-0.08) vs go-w2c64 0.14 (0.13-0.14)  n=5/5  2.000x  helps
+b1 postgres_cpu: go-w2c256 88.00 (87.00-91.00) vs go-w2c64 93.00 (93.00-95.00)  n=5/5  1.057x  no measurable effect
+== Q4 rows per lease call at 2 streams: go-w2c64 -> go-w2c64-lb6
+b1 throughput: go-w2c64-lb6 10,682 (10,360-10,813) vs go-w2c64 18,803 (18,564-20,233)  n=5/5  0.568x  worse
+b1 warm_throughput: go-w2c64-lb6 9,821 (9,626-10,136) vs go-w2c64 19,502 (18,447-20,790)  n=5/5  0.504x  worse
+b1 lease_rows_per_call: go-w2c64-lb6 5.97 (5.97-5.97) vs go-w2c64 17.40 (17.23-17.42)  n=5/5  0.343x  worse
+b1 lease_calls_per_job: go-w2c64-lb6 0.17 (0.17-0.17) vs go-w2c64 0.06 (0.06-0.06)  n=5/5  0.339x  worse
+b1 commits_per_job: go-w2c64-lb6 0.36 (0.36-0.36) vs go-w2c64 0.14 (0.13-0.14)  n=5/5  0.389x  worse
+b1 postgres_cpu: go-w2c64-lb6 110 (107-114) vs go-w2c64 93.00 (93.00-95.00)  n=5/5  0.845x  worse
+== Q4 does lb6 reproduce 8x16: go-w8c16 -> go-w2c64-lb6
+b1 throughput: go-w2c64-lb6 10,682 (10,360-10,813) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  0.941x  worse
+b1 warm_throughput: go-w2c64-lb6 9,821 (9,626-10,136) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  0.936x  worse
+b1 lease_rows_per_call: go-w2c64-lb6 5.97 (5.97-5.97) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  0.998x  no measurable effect
+b1 lease_calls_per_job: go-w2c64-lb6 0.17 (0.17-0.17) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  0.994x  no measurable effect
+b1 commits_per_job: go-w2c64-lb6 0.36 (0.36-0.36) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  0.833x  worse
+b1 postgres_cpu: go-w2c64-lb6 110 (107-114) vs go-w8c16 118 (114-122)  n=5/5  1.073x  no measurable effect
+== Q1 the curve: go-w8c16 -> go-w4c32
+b1 throughput: go-w4c32 16,095 (15,485-16,856) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  1.418x  helps
+b1 warm_throughput: go-w4c32 14,856 (14,761-16,860) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  1.416x  helps
+b1 lease_rows_per_call: go-w4c32 10.33 (10.20-10.37) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  1.727x  helps
+b1 lease_calls_per_job: go-w4c32 0.10 (0.10-0.10) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  1.722x  helps
+b1 commits_per_job: go-w4c32 0.19 (0.19-0.19) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  1.579x  helps
+b1 postgres_cpu: go-w4c32 102 (100-103) vs go-w8c16 118 (114-122)  n=5/5  1.157x  helps
+== Q1 the curve: go-w8c16 -> go-w2c64
+b1 throughput: go-w2c64 18,803 (18,564-20,233) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  1.657x  helps
+b1 warm_throughput: go-w2c64 19,502 (18,447-20,790) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  1.859x  helps
+b1 lease_rows_per_call: go-w2c64 17.40 (17.23-17.42) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  2.910x  helps
+b1 lease_calls_per_job: go-w2c64 0.06 (0.06-0.06) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  2.930x  helps
+b1 commits_per_job: go-w2c64 0.14 (0.13-0.14) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  2.143x  helps
+b1 postgres_cpu: go-w2c64 93.00 (93.00-95.00) vs go-w8c16 118 (114-122)  n=5/5  1.269x  helps
+== Q1 the curve: go-w8c16 -> go-w1c128
+b1 throughput: go-w1c128 19,798 (19,398-21,088) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  1.745x  helps
+b1 warm_throughput: go-w1c128 20,216 (19,849-21,720) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  1.927x  helps
+b1 lease_rows_per_call: go-w1c128 27.89 (27.82-27.93) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  4.664x  helps
+b1 lease_calls_per_job: go-w1c128 0.04 (0.04-0.04) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  4.639x  helps
+b1 commits_per_job: go-w1c128 0.11 (0.11-0.12) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  2.727x  helps
+b1 postgres_cpu: go-w1c128 76.00 (70.00-78.00) vs go-w8c16 118 (114-122)  n=5/5  1.553x  helps
+== Q1 the curve: go-w8c16 -> go-w2c256
+b1 throughput: go-w2c256 24,330 (23,604-24,769) vs go-w8c16 11,348 (10,438-13,082)  n=5/5  2.144x  helps
+b1 warm_throughput: go-w2c256 26,560 (23,649-26,936) vs go-w8c16 10,491 (10,380-12,169)  n=5/5  2.532x  helps
+b1 lease_rows_per_call: go-w2c256 31.19 (31.16-31.20) vs go-w8c16 5.98 (5.90-5.99)  n=5/5  5.216x  helps
+b1 lease_calls_per_job: go-w2c256 0.03 (0.03-0.03) vs go-w8c16 0.17 (0.17-0.17)  n=5/5  5.219x  helps
+b1 commits_per_job: go-w2c256 0.07 (0.07-0.08) vs go-w8c16 0.30 (0.29-0.31)  n=5/5  4.286x  helps
+b1 postgres_cpu: go-w2c256 88.00 (87.00-91.00) vs go-w8c16 118 (114-122)  n=5/5  1.341x  helps

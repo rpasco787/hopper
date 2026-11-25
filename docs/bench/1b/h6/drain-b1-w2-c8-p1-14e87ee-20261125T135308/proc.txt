@@ -1,0 +1,123 @@
+clk_tck 100
+== end dfc59e2ad54a608640edbecec6193803b362c956c1814762968cb16d50ea8067 61120
+61120 (app) S 61098 61120 61120 0 -1 4194560 10746 0 0 0 304 66 0 0 20 0 10 0 137758 1371021312 5387 18446744073709551615 1 1 0 0 0 0 1002060288 0 2143420159 0 0 0 17 5 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	app
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61120
+Ngid:	0
+Pid:	61120
+PPid:	61098
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61120	1
+NSpid:	61120	1
+NSpgid:	61120	1
+NSsid:	61120	1
+Kthread:	0
+VmPeak:	 1338888 kB
+VmSize:	 1338888 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   21956 kB
+VmRSS:	   21808 kB
+RssAnon:	    9980 kB
+RssFile:	   11828 kB
+RssShmem:	       0 kB
+VmData:	   84176 kB
+VmStk:	     132 kB
+VmExe:	    5456 kB
+VmLib:	       8 kB
+VmPTE:	     136 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	10
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	fffffffc3bba3a00
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	18
+nonvoluntary_ctxt_switches:	8
+== end bfdbc6619f43474dbbd09bdb6a949e746839a3bedb60dd08e3d35383a62f45ea 61039
+61039 (app) S 61015 61039 61039 0 -1 4194560 13262 0 0 0 310 68 0 0 20 0 10 0 137745 1303576576 5689 18446744073709551615 1 1 0 0 0 0 1002060288 0 2143420159 0 0 0 17 4 0 0 0 0 0 0 0 0 0 0 0 0 0
+Name:	app
+Umask:	0022
+State:	S (sleeping)
+Tgid:	61039
+Ngid:	0
+Pid:	61039
+PPid:	61015
+TracerPid:	0
+Uid:	65532	65532	65532	65532
+Gid:	65532	65532	65532	65532
+FDSize:	64
+Groups:	65532 
+NStgid:	61039	1
+NSpid:	61039	1
+NSpgid:	61039	1
+NSsid:	61039	1
+Kthread:	0
+VmPeak:	 1273024 kB
+VmSize:	 1273024 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   23568 kB
+VmRSS:	   23004 kB
+RssAnon:	   11180 kB
+RssFile:	   11824 kB
+RssShmem:	       0 kB
+VmData:	   83848 kB
+VmStk:	     132 kB
+VmExe:	    5456 kB
+VmLib:	       8 kB
+VmPTE:	     132 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	10
+SigQ:	0/15650
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	fffffffc3bba3a00
+SigIgn:	0000000000000000
+SigCgt:	fffffffd7fc1feff
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	70
+Cpus_allowed_list:	4-6
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	21
+nonvoluntary_ctxt_switches:	29
