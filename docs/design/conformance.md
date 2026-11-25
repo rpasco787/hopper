@@ -265,9 +265,13 @@ worker retried only `UNAVAILABLE` and `DEADLINE_EXCEEDED`, so it took the
 failure as a refusal, the lease ran out and the job ran again. It is a Java SDK
 bug, fixed in a595053 with `Heartbeat.isNetwork`, shared by confirmations and
 renewals (a renewal would have ended its lease on the same status); a unit test
-pins it. The five passes ran against the image from before the fix; the image
-was not rebuilt and the suite was not rerun against it, so the fix is proven by
-its unit test and not yet by a chaos pass. Pass 5 took 782.9 s, about 160 s more
+pins it. The five passes ran against the image from before the fix. A sixth
+pass, against the rebuilt image (sha256:bf9f80d41c0a, built from 2ea60ed), passed
+every test, but the laptop hibernated 14 s after it started (battery at 1%), so
+it is void. A seventh, with the machine awake and on AC power throughout
+(19:46-19:57, no sleep in pmset's log, 0 leftovers), passed all 9 tests and 4
+subtests in 639.5 s with 0 handler starts repeated in `TestBrokerRestartLosesNothing/crash`.
+One clean pass is evidence, not a proof: the failure was 1 in 5 before. Pass 5 took 782.9 s, about 160 s more
 than the others, with no sleep in the window; its cause is unknown.
 
 **Window tests.** Both SDKs' last two window tests now run with the unexported

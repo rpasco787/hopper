@@ -22,4 +22,4 @@ measure.txt            Task 10: Java memory, startup under load, D22 (2026-11-24
 negative-controls.txt  25 damaged runs, 25 failures; every undamaged baseline clean
 chaos-java-5.txt       the chaos suite five times against the Java worker: 4 of 5; pass 2's failure and its cause
 
-The five chaos passes ran against image 61a44b130a45 (before the fix in a595053).
+The five chaos passes ran against image 61a44b130a45 (before the fix in a595053). Passes 6 (void, the laptop slept) and 7 (clean) ran against the rebuilt image bf9f80d41c0a; see chaos-java-5.txt.
