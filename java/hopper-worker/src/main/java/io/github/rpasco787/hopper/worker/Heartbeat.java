@@ -166,8 +166,25 @@ final class Heartbeat {
                     StopReason.LEASE_LOST.text() + ": " + statusText(s));
             case FAILED_PRECONDITION -> new Lease.Ended(StopReason.JOB_CANCELLED,
                     StopReason.JOB_CANCELLED.text() + ": " + statusText(s));
-            case UNAVAILABLE, DEADLINE_EXCEEDED -> null;
-            default -> new Lease.Ended(StopReason.LEASE_LOST, "worker: heartbeat rejected: " + statusText(s));
+            default -> isNetwork(s)
+                    ? null
+                    : new Lease.Ended(StopReason.LEASE_LOST, "worker: heartbeat rejected: " + statusText(s));
+        };
+    }
+
+    /**
+     * Whether a failure describes the network rather than the job or the store: UNAVAILABLE and
+     * DEADLINE_EXCEEDED, and the one UNKNOWN grpc-netty makes of a write onto a connection that
+     * has just closed (Utils.statusFromThrowable: description "channel closed", a
+     * ClosedChannelException as its cause). Go's gRPC reports that same moment as UNAVAILABLE, so
+     * without this a broker killed under an in-flight Ack or renewal read as a refusal here and
+     * the job ran twice (Phase 3c, chaos pass 2 of 5).
+     */
+    static boolean isNetwork(Status s) {
+        return switch (s.getCode()) {
+            case UNAVAILABLE, DEADLINE_EXCEEDED -> true;
+            case UNKNOWN -> s.getCause() instanceof java.nio.channels.ClosedChannelException;
+            default -> false;
         };
     }
 

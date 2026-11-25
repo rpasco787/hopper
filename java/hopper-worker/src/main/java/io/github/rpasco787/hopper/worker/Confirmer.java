@@ -133,10 +133,7 @@ final class Confirmer {
      * neither.
      */
     private static boolean retryable(StatusRuntimeException e) {
-        return switch (e.getStatus().getCode()) {
-            case UNAVAILABLE, DEADLINE_EXCEEDED -> true;
-            default -> false;
-        };
+        return Heartbeat.isNetwork(e.getStatus());
     }
 
     /**
