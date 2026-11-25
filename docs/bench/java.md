@@ -9,13 +9,20 @@ index, and every decision taken while running, are in
 
 ## Summary
 
-- **Drain throughput: Java is not within 10% of Go.** Java drained at
-  **0.266×** Go's rate cold (2,045 jobs/s, 1,939–2,296, against 7,699,
-  7,240–8,508) and **0.355×** warm (2,872, 2,161–3,416, against 8,088,
-  6,751–9,442). The ranges don't overlap. The improvement plan expected the
-  two to be close, because the broker and PostgreSQL bound a drain. That held
-  for Go. Java's workers were CPU-bound instead: eight JVMs on the workers'
-  three CPUs (`compare/decision.txt`, `compare/summary.md`).
+- **Drain throughput: Java is not within 10% of Go, at any layout measured.**
+  On one worker with 128 slots, Java drained at **0.60×** Go's rate cold
+  (8,475 jobs/s, 8,303–8,800, against 14,153, 13,461–14,692) and **0.73×**
+  warm (11,506, 9,879–11,710, against 15,831, 14,857–17,347)
+  (`layout/decision.txt`). On the comparison's layout, the same 128 slots as
+  eight workers × 16, it drained at **0.266×** cold (2,045 jobs/s,
+  1,939–2,296, against 7,699, 7,240–8,508) and **0.355×** warm (2,872,
+  2,161–3,416, against 8,088, 6,751–9,442) (`compare/decision.txt`).
+- **Most of that layout's gap was the layout.** Eight JVMs on three CPUs each
+  load and compile the same code, so Java's workers were CPU-bound. One JVM on
+  the same CPUs drained 3.7× faster at 6.7× less CPU per job, and was not
+  CPU-bound. The Go worker nearly doubled as well (7,356 to 14,153 jobs/s in
+  the same loop), so the comparison's layout held back both SDKs, not only
+  Java. See [Layout](#layout-the-same-slots-on-fewer-workers).
 - **CPU per 1,000 jobs:** Java 1,491 ms (1,342–1,566), Go 119 (110–130), in a
   drain, counted since process start, so JVM start-up and JIT are in Java's
   figure: **12.5×**. In a steady run, after a 60 s warm-up: Java 915 ms
@@ -103,10 +110,11 @@ plateau, to the end of 61–73 s drains. Java spends its first half-minute
 interpreting and compiling: the profile run's recording (below) holds 21.5 s
 of JIT compilation in its first 25 s.
 
-**What explains the gap.** A drain at one broker is bounded by the broker and
-PostgreSQL ([scaling.md](../scaling.md)), and Go's drain is: its workers used
-86% of their 300, PostgreSQL's backends spent 66.7% of their time on locks,
-and nothing was saturated. Java's workers were saturated instead, at 315%
+**What explains the gap.** Go's drain on this layout is not worker-bound: its
+workers used 86% of their 300, PostgreSQL's backends spent 66.7% of their
+time on locks, and nothing was saturated. That bound belongs to the layout,
+not to one broker: on fewer, wider workers the same broker and database
+drained nearly twice as fast ([Layout](#layout-the-same-slots-on-fewer-workers)). Java's workers were saturated instead, at 315%
 of three CPUs. Its CPU per job accounts for that exactly: 1,491 ms per 1,000
 jobs × 2,045 jobs/s is 3.05 CPU-seconds per second, the three CPUs. At Go's
 119 ms per 1,000 the same drain needs under one CPU. So on this layout the
@@ -322,19 +330,55 @@ The prediction's own tests of a broken measurement:
 - Any rejected run: none, in any loop.
 - Zero pins while the control fails: neither.
 
+## Layout: the same slots on fewer workers
+
+A follow-up loop, run after this write-up (`layout/`, 2026-11-25, at the
+measured `14e87ee`): the same 128 slots on the same three worker CPUs, split
+8 × 16 (the comparison's layout, rerun as the in-loop baseline), 2 × 64 and
+1 × 128, for both SDKs, three drains each, rotated. 140,000 jobs, the pilot's
+`WARM_JOBS`. Worker memory is 384 MiB at 8 × 16, as in `compare/`, and 1 GiB
+at 2 × 64 and 1 × 128, as in `wide/`; both SDKs get the same limit in each
+layout, so each row's ratio is like for like
+(`layout/decision.txt`, `layout/summary.md`):
+
+| Layout | Go, cold jobs/s | Java, cold jobs/s | Java/Go cold | Java/Go warm | Java CPU per 1,000 jobs, ms | Java workers' CPU |
+|---|---:|---:|---:|---:|---:|---:|
+| 8 × 16 | 7,356 (6,472–7,474) | 2,262 (1,795–2,573) | 0.31× | 0.41× | 1,378 | 324% of 300: saturated |
+| 2 × 64 | 12,946 (12,945–13,014) | 7,817 (7,552–7,983) | 0.60× | 0.75× | 308 | 210% |
+| 1 × 128 | 14,153 (13,461–14,692) | 8,475 (8,303–8,800) | 0.60× | 0.73× | 205 | 158% |
+
+The baseline row reproduces `compare/` (0.31× against 0.266×, three runs
+against five).
+
+- **Java.** One JVM drains 3.7× faster than eight on the same CPUs, at 6.7×
+  less CPU per job (205 ms per 1,000 against 1,378): it loads and compiles its
+  code once, not eight times. Its start to an accepted stream falls from
+  4,069 ms to 807, and its memory is 161 MiB in all, against eight × 128.
+  What remains is a real per-job cost: 3.5× Go's CPU per job at 1 × 128
+  (205 against 58 ms per 1,000).
+- **Go.** The Go worker nearly doubles too, 7,356 to 14,153 jobs/s, at half
+  the CPU per job (127 to 58 ms per 1,000). With it the database's work per
+  job falls: commits per job 0.31 to 0.11, lock waits 65.4% of backend time
+  to 26.7%, PostgreSQL CPU 129% to 88% (`layout/summary.md`).
+  **A hypothesis, not tested:** a stream's lease calls are bounded by its
+  free credit, so 16-slot streams lease and confirm in smaller batches than
+  the broker's 32-row limit allows, and the same jobs cost more round trips.
+  The 1b loops all measured one broker at 8 × 16.
+- **Not identified:** what bounds a drain at 1 × 128. Nothing is marked
+  saturated in those rows.
+
 ## What this does not show
 
 - **One laptop.** macOS doesn't tie VM CPUs to physical cores, and the M2
   mixes performance and efficiency cores, so pinning removes sharing inside
-  the VM, not all variation. Eight workers share three CPUs, which is why
-  Java's drain is worker-bound here; a deployment that gives each JVM more CPU
-  would see a smaller gap, and this doesn't measure how much.
+  the VM, not all variation.
+- **Three repetitions in the layout loop**, against five in the comparison.
 - **One collector and one heap size:** Serial at 288 MiB (768 MiB for 10,000
   handlers). No G1, Parallel or ZGC, no GC tuning.
 - **No start-up work:** no AOT cache (JEP 483/514/515), CRaC or native image
   (D18). Java's 4.1 s start and its pins at first use are what those address.
-- **One broker, against one PostgreSQL** that bounds Go's drain. Other broker
-  counts, and the Kubernetes proofs with Java workers, are not measured.
+- **One broker, against one PostgreSQL.** Other broker counts, and the
+  Kubernetes proofs with Java workers, are not measured.
 - **Sleep and zero-work handlers.** Real handlers that do work would shrink
   the SDKs' share of each job's CPU.
 - **Short steady runs** (30 s after a 60 s warm-up), at one rate.
@@ -353,6 +397,7 @@ records `pmset`'s sleep and wake lines in its `sleeps.txt`; any line voids it.
 ```bash
 bash docs/bench/3d/compare/loop.sh       # drain and steady, Go and Java, x5: about 45 minutes
 bash docs/bench/3d/wide/loop.sh          # 10,000 handlers, with the JFR proof: about 15
+bash docs/bench/3d/layout/loop.sh        # 128 slots as 8x16, 2x64 and 1x128, both SDKs, x3: about 25
 bash docs/bench/3d/pinning/control.sh hopper-bench/worker-java:ref-14e87ee
 bash docs/bench/3d/profile/loop.sh       # profiles, from HEAD: about 10
 ```

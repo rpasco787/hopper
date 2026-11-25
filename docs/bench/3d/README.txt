@@ -32,6 +32,11 @@ What each directory holds, and what made it
   goroutine profiles. worker-cpu-top.txt, worker-memstats.txt,
   worker-goroutines.txt, worker-goroutine.txt, worker-heap.txt and the Java
   run's worker-1.jfr-*.txt are the committed extracts.
+- layout/ (layout/loop.sh): a follow-up after Task 21, at the measured ref:
+  the same 128 slots on the same three worker CPUs as 8x16, 2x64 and 1x128,
+  for both SDKs, 3 drains each, rotated. results.csv, summary.md,
+  decision.txt (each layout's java against go, and java at 2x64 and 1x128
+  against java at 8x16), loop-settings.txt, loop.log, sleeps.txt.
 
 What stays local (gitignored; .gitignore, plan section 6 and D15)
 - raw worker logs (*.stdout, *.stderr): per-run logs of up to 140,000 jobs,
@@ -177,3 +182,12 @@ Decisions taken while running
   0.355x warm), and "zero pinning events" is not met (72, all class loading
   and initialization). Both are reported as measured; nothing was retuned to
   move them.
+- After Task 21: layout/ asked whether the comparison's Java gap is the
+  layout (eight JVMs on three CPUs) or Java's per-job cost. Both SDKs ran at
+  each layout so every ratio is within one loop. 8x16 workers get 384m as in
+  compare/; 2x64 and 1x128 get 1g as in wide/, so one JVM is not short of
+  heap. The answer is mostly the layout: one JVM drains 3.7x faster than
+  eight, and Java reaches 0.60x Go cold and 0.73x warm. Go nearly doubled
+  too, so java.md and the README no longer say a drain at one broker is bound
+  by the broker and PostgreSQL; the 8x16 figures stay, as that layout's.
+  The 3d target ("within 10%") is still not met.

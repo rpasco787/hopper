@@ -746,17 +746,23 @@ interleaved loop, 2026-11-24):
 | Start to an accepted lease stream, ms | 174 | 4,119 |
 | 10,000 handlers open at once: peak RSS, MiB | 210 | 249 |
 
-The Java worker drains at 0.27× the Go worker's rate cold and 0.36× warm, not
-within 10%: Go's drain is bound by the broker and PostgreSQL, but eight JVMs
-saturate the workers' three CPUs, at 12.5× Go's CPU per job cold (3.7× warm,
-in the steady runs) and 6× its memory. Both kept up at 1,000 jobs/s. With
+On this layout the Java worker drains at 0.27× the Go worker's rate cold and
+0.36× warm: eight JVMs saturate the workers' three CPUs, each compiling the
+same code, at 12.5× Go's CPU per job cold (3.7× warm, in the steady runs) and
+6× its memory. Put the same 128 slots in one worker on the same CPUs and the
+Java worker drains 8,475 jobs/s, **0.60× Go cold and 0.73× warm**, at 3.5×
+Go's CPU per job and no longer CPU-bound; the Go worker nearly doubles too, to
+14,153, so this layout held back both SDKs (three-run medians,
+`docs/bench/3d/layout/`). Not within 10% at any layout measured. Both kept up
+at 1,000 jobs/s. With
 10,000 sleeping handlers the two hold about the same memory, and the Java
 recording counts 72 pinned virtual threads, all while classes load at the
 first deliveries and first completions, none while handlers sleep; its
 positive control saw 1 event and 0, as it must. Details, caveats and profiles
 are in [docs/bench/java.md](docs/bench/java.md).
-Reproduce with `bash docs/bench/3d/compare/loop.sh` (about 45 minutes) and
-`bash docs/bench/3d/wide/loop.sh` (about 15).
+Reproduce with `bash docs/bench/3d/compare/loop.sh` (about 45 minutes),
+`bash docs/bench/3d/wide/loop.sh` (about 15) and
+`bash docs/bench/3d/layout/loop.sh` (about 25).
 
 ### Running the benchmarks
 
