@@ -179,12 +179,8 @@ func (s *Store) TryLeadership(ctx context.Context, ttl time.Duration) (store.Lea
 	return lead, s.saw(0, err)
 }
 
-// The methods below are stubs, so this task's tests compile. Tasks 7-8
-// replace every one.
-
-func (s *Store) Lease(ctx context.Context, queues []string, n int, leaseDur time.Duration, workerID string) ([]store.Job, error) {
-	panic("Task 7")
-}
+// The methods below are stubs, so this task's tests compile. Task 8
+// replaces every one.
 
 func (s *Store) ListJobs(ctx context.Context, queue string, states []store.State, limit int, after *uuid.UUID) ([]store.Job, error) {
 	panic("Task 8")
