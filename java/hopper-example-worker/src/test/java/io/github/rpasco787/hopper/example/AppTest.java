@@ -209,6 +209,27 @@ class AppTest {
     }
 
     @Test
+    void debugListenIsAcceptedAndNotServed() throws Exception {
+        int port;
+        try (ServerSocket s = new ServerSocket(0)) {
+            port = s.getLocalPort();
+        }
+        String addr = "127.0.0.1:" + port;
+        try (FakeBroker fake = FakeBroker.startOnLoopback()) {
+            Running r = new Running(app(Map.of("HOPPER_DEBUG_LISTEN", addr), "-broker", fake.target(),
+                    "-worker-id", "w6"));
+            fake.awaitStream(WAIT);
+            assertThrows(ConnectException.class, () -> new Socket("127.0.0.1", port).close(), "nothing listens");
+            r.app.shutdown();
+            assertEquals(0, r.join(WAIT));
+        }
+        List<JsonNode> warned = withMsg("profiles are not served by the Java example worker");
+        assertEquals(1, warned.size(), stdout());
+        assertEquals("WARN", warned.get(0).get("level").asText());
+        assertEquals(addr, warned.get(0).get("addr").asText());
+    }
+
+    @Test
     void aBadConfigurationExitsOneWithTheErrorOnStderr() {
         assertEquals(1, app(Map.of(), "-concurrency", "0").run());
         assertEquals("worker: concurrency must be positive\n", stderr());
