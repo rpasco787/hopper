@@ -264,6 +264,7 @@ the Go SDK, and `test/accounting` judges its logs unchanged; see
 [docs/design/java-worker-sdk.md](docs/design/java-worker-sdk.md) and
 [docs/design/java-producer-client.md](docs/design/java-producer-client.md).
 The two SDKs are held to one contract by the conformance suite; see [Conformance](#conformance).
+Its cost against the Go worker is measured in [Go and Java workers](#go-and-java-workers).
 
 ## Cron schedules
 
@@ -455,7 +456,9 @@ answers `GET /metrics` only.
 `127.0.0.1:9091` on the broker and is off on the worker. There is one broker
 per host and an autoscaler depends on it, whereas several workers on one host
 would collide on a default port. When set, the endpoint is mandatory: a bind or
-serve failure stops the process.
+serve failure stops the process. `-debug-listen` (`HOPPER_DEBUG_LISTEN`) serves Go's runtime
+profiles on both the broker and the worker; it is off by default
+([docs/semantics.md §14](docs/semantics.md#14-observability)).
 
 **Bounded cardinality.** The broker labels only the queues listed in
 `-metrics-queues` (`HOPPER_METRICS_QUEUES`) and reports every other queue as
@@ -728,16 +731,49 @@ figure as a short-run result.
 | `-poll-interval` | `HOPPER_POLL_INTERVAL` | `250ms` | How long an idle lease stream waits without a wakeup. |
 | `-debug-listen` | `HOPPER_DEBUG_LISTEN` | empty | pprof profiles; never bind beyond loopback or a private network. |
 
+### Go and Java workers
+
+Both workers on the same pinned stack (1 broker, 8 workers × 16 slots, 300-byte
+jobs, every worker container limited to 384 MiB; five-run medians from one
+interleaved loop, 2026-11-24):
+
+| | Go (`cmd/worker`) | Java (`hopper-example-worker`) |
+|---|---:|---:|
+| Drain, jobs/s, cold / warm | 7,699 / 8,088 | 2,045 / 2,872 |
+| Steady at 1,000 jobs/s: pickup / end-to-end p99, ms | 10.0 / 29.8 | 15.7 / 59.0 |
+| Worker CPU per 1,000 jobs, drain / steady, ms | 119 / 249 | 1,491 / 915 |
+| Peak resident memory per worker, MiB | 21.4 | 127.7 |
+| Start to an accepted lease stream, ms | 174 | 4,119 |
+| 10,000 handlers open at once: peak RSS, MiB | 210 | 249 |
+
+The Java worker drains at 0.27× the Go worker's rate cold and 0.36× warm, not
+within 10%: Go's drain is bound by the broker and PostgreSQL, but eight JVMs
+saturate the workers' three CPUs, at 12.5× Go's CPU per job cold (3.7× warm,
+in the steady runs) and 6× its memory. Both kept up at 1,000 jobs/s. With
+10,000 sleeping handlers the two hold about the same memory, and the Java
+recording counts 72 pinned virtual threads, all while classes load at the
+first deliveries and first completions, none while handlers sleep; its
+positive control saw 1 event and 0, as it must. Details, caveats and profiles
+are in [docs/bench/java.md](docs/bench/java.md).
+Reproduce with `bash docs/bench/3d/compare/loop.sh` (about 45 minutes) and
+`bash docs/bench/3d/wide/loop.sh` (about 15).
+
 ### Running the benchmarks
 
 ```bash
 scripts/bench.sh drain
 RATE=3000 scripts/bench.sh steady
+WORKER=java WORKER_MEM=384m scripts/bench.sh drain
 ```
 
 `scripts/bench.sh` documents every setting and keeps each run's evidence:
 per-statement database time, pool counters, CPU and, with `PROFILE=1`, a
-broker CPU profile. Every benchmark shares the one Docker VM, so stop any kind
+broker CPU profile. `WORKER=java` runs the Java example worker, built from the
+same ref, in place of `cmd/worker`; `WORKER_MEM` gives every worker container
+one memory limit, `WORKER_JVM` sets the JVM's flags (`-XX:+UseSerialGC` by
+default), and in a drain `JFR` records a fixed-length JFR profile of each Java worker
+and `WORKER_PPROF` takes CPU, heap and goroutine profiles of the first Go
+worker. Every benchmark shares the one Docker VM, so stop any kind
 cluster first (`docker stop hopper-control-plane`) and keep the machine from
 sleeping.
 

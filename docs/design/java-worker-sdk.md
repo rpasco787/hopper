@@ -466,6 +466,8 @@ and test/accounting/javalog_test.go. The evidence is
   `internal/scheduler TestReconcileFailsWhenTheClockIsUnavailable` failed
   once before any of this. It is reported, and not touched.
 
+Measured against the Go worker on the benchmark stack in [docs/bench/java.md](../bench/java.md).
+
 ## Spec gaps found writing it
 
 These are the 3c talking points. Only the first was corrected, in

@@ -1194,7 +1194,7 @@ error, logged at error level. `rpc unavailable` (warn) is a store call that coul
 database; the caller got `UNAVAILABLE`, and `err` has the driver's detail.
 `wakeup listener stopped` (warn): the broker's `LISTEN` session ended, usually
 with the database, and its lease streams poll until it reconnects.
-`debug endpoint listening` (warn): logged when `-debug-listen` is set. Every other rejection, such as a stale-lease
+`debug endpoint listening` (warn): logged when `-debug-listen` is set; `cmd/worker` logs the same line, with the same `addr`, when its `-debug-listen` is set. Every other rejection, such as a stale-lease
 Ack, is `rpc rejected` at debug level with its `code`. The broker's
 per-delivery lines (`job enqueued`, `job leased`, `job acked`, `job nacked`)
 are also at debug level, so they cost nothing by default and make the two logs
@@ -1242,16 +1242,18 @@ scrapeable during the drain. It gets its own 2s budget, then a hard close.
 the API (§12). They expose allowlisted queue names, counts and timings. They
 never expose payloads, job ids or lease tokens.
 
-**Profiling endpoint.** `cmd/broker -debug-listen` (`HOPPER_DEBUG_LISTEN`,
-default empty, which is off) serves Go's runtime profiles under
+**Profiling endpoint.** `cmd/broker` and `cmd/worker` `-debug-listen` (`HOPPER_DEBUG_LISTEN`,
+default empty, which is off) serve Go's runtime profiles under
 `/debug/pprof/`: the index, heap, goroutine and the other named profiles, plus
 `profile`, `trace` and `symbol`. It is for profiling under load
-(`scripts/bench.sh` with `PROFILE=1`). It never serves
+(`scripts/bench.sh` with `PROFILE=1` for a broker, `WORKER_PPROF` for a
+worker). The Java example worker accepts the flag and serves nothing, logging
+`profiles are not served by the Java example worker` at warn. It never serves
 `/debug/pprof/cmdline`, because a `-dsn` flag carries the database password.
 Profiles still reveal code paths and allocation sites, so bind it to loopback
 or a private network. It has no write timeout, so a profile streams as long as
-asked. A bind failure stops the broker at startup. A failure later is logged,
-and the broker keeps serving.
+asked. A bind failure stops the broker, or the worker, at startup. A failure
+later is logged, and the process keeps serving.
 
 **Autoscaling reads depth the same way.** With `worker.autoscaling.enabled`,
 the chart renders a KEDA `ScaledObject` for the worker Deployment. It asks for
