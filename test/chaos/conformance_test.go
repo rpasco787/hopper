@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rpasco787/hopper/client"
+	"github.com/rpasco787/hopper/internal/store"
 	"github.com/rpasco787/hopper/test/accounting"
 )
 
@@ -225,8 +227,12 @@ func (c *conf) awaitLeased(id uuid.UUID, timeout time.Duration) {
 	c.eventually(func() bool {
 		ctx, cancel := c.within(dbLimit)
 		defer cancel()
+		i, err := store.ShardOf(id, len(c.dbs))
+		if err != nil {
+			return false
+		}
 		var state string
-		if err := c.db.QueryRow(ctx, `select state::text from jobs where id = $1`, id).Scan(&state); err != nil {
+		if err := c.dbs[i].QueryRow(ctx, `select state::text from jobs where id = $1`, id).Scan(&state); err != nil {
 			return false
 		}
 		return state == "leased"
@@ -271,27 +277,26 @@ func (c *conf) workerNames() []string {
 	return all
 }
 
-// rows reads the run's jobs as the judges read them.
+// rows reads the run's jobs as the judges read them, from every shard.
 func (c *conf) rows(run string) []accounting.Row {
 	c.t.Helper()
 	ctx, cancel := c.within(reportLimit)
 	defer cancel()
-	rs, err := c.db.Query(ctx, `
-		select id, state::text, attempts, lease_id, coalesce(last_error, '')
-		from jobs where idempotency_key like $1 || '-%'`, run)
-	require.NoError(c.t, err)
-	defer rs.Close()
 	var got []accounting.Row
-	for rs.Next() {
+	require.NoError(c.t, c.queryAll(ctx, func(rs pgx.Rows) error {
 		var r accounting.Row
 		var lease *uuid.UUID
-		require.NoError(c.t, rs.Scan(&r.ID, &r.State, &r.Attempts, &lease, &r.LastError))
+		if err := rs.Scan(&r.ID, &r.State, &r.Attempts, &lease, &r.LastError); err != nil {
+			return err
+		}
 		if lease != nil {
 			r.LeaseID = *lease
 		}
 		got = append(got, r)
-	}
-	require.NoError(c.t, rs.Err())
+		return nil
+	}, `
+		select id, state::text, attempts, lease_id, coalesce(last_error, '')
+		from jobs where idempotency_key like $1 || '-%'`, run))
 	return got
 }
 
@@ -395,20 +400,18 @@ func (c *conf) openDeliveries(name string) int {
 // started" for. It never fails the test, so an eventually condition can call it.
 func (c *conf) startedJobs(run string) int {
 	ctx, cancel := c.within(dbLimit)
-	rs, err := c.db.Query(ctx, `select id from jobs where idempotency_key like $1 || '-%'`, run)
-	if err != nil {
-		cancel()
-		return 0
-	}
 	ids := map[string]bool{}
-	for rs.Next() {
+	err := c.queryAll(ctx, func(rs pgx.Rows) error {
 		var id uuid.UUID
 		if rs.Scan(&id) == nil {
 			ids[id.String()] = true
 		}
-	}
-	rs.Close()
+		return nil
+	}, `select id from jobs where idempotency_key like $1 || '-%'`, run)
 	cancel()
+	if err != nil {
+		return 0
+	}
 	started := map[string]bool{}
 	for _, w := range c.workerNames() {
 		lctx, lcancel := c.within(logsLimit)

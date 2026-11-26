@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rpasco787/hopper/client"
+	"github.com/rpasco787/hopper/internal/store"
 	"github.com/rpasco787/hopper/test/accounting"
 )
 
@@ -484,12 +485,22 @@ func (s *stack) enqueue(name string, n, ms int) string {
 // gate enqueues n jobs of ms each into the run, at a priority that puts them
 // ahead of its backlog, and waits until every one has started: deliveries sure
 // to be running when the test next breaks something. It returns their ids.
+//
+// Every gated job lives on shard 0, the database the outage tests stop: its
+// key is chosen so store.KeyShard routes it there. With two shards, a gated
+// job on shard 1 would never meet the outage, and the claims the tests make
+// of every gated job (its Ack met the outage, it ran again) would not hold of
+// it. With one database every key is shard 0's, so the keys are unchanged.
 func (s *stack) gate(run string, n, ms int) []string {
 	s.t.Helper()
-	jobs := make([]client.Job, n)
-	for i := range jobs {
-		jobs[i] = client.Job{Queue: "sleep", Payload: json.RawMessage(fmt.Sprintf(`{"ms":%d}`, ms)),
-			Priority: 10, MaxAttempts: 20, IdempotencyKey: fmt.Sprintf("%s-gate-%d", run, i)}
+	jobs := make([]client.Job, 0, n)
+	for i := 0; len(jobs) < n; i++ {
+		key := fmt.Sprintf("%s-gate-%d", run, i)
+		if store.KeyShard("sleep", key, len(s.dbs)) != 0 {
+			continue
+		}
+		jobs = append(jobs, client.Job{Queue: "sleep", Payload: json.RawMessage(fmt.Sprintf(`{"ms":%d}`, ms)),
+			Priority: 10, MaxAttempts: 20, IdempotencyKey: key})
 	}
 	ctx, cancel := s.within(rpcLimit)
 	results, err := s.client(s.brokerAddr).EnqueueBatch(ctx, jobs)
