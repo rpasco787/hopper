@@ -384,8 +384,10 @@ warm_throughput=""
 pprofer=""
 jfr_missing=""
 max_leased=""
+# A run can stop before stop_samplers is defined (a broker that exits during
+# compose up --wait), and its logs and teardown matter most then.
 cleanup() {
-  stop_samplers
+  if declare -F stop_samplers >/dev/null; then stop_samplers; fi
   compose logs --no-color >"$dir/logs.txt" 2>&1 || true
   [ "${KEEP:-0}" = 1 ] || compose down -v --remove-orphans -t 10 >/dev/null 2>&1 || true
 }

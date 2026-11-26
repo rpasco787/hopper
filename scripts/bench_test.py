@@ -2,6 +2,7 @@
 import csv
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import time
@@ -94,6 +95,13 @@ elif args[0] == 'compose':
     event('compose files: ' + ' '.join(a for a in args if a.endswith(('.yml', '.yaml'))))
     if 'up' in args:
         event('compose up: ' + ' '.join(args))
+        if '--wait' in args and os.environ.get('BENCH_TEST_UP_FAIL') == '1':
+            print('container hopper-bench-broker-standby-1 exited (1)', file=sys.stderr)
+            sys.exit(1)
+    if 'logs' in args and '--no-color' in args and '--no-log-prefix' not in args:
+        event('compose logs')
+    if 'down' in args:
+        event('compose down')
     if 'up' in args and 'worker-b' in args:
         event('workers consuming')
         time.sleep(0.2)
@@ -176,7 +184,11 @@ echo "${b}\"+Inf\"} $((a * n))"
 
 
 def run_bench(root, scenario='drain', **overrides):
-    """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess."""
+    """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess.
+
+    It runs in its own process group, and a run that times out is killed with
+    the whole group: a sampler subshell left behind would outlive the test's
+    temporary directory and then find the real docker on PATH."""
     fake = root / 'docker'
     fake.write_text(FAKE_DOCKER)
     fake.chmod(0o755)
@@ -189,8 +201,15 @@ def run_bench(root, scenario='drain', **overrides):
                REF='HEAD', JOBS='1', BROKERS='1', WORKERS='4', PROFILE='0', KEEP='0',
                STATS_SETTLE='0', BENCH_TEST_CURLS=str(root / 'curls'))
     env.update(overrides)
-    return subprocess.run(['bash', 'scripts/bench.sh', scenario], env=env,
-                          capture_output=True, text=True, timeout=30)
+    p = subprocess.Popen(['bash', 'scripts/bench.sh', scenario], env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
 
 def trace(root):
@@ -370,6 +389,17 @@ class BenchmarkTest(unittest.TestCase):
             result = run_bench(Path(tmp), SHARDS='2', JOBS='1000', WARM_JOBS='100')
             self.assertEqual(result.returncode, 2)
             self.assertIn('WARM_JOBS needs SHARDS=1', result.stderr)
+
+    def test_a_stack_that_fails_to_start_still_keeps_its_logs_and_comes_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, SHARDS='2', BENCH_TEST_UP_FAIL='1')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('command not found', result.stderr)
+            events = trace(root)
+            self.assertIn('compose logs', events)
+            self.assertEqual(events[-1], 'compose down', events[-3:])
+            self.assertTrue((evidence_dir(root) / 'logs.txt').exists())
 
     def test_four_brokers_split_the_workers_evenly(self):
         with tempfile.TemporaryDirectory() as tmp:
