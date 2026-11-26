@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -109,6 +110,11 @@ type capture struct {
 	c             *cluster
 	selector, dir string
 
+	// restarts: follow each pod's container across restarts in place, as a
+	// SIGKILLed container is restarted, appending every container's log to
+	// the pod's file, until the pod is gone (startRestartCapture).
+	restarts bool
+
 	cancel  context.CancelFunc
 	polling chan struct{}  // closed when poll returns; after that nothing calls follow
 	wg      sync.WaitGroup // one per follower
@@ -119,8 +125,22 @@ type capture struct {
 }
 
 func startCapture(c *cluster, selector, dir string) *capture {
+	return newCapture(c, selector, dir, false)
+}
+
+// startRestartCapture is startCapture for pods whose containers are killed
+// and restarted in place. A plain capture stops following a pod once its
+// container has exited, and a re-attach rewrites the file, so a restarted
+// container would either go unread or overwrite what the killed one logged.
+// This one appends each attach's lines that the file lacks, and follows a
+// pod until it is gone.
+func startRestartCapture(c *cluster, selector, dir string) *capture {
+	return newCapture(c, selector, dir, true)
+}
+
+func newCapture(c *cluster, selector, dir string, restarts bool) *capture {
 	ctx, cancel := context.WithCancel(context.Background())
-	cp := &capture{c: c, selector: selector, dir: dir, cancel: cancel,
+	cp := &capture{c: c, selector: selector, dir: dir, cancel: cancel, restarts: restarts,
 		polling: make(chan struct{}), done: map[string]chan struct{}{}}
 	go func() {
 		defer close(cp.polling)
@@ -192,7 +212,14 @@ func (cp *capture) followToEnd(ctx context.Context, pod string) error {
 	path := filepath.Join(cp.dir, pod+".log")
 	clean := false // some attach streamed until the container exited
 	for {
-		w := &lazyFile{path: path}
+		var w io.WriteCloser = &lazyFile{path: path}
+		if cp.restarts {
+			af, err := openAppend(path)
+			if err != nil {
+				return err
+			}
+			w = af
+		}
 		cmd := cp.c.cmd(ctx, "logs", "--follow", "pod/"+pod)
 		cmd.Stdout = w
 		streamErr := cmd.Run()
@@ -212,6 +239,11 @@ func (cp *capture) followToEnd(ctx context.Context, pod string) error {
 		if err == nil {
 			fields := strings.Fields(string(out))
 			gone, exited := len(fields) == 0, len(fields) == 2
+			if cp.restarts {
+				// An exited container is restarted in place: keep following
+				// until the pod itself is gone.
+				exited = false
+			}
 			switch {
 			case clean && (gone || exited):
 				return nil
@@ -261,6 +293,130 @@ func (l *lazyFile) Close() error {
 		}
 	}
 	return l.err
+}
+
+// appendFile appends one attach's output to a capture that earlier attaches
+// to the same pod wrote. Every attach replays its container's current log
+// from the start: a re-attach to the same container repeats lines the file
+// has, and an attach to a restarted container brings only new ones. Every log
+// line carries a nanosecond time, so equal lines are the same line, and lines
+// arrive about in time order: a line older than the window before the file's
+// last line is one the file already holds, and a newer one is skipped only if
+// the file holds it.
+type appendFile struct {
+	f       *os.File
+	partial []byte          // an incoming line not yet ended
+	last    time.Time       // the newest time in the file when this attach began
+	recent  map[string]bool // the file's lines from the window before last
+	err     error
+}
+
+// appendWindow is how far out of time order two lines of one log may be.
+// Concurrent goroutines stamp a line before they write it.
+const appendWindow = 5 * time.Second
+
+// appendTail is how much of the file's end openAppend reads: far more than
+// any worker logs in appendWindow.
+const appendTail = 64 << 20
+
+func openAppend(path string) (*appendFile, error) {
+	a := &appendFile{recent: map[string]bool{}}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*appendFile, error) { _ = f.Close(); return nil, err }
+	fi, err := f.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	from := max(fi.Size()-appendTail, 0)
+	tail := make([]byte, fi.Size()-from)
+	if _, err := f.ReadAt(tail, from); err != nil && !errors.Is(err, io.EOF) {
+		return fail(err)
+	}
+	end := bytes.LastIndexByte(tail, '\n') + 1 // a cut-off last line: the replay holds it whole
+	if err := f.Truncate(from + int64(end)); err != nil {
+		return fail(err)
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		return fail(err)
+	}
+	tail = tail[:end]
+	if from > 0 { // the first line read may be cut off at the front
+		tail = tail[bytes.IndexByte(tail, '\n')+1:]
+	}
+	var lines [][]byte
+	for line := range bytes.Lines(tail) {
+		lines = append(lines, line)
+		if at, ok := lineTime(line); ok && at.After(a.last) {
+			a.last = at
+		}
+	}
+	for _, line := range lines {
+		if at, ok := lineTime(line); !ok || !at.Before(a.last.Add(-appendWindow)) {
+			a.recent[string(bytes.TrimRight(line, "\n"))] = true
+		}
+	}
+	a.f = f
+	return a, nil
+}
+
+// lineTime reads a log line's "time".
+func lineTime(line []byte) (time.Time, bool) {
+	var e struct {
+		Time time.Time `json:"time"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(line), &e) != nil || e.Time.IsZero() {
+		return time.Time{}, false
+	}
+	return e.Time, true
+}
+
+func (a *appendFile) Write(p []byte) (int, error) {
+	if a.err != nil {
+		return 0, a.err
+	}
+	a.partial = append(a.partial, p...)
+	for {
+		i := bytes.IndexByte(a.partial, '\n')
+		if i < 0 {
+			break
+		}
+		line := a.partial[:i+1]
+		if a.keep(line) {
+			if _, err := a.f.Write(line); err != nil {
+				a.err = err
+				return 0, err
+			}
+		}
+		a.partial = a.partial[i+1:]
+	}
+	a.partial = slices.Clone(a.partial)
+	return len(p), nil
+}
+
+// keep reports whether line is new to the file.
+func (a *appendFile) keep(line []byte) bool {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return false
+	}
+	if at, ok := lineTime(line); ok && at.Before(a.last.Add(-appendWindow)) {
+		return false
+	}
+	return !a.recent[string(bytes.TrimRight(line, "\n"))]
+}
+
+// Close writes a last line that never ended, as lazyFile would, and reports
+// the first error the file saw.
+func (a *appendFile) Close() error {
+	if len(a.partial) > 0 && a.err == nil && a.keep(a.partial) {
+		_, a.err = a.f.Write(a.partial)
+	}
+	if err := a.f.Close(); a.err == nil {
+		a.err = err
+	}
+	return a.err
 }
 
 // attached reports whether every one of pods has a follower whose stream has
@@ -351,6 +507,51 @@ func TestMergeLogKeepsWhatARotationHid(t *testing.T) {
 			require.Equal(t, tc.want, string(mergeLog([]byte(tc.followed), []byte(tc.reread))))
 		})
 	}
+}
+
+// TestAppendFileFollowsARestartedContainer needs no cluster: each attach to a
+// worker replays its container's log, so a re-attach to the same container
+// adds only what the file lacks, and an attach to the container the kubelet
+// restarted after a kill adds everything it logged, after what the killed one
+// did.
+func TestAppendFileFollowsARestartedContainer(t *testing.T) {
+	line := func(s float64, msg string) string {
+		at := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC).Add(time.Duration(s * float64(time.Second)))
+		return fmt.Sprintf(`{"time":%q,"msg":%q}`, at.Format(time.RFC3339Nano), msg) + "\n"
+	}
+	path := filepath.Join(t.TempDir(), "w.log")
+	attach := func(chunks ...string) {
+		t.Helper()
+		a, err := openAppend(path)
+		require.NoError(t, err)
+		for _, c := range chunks {
+			_, err := a.Write([]byte(c))
+			require.NoError(t, err)
+		}
+		require.NoError(t, a.Close())
+	}
+	read := func() string {
+		b, err := os.ReadFile(path)
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	// The first container: its stream breaks mid-line.
+	full := line(1, "a") + line(2, "b")
+	attach(full + line(3, "c")[:10])
+	// A re-attach to the same container replays it, the cut line whole.
+	attach(full[:7], full[7:]+line(3, "c"), line(4, "d"))
+	want := line(1, "a") + line(2, "b") + line(3, "c") + line(4, "d")
+	require.Equal(t, want, read())
+	// Killed, then restarted in place: the new container's log is new.
+	attach(line(20, "worker starting") + line(21, "e"))
+	want += line(20, "worker starting") + line(21, "e")
+	require.Equal(t, want, read())
+	// A line a little out of time order is still placed; one far older than
+	// the file's end is a replay of what the file holds.
+	attach(line(20, "worker starting") + line(21, "e") + line(20.5, "late") + line(22, "f") + line(1, "old"))
+	want += line(20.5, "late") + line(22, "f")
+	require.Equal(t, want, read())
 }
 
 // newCluster reads which cluster, namespace and release the proofs act on.
