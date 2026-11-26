@@ -93,7 +93,20 @@ type Log struct {
 
 // Parse reads one process's output.
 func Parse(pod string, r io.Reader) (Log, error) {
+	return ParseFiltered(pod, r, nil)
+}
+
+// ParseFiltered is Parse holding only the lines about jobs keep accepts,
+// and every line about no job, so a run reconciled a chunk of jobs at a time
+// holds one chunk's lines rather than every chunk's. Reconcile reads the
+// dropped lines for one thing only: each line dates its process's last line,
+// which decides whether a kill explains a repeat (CauseKilled). So a run of
+// dropped lines is held as one line with no message, carrying the time of the
+// run's last dated line, and Reconcile over the kept jobs' rows reports
+// exactly what it would over Parse's lines. A nil keep keeps every line.
+func ParseFiltered(pod string, r io.Reader, keep func(jobID string) bool) (Log, error) {
 	l := Log{Pod: pod}
+	dropping := false // the last line held stands for dropped lines
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -106,6 +119,17 @@ func Parse(pod string, r io.Reader) (Log, error) {
 			l.Unparsed++
 			continue
 		}
+		if keep != nil && line.JobID != "" && !keep(line.JobID) {
+			if !dropping {
+				l.Lines = append(l.Lines, Line{})
+				dropping = true
+			}
+			if !line.Time.IsZero() {
+				l.Lines[len(l.Lines)-1].Time = line.Time
+			}
+			continue
+		}
+		dropping = false
 		l.Lines = append(l.Lines, line)
 	}
 	return l, sc.Err()

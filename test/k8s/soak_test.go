@@ -1204,8 +1204,8 @@ type soakReport struct {
 	Skipped           []string       `json:"skipped_faults,omitempty"`
 	WorkerRestarts    int            `json:"worker_container_restarts"`
 	ProxySwitches     int            `json:"broker_forward_switches"`
-	MaxRSSBeforeParse int64          `json:"harness_max_rss_bytes_before_parse"`
-	MaxRSSAfterParse  int64          `json:"harness_max_rss_bytes_after_parse"`
+	MaxRSSBeforeParse int64          `json:"harness_max_rss_bytes_before_reconciling"`
+	MaxRSSAfterParse  int64          `json:"harness_max_rss_bytes_after_reconciling"`
 	LogBytes          int64          `json:"worker_log_bytes"`
 	Chunks            []chunkReport  `json:"chunks"`
 }
@@ -1385,8 +1385,6 @@ func TestSoak(t *testing.T) {
 			rep.LogBytes += fi.Size()
 		}
 	}
-	logs := readLogs(t, workerLogs)
-	rep.MaxRSSAfterParse = maxRSS()
 	repeats := map[string]int{}
 	for n := range chunks {
 		begun := time.Now()
@@ -1414,6 +1412,13 @@ func TestSoak(t *testing.T) {
 			err = nil
 		}
 		require.NoError(t, err)
+		// Each chunk parses only its own jobs' lines, so the harness holds
+		// one chunk's at a time (accounting.ParseFiltered).
+		ids := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			ids[r.ID.String()] = true
+		}
+		logs := readLogsFiltered(t, workerLogs, func(id string) bool { return ids[id] })
 		dur := accounting.CheckDurability(acked, rows)
 		rc := accounting.Reconcile(rows, logs)
 		problems := rc.AttemptProblems()
@@ -1445,6 +1450,7 @@ func TestSoak(t *testing.T) {
 			"harness max RSS %.0f MiB; %.1fs", n, run, cr.Jobs, cr.JobsPerShard, cr.Acknowledged, cr.Lost, cr.Completed,
 			cr.Attempts, cr.Unexplained, cr.Repeats, float64(cr.MaxRSSAfter)/(1<<20), cr.ReconcileSecs)
 	}
+	rep.MaxRSSAfterParse = maxRSS()
 	if rep.Jobs > 0 {
 		rep.RedeliveryRate = float64(rep.Attempts-rep.Jobs) / float64(rep.Jobs)
 	}
@@ -1469,8 +1475,8 @@ func TestSoak(t *testing.T) {
 		t.Errorf("scripts/soak_chart.py: %v: %s", err, out)
 	}
 	t.Logf("soak %s: %d jobs in %.0fs (+%.0fs drain), completed/s mean %.1f p99 %.1f, enqueue p99 %.1fms, behind %d; "+
-		"faults %v (%d errors, skipped %v), %d worker restarts; lost %d, unexplained %d, misplaced %d, redelivery rate %.4f; "+
-		"harness max RSS %.0f MiB after parsing %.0f MiB of worker logs",
+		"faults %v (%d errors, skipped %v), %d worker restarts; lost %d, unexplained %d, misplaced %d, redelivery rate %.6f; "+
+		"harness max RSS %.0f MiB after reconciling against %.0f MiB of worker logs",
 		prefix, rep.Jobs, rep.ProducedFor, rep.DrainedIn, rep.CompletedRateMean, rep.CompletedRateP99, rep.EnqueueP99Ms, rep.Behind,
 		rep.Faults, rep.FaultErrors, rep.Skipped, rep.WorkerRestarts, rep.Lost, rep.Unexplained, rep.Misplaced, rep.RedeliveryRate,
 		float64(maxRSS())/(1<<20), float64(rep.LogBytes)/(1<<20))
@@ -1487,6 +1493,23 @@ func TestSoak(t *testing.T) {
 		}
 	}
 	require.GreaterOrEqual(t, rep.WorkerRestarts, rep.Faults[faultWorkerKill], "every killed worker restarted")
+}
+
+// readLogsFiltered is readLogs keeping only the lines about the jobs keep
+// accepts.
+func readLogsFiltered(t *testing.T, dir string, keep func(jobID string) bool) []accounting.Log {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.log"))
+	require.NoError(t, err)
+	var logs []accounting.Log
+	for _, path := range paths {
+		f, err := os.Open(path)
+		require.NoError(t, err)
+		l, err := accounting.ParseFiltered(strings.TrimSuffix(filepath.Base(path), ".log"), f, keep)
+		require.NoError(t, errors.Join(err, f.Close()), path)
+		logs = append(logs, l)
+	}
+	return logs
 }
 
 func copyCounts(m map[string]int) map[string]int {
@@ -1535,9 +1558,9 @@ func soakSummary(r soakReport, repeats map[string]int) string {
 	row("lost", strconv.Itoa(r.Lost))
 	row("unexplained", strconv.Itoa(r.Unexplained))
 	row("rows on the wrong shard", strconv.Itoa(r.Misplaced))
-	row("redelivery rate", fmt.Sprintf("%.4f ((Σ attempts − jobs) / jobs = (%d − %d) / %d)", r.RedeliveryRate, r.Attempts, r.Jobs, r.Jobs))
+	row("redelivery rate", fmt.Sprintf("%.6f ((Σ attempts − jobs) / jobs = (%d − %d) / %d)", r.RedeliveryRate, r.Attempts, r.Jobs, r.Jobs))
 	row("repeated starts by cause", fmt.Sprint(repeats))
-	row("harness max RSS", fmt.Sprintf("%.0f MiB before parsing logs, %.0f MiB after parsing %.0f MiB of them",
+	row("harness max RSS", fmt.Sprintf("%.0f MiB before reconciling, %.0f MiB after reconciling every chunk against %.0f MiB of worker logs",
 		float64(r.MaxRSSBeforeParse)/(1<<20), float64(r.MaxRSSAfterParse)/(1<<20), float64(r.LogBytes)/(1<<20)))
 	b.WriteString("\n| chunk | jobs | by shard | acknowledged | lost | unexplained | attempts | max RSS after |\n|---|---|---|---|---|---|---|---|\n")
 	for _, ch := range r.Chunks {

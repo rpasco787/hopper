@@ -412,3 +412,57 @@ func TestDiagnosticsBeforeWorkerStartingDoNotCreateAProcess(t *testing.T) {
 	require.Empty(t, rep.AttemptProblems())
 	require.Equal(t, []accounting.Process{{Pod: "w1", N: 1, Starts: 1, Last: t0.Add(2 * time.Second)}}, rep.Processes)
 }
+
+// TestParseFilteredReconcilesAsParseDoes: a chunk reconciled from only its
+// own lines gets the report every line gives, including where a process's
+// last line falls, which other chunks' lines can decide. Here w1's last line
+// before the kill is about chunk B, and it is what shows the kill came after
+// chunk A's job ran again.
+func TestParseFilteredReconcilesAsParseDoes(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	aFirst, aSecond, bFirst, bSecond := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	t0 := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	s := func(d int) time.Time { return t0.Add(time.Duration(d) * time.Second) }
+	logs := map[string][]string{
+		"w1": {at(s(0), workerStarting), at(s(1), startedUnder(a, aFirst)), at(s(2), startedUnder(b, bFirst)),
+			at(s(40), finishedUnder(b, bFirst)), `not json`, at(s(41), confirmedUnder(b, bFirst, "nack")),
+			at(s(45), workerStarting), at(s(46), shutdown(0)), at(s(47), stopped)},
+		"w2": {at(s(0), workerStarting), at(s(32), startedUnder(a, aSecond)), at(s(33), finishedUnder(a, aSecond)),
+			at(s(33), confirmedUnder(a, aSecond, "ack")), at(s(50), startedUnder(b, bSecond)),
+			at(s(51), finishedUnder(b, bSecond)), at(s(51), confirmedUnder(b, bSecond, "ack"))},
+	}
+	parse := func(keep func(string) bool) []accounting.Log {
+		var out []accounting.Log
+		for _, pod := range []string{"w1", "w2"} {
+			l, err := accounting.ParseFiltered(pod, strings.NewReader(strings.Join(logs[pod], "\n")), keep)
+			require.NoError(t, err)
+			out = append(out, l)
+		}
+		return out
+	}
+	all := parse(nil)
+	for _, tc := range []struct {
+		row  accounting.Row
+		want string
+	}{
+		{completedUnder(a, 2, aSecond), "the kill came later and cannot explain it"},
+		{completedUnder(b, 2, bSecond), ""},
+	} {
+		id := tc.row.ID.String()
+		only := parse(func(job string) bool { return job == id })
+		held := 0
+		for i := range only {
+			held += len(only[i].Lines)
+		}
+		require.Less(t, held, len(all[0].Lines)+len(all[1].Lines), "the other job's lines are dropped")
+		rows := []accounting.Row{tc.row}
+		want, got := accounting.Reconcile(rows, all), accounting.Reconcile(rows, only)
+		require.Equal(t, want, got, "job %s", id)
+		if tc.want != "" {
+			requireProblem(t, got.AttemptProblems(), tc.want)
+		}
+	}
+	plain, err := accounting.Parse("w1", strings.NewReader(strings.Join(logs["w1"], "\n")))
+	require.NoError(t, err)
+	require.Equal(t, all[0], plain, "Parse is ParseFiltered keeping everything")
+}
