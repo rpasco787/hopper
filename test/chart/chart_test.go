@@ -12,6 +12,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -784,4 +785,172 @@ func TestTheFailoverProofsValuesRender(t *testing.T) {
 
 	async := render(t, "-f", kindReplicated, "-f", kindAsynchronous)
 	require.Nil(t, dig(object(t, async, "Cluster/hopper-db"), "spec", "postgresql", "synchronous"))
+}
+
+// kindShards is the values file for a two-shard release on kind: the soak's
+// rehearsal (test/k8s TestSoak).
+const kindShards = "../../deploy/kind/shards.yaml"
+
+// shardsOneRenders are the chart's renders from before postgres.shards
+// existed (commit 64ac8a9: main's chart plus the shard-labelled depth query),
+// kept in testdata/shards-1. One database must render exactly as it did, so a
+// release that never sets shards upgrades to nothing new. Regenerate a file
+// only for a change meant to alter the one-database render:
+//
+//	helm template hopper deploy/helm/hopper --kube-version 1.35.8 <args> > test/chart/testdata/shards-1/<name>.yaml
+var shardsOneRenders = []struct {
+	name string
+	args []string
+}{
+	{"bundled", nil},
+	{"cloudnativepg", []string{"--set", "postgres.mode=cloudnativepg"}},
+	{"autoscaling", []string{"--namespace", "hopper", "-f", kindAutoscaling}},
+	{"replicated", []string{"-f", kindReplicated}},
+}
+
+func TestOneShardRendersWhatTheChartRenderedBefore(t *testing.T) {
+	for _, tc := range shardsOneRenders {
+		want, err := os.ReadFile(filepath.Join("testdata", "shards-1", tc.name+".yaml"))
+		require.NoError(t, err)
+		for _, extra := range [][]string{nil, {"--set", "postgres.shards=1"}} {
+			got, stderr, err := helmTemplate(append(slices.Clone(tc.args), extra...)...)
+			require.NoError(t, err, stderr)
+			require.Equal(t, string(want), string(got), "%s %v: one shard must render what one database rendered", tc.name, extra)
+		}
+	}
+}
+
+// shardHosts returns the hosts of HOPPER_SHARD_DSNS, in order, after checking
+// that the broker gets the list and no HOPPER_DSN (it refuses both), and that
+// every entry is passwordless and completed by PGPASSWORD as HOPPER_DSN is.
+func shardHosts(t *testing.T, objects map[string]map[string]any) []string {
+	t.Helper()
+	data := dig(object(t, objects, "ConfigMap/hopper-broker"), "data").(map[string]any)
+	require.NotContains(t, data, "HOPPER_DSN", "the broker refuses HOPPER_DSN and HOPPER_SHARD_DSNS together")
+	list, ok := data["HOPPER_SHARD_DSNS"].(string)
+	require.True(t, ok, "ConfigMap/hopper-broker has no HOPPER_SHARD_DSNS")
+	t.Setenv("PGPASSWORD", "canary-7f3a")
+	var hosts []string
+	for _, dsn := range strings.Fields(list) {
+		u, err := url.Parse(dsn)
+		require.NoError(t, err)
+		require.Equal(t, "postgres", u.Scheme)
+		_, hasPassword := u.User.Password()
+		require.False(t, hasPassword, "a shard DSN carries a password")
+		require.Equal(t, "/hopper", u.Path)
+		require.Equal(t, "disable", u.Query().Get("sslmode"))
+		cfg, err := pgxpool.ParseConfig(dsn)
+		require.NoError(t, err)
+		require.Equal(t, "canary-7f3a", cfg.ConnConfig.Password)
+		hosts = append(hosts, u.Host)
+	}
+	return hosts
+}
+
+func TestBundledShardsAreSeparateDatabasesInOneStatefulSet(t *testing.T) {
+	objects := render(t, "--set", "postgres.shards=2")
+	sts := object(t, objects, "StatefulSet/hopper-postgres")
+	require.Equal(t, 2, dig(sts, "spec", "replicas"), "one pod, and so one volume and one initdb, per shard")
+	require.Equal(t, "hopper-postgres", dig(sts, "spec", "serviceName"))
+	require.Equal(t, "None", dig(object(t, objects, "Service/hopper-postgres"), "spec", "clusterIP"),
+		"the StatefulSet's governing Service stays")
+
+	selector := dig(sts, "spec", "selector", "matchLabels").(map[string]any)
+	for i := range 2 {
+		name := fmt.Sprintf("hopper-postgres-%d", i)
+		svc := object(t, objects, "Service/"+name)
+		require.Equal(t, "None", dig(svc, "spec", "clusterIP"), "Service/%s resolves straight to its pod", name)
+		want := maps.Clone(selector)
+		want["statefulset.kubernetes.io/pod-name"] = name
+		require.Equal(t, want, dig(svc, "spec", "selector"), "Service/%s must select its own pod alone", name)
+		require.Equal(t, []any{map[string]any{"name": "postgres", "port": 5432, "targetPort": "postgres"}}, dig(svc, "spec", "ports"))
+	}
+	require.NotContains(t, objects, "Service/hopper-postgres-2")
+	require.Equal(t, []string{"hopper-postgres-0:5432", "hopper-postgres-1:5432"}, shardHosts(t, objects),
+		"shard i is pod i, in order: the broker refuses a reordered list")
+}
+
+func TestCloudNativePGShardsAreOneClusterEach(t *testing.T) {
+	objects := cloudnativepg(t, "--set", "postgres.shards=2")
+	require.NotContains(t, objects, "Cluster/hopper-db")
+	require.NotContains(t, objects, "StatefulSet/hopper-postgres")
+	for i := range 2 {
+		cl := object(t, objects, fmt.Sprintf("Cluster/hopper-db-%d", i))
+		require.EqualValues(t, 3, dig(cl, "spec", "instances"))
+		require.Equal(t, map[string]any{"method": "any", "number": 1, "dataDurability": "required"},
+			dig(cl, "spec", "postgresql", "synchronous"), "every shard keeps the synchronous block")
+		require.Equal(t, map[string]any{"database": "hopper", "owner": "hopper",
+			"secret": map[string]any{"name": "hopper-postgres"}}, dig(cl, "spec", "bootstrap", "initdb"))
+	}
+	require.NotContains(t, objects, "Cluster/hopper-db-2")
+	require.Equal(t, []string{"hopper-db-0-rw:5432", "hopper-db-1-rw:5432"}, shardHosts(t, objects),
+		"brokers follow each shard's primary through its read-write Service")
+}
+
+// TestBrokersWaitForEveryShard runs the init container's command with a
+// pg_isready that records what it was asked: every shard, in order, whether
+// the release has one database or several.
+func TestBrokersWaitForEveryShard(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{nil, []string{"postgres://hopper@hopper-postgres:5432/hopper?sslmode=disable"}},
+		{[]string{"--set", "postgres.shards=2"}, []string{
+			"postgres://hopper@hopper-postgres-0:5432/hopper?sslmode=disable",
+			"postgres://hopper@hopper-postgres-1:5432/hopper?sslmode=disable"}},
+	} {
+		objects := render(t, tc.args...)
+		wait := container(t, podSpec(t, object(t, objects, "Deployment/hopper-broker")), "wait-for-postgres")
+		command := wait["command"].([]any)
+		require.Equal(t, []any{"sh", "-c"}, command[:2])
+
+		bin := t.TempDir()
+		record := filepath.Join(bin, "asked")
+		require.NoError(t, os.WriteFile(filepath.Join(bin, "pg_isready"),
+			[]byte("#!/bin/sh\n[ \"$1\" = -d ] && printf '%s\\n' \"$2\" >> \"$ASKED\"\n"), 0o755))
+		cmd := exec.Command("sh", "-c", command[2].(string))
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "ASKED=" + record}
+		for k, v := range dig(object(t, objects, "ConfigMap/hopper-broker"), "data").(map[string]any) {
+			cmd.Env = append(cmd.Env, k+"="+fmt.Sprint(v))
+		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		asked, err := os.ReadFile(record)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, strings.Fields(string(asked)), "%v", tc.args)
+	}
+}
+
+func TestChartRejectsAShardCountOutOfRange(t *testing.T) {
+	for _, args := range [][]string{
+		{"--set", "postgres.shards=0"},
+		{"--set", "postgres.shards=17"},
+		{"--set", "postgres.shards=-1"},
+		{"--set", "postgres.mode=cloudnativepg", "--set", "postgres.shards=17"},
+	} {
+		_, stderr, err := helmTemplate(args...)
+		require.Error(t, err, "%v rendered", args)
+		require.Contains(t, stderr, "postgres.shards", "%v", args)
+		require.Contains(t, stderr, "between 1 and 16", "%v", args)
+	}
+	for _, n := range []string{"1", "16"} {
+		_, stderr, err := helmTemplate("--set", "postgres.shards="+n)
+		require.NoError(t, err, "postgres.shards=%s: %s", n, stderr)
+	}
+}
+
+func TestTheSoakValuesRender(t *testing.T) {
+	objects := render(t, "-f", kindShards)
+	require.Equal(t, 2, dig(object(t, objects, "StatefulSet/hopper-postgres"), "spec", "replicas"))
+	require.Len(t, shardHosts(t, objects), 2)
+	require.Equal(t, "128Mi", dig(container(t, podSpec(t, object(t, objects, "StatefulSet/hopper-postgres")), "postgres"),
+		"resources", "requests", "memory"), "small, so kind holds two databases")
+
+	cnpg := render(t, "-f", kindShards, "--set", "postgres.mode=cloudnativepg")
+	for i := range 2 {
+		cl := object(t, cnpg, fmt.Sprintf("Cluster/hopper-db-%d", i))
+		require.Equal(t, "128Mi", dig(cl, "spec", "resources", "requests", "memory"),
+			"the failover rehearsal's six instances at 128Mi each")
+	}
 }

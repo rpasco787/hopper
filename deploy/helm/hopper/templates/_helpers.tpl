@@ -1,5 +1,6 @@
 {{/* Objects are named <release>-<component>. Truncated so the longest suffix,
-     "-postgres" plus a StatefulSet's "-0", stays inside a 63-character label. */}}
+     "-postgres-15" (the last shard's Service, and its StatefulSet pod), stays
+     inside a 63-character label. */}}
 {{- define "hopper.fullname" -}}
 {{- .Release.Name | trunc 50 | trimSuffix "-" -}}
 {{- end }}
@@ -85,10 +86,12 @@ capabilities:
 {{- end }}
 
 {{/* Fails the render on a database mode or replication that cannot keep
-     its promise (docs/semantics.md §1). */}}
+     its promise (docs/semantics.md §1), or a shard count out of range. */}}
 {{- define "hopper.checkPostgres" -}}
 {{- $mode := .Values.postgres.mode -}}
 {{- if not (has $mode (list "bundled" "cloudnativepg")) }}{{ fail (printf "postgres.mode (%q) must be bundled or cloudnativepg" $mode) }}{{- end -}}
+{{- $shards := .Values.postgres.shards | int -}}
+{{- if or (lt $shards 1) (gt $shards 16) }}{{ fail (printf "postgres.shards (%v) must be between 1 and 16: every broker opens up to 16 connections to each shard, and more shards than that outgrow well-sized pools" .Values.postgres.shards) }}{{- end -}}
 {{- if eq $mode "cloudnativepg" -}}
 {{- $c := .Values.postgres.cloudnativepg -}}
 {{- $n := $c.instances | int -}}{{- $s := $c.synchronousStandbys | int -}}
@@ -96,4 +99,37 @@ capabilities:
 {{- if lt $s 0 }}{{ fail (printf "postgres.cloudnativepg.synchronousStandbys (%d) must be 0 or more" $s) }}{{- end -}}
 {{- if and (gt $s 0) (lt $n (add $s 2 | int)) }}{{ fail (printf "postgres.cloudnativepg.instances (%d) must be at least synchronousStandbys + 2 = %d, or after a failover every commit waits for the lost instance to return" $n (add $s 2 | int)) }}{{- end -}}
 {{- end -}}
+{{- end }}
+
+{{/* The number of databases jobs are split across (postgres.shards). */}}
+{{- define "hopper.shards" -}}
+{{- .Values.postgres.shards | int -}}
+{{- end }}
+
+{{/* The host brokers reach shard i on when there are several: StatefulSet
+     pod i's own Service, or Cluster i's read-write Service, which follows its
+     primary. Takes (dict "root" . "i" 0). */}}
+{{- define "hopper.shardHost" -}}
+{{- if eq .root.Values.postgres.mode "cloudnativepg" -}}
+{{ include "hopper.fullname" .root }}-db-{{ .i }}-rw
+{{- else -}}
+{{ include "hopper.fullname" .root }}-postgres-{{ .i }}
+{{- end -}}
+{{- end }}
+
+{{/* A passwordless DSN for host: the broker reads the password from the
+     Secret as PGPASSWORD. Takes (dict "root" . "host" "<host>"). */}}
+{{- define "hopper.dsn" -}}
+{{- printf "postgres://%s@%s:5432/%s?sslmode=disable" .root.Values.postgres.user .host .root.Values.postgres.database -}}
+{{- end }}
+
+{{/* HOPPER_SHARD_DSNS: every shard's DSN, space-separated, in shard order.
+     The order is the shard index, which every job ID carries, so it never
+     changes for a release. */}}
+{{- define "hopper.shardDSNs" -}}
+{{- $dsns := list -}}
+{{- range $i := until (include "hopper.shards" . | int) -}}
+{{- $dsns = append $dsns (include "hopper.dsn" (dict "root" $ "host" (include "hopper.shardHost" (dict "root" $ "i" $i)))) -}}
+{{- end -}}
+{{- join " " $dsns -}}
 {{- end }}

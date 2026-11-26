@@ -7,7 +7,9 @@ metadata:
     {{- include "hopper.labels" (dict "root" . "component" "postgres") | nindent 4 }}
 spec:
   serviceName: {{ include "hopper.fullname" . }}-postgres
-  replicas: 1
+  {{- /* One pod per shard: each has its own volume, so its own initdb and
+         database. Pod i is shard i, reached through Service <name>-postgres-<i>. */}}
+  replicas: {{ include "hopper.shards" . }}
   selector:
     matchLabels:
       {{- include "hopper.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}

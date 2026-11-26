@@ -36,7 +36,12 @@ spec:
         - name: wait-for-postgres
           image: {{ .Values.postgres.image }}
           imagePullPolicy: IfNotPresent
+          {{- if eq (include "hopper.shards" .) "1" }}
           command: ["sh", "-c", "until pg_isready -d \"$HOPPER_DSN\" -t 2; do sleep 1; done"]
+          {{- else }}
+          # Every shard: a broker migrates and checks each one before it serves.
+          command: ["sh", "-c", "for d in $HOPPER_DSN $HOPPER_SHARD_DSNS; do until pg_isready -d \"$d\" -t 2; do sleep 1; done; done"]
+          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "hopper.fullname" . }}-broker
