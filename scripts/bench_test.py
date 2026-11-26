@@ -114,8 +114,8 @@ elif args[0] == 'compose':
         elif 'extract(epoch' in sql:
             # jobs|first lease|last finish (epoch seconds)|retried: 100 jobs in
             # one second on shard 0; shard 1's 40 widen the span to two.
-            if shard == 0: print('100|10|11|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
-            else: print('40|10.5|12|0')
+            if shard == 0: print('100|1795566010.25|1795566011.25|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
+            else: print('40|1795566010.75|1795566012.25|0')
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
         elif 'pg_stat_wal' in sql:
             # Shard 1's counters grow twice as fast as shard 0's.
@@ -357,8 +357,13 @@ class BenchmarkTest(unittest.TestCase):
                 self.assertIn('ack_one|5|5', (ev / f'confirmations-{i}.txt').read_text())
             self.assertIn('ack_one|10|10', (ev / 'confirmations.txt').read_text())
             self.assertFalse((ev / 'statements.txt').exists())
-            # The rate curve adds the shards' tenths: 5, 7+2 and 4.
+            # The rate curve adds the shards' tenths: 5, 7+2 and 4, counted
+            # from the earliest first lease, to the microsecond.
             self.assertIn('0|5\n1|9\n2|4', (ev / 'rate.psv').read_text())
+            rate = [e for e in trace(root) if e.startswith('rate sql: ')]
+            self.assertEqual(len(rate), 2, rate)
+            for q in rate:
+                self.assertIn('(extract(epoch from finished_at) - 1795566010.250000)', q)
 
     def test_two_shards_refuse_warm_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:

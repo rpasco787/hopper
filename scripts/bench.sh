@@ -633,7 +633,7 @@ drain)
       { n += $1; r += $4
         if ($2 != "" && (lo == "" || $2 + 0 < lo)) lo = $2 + 0
         if ($3 != "" && (hi == "" || $3 + 0 > hi)) hi = $3 + 0 }
-      END { printf "%s|%d|%s\n", (hi > lo ? sprintf("%.0f", n / (hi - lo)) : ""), r, lo }')"
+      END { printf "%s|%d|%s\n", (hi > lo ? sprintf("%.0f", n / (hi - lo)) : ""), r, (lo == "" ? "" : sprintf("%.6f", lo)) }')"
   # Completions per tenth of a second from the first lease: how long the
   # workers take to reach their pace. The first lease is a scalar subquery,
   # which runs once; as a join, planned on statistics from before the drain
