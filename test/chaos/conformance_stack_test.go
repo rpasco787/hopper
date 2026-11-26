@@ -12,7 +12,7 @@ import (
 // named, the stack's files and the images TestMain builds are exactly what
 // they were before Phase 3c, so a chaos run is unchanged (D6).
 func TestTheChaosSuiteStillRunsTheGoWorkerFromTheTree(t *testing.T) {
-	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml"}, stackFiles(""))
+	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml"}, stackFiles("", 1))
 	require.Equal(t, []string{"broker", "broker-standby", "worker"}, buildServices(""))
 }
 
@@ -21,7 +21,15 @@ func TestTheChaosSuiteStillRunsTheGoWorkerFromTheTree(t *testing.T) {
 // worker-go, for the mixed fleet.
 func TestANamedWorkerImageIsRunNotBuilt(t *testing.T) {
 	const image = "hopper-example-worker:dev"
-	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml", "-f", "worker-image.yaml"}, stackFiles(image))
+	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml", "-f", "worker-image.yaml"}, stackFiles(image, 1))
 	require.Equal(t, []string{"broker", "broker-standby", "worker-go"}, buildServices(image))
 	require.NotContains(t, buildServices(image), "worker")
+}
+
+// TestTwoShardsMergeShardsYamlLast: a two-shard stack is the same files with
+// shards.yaml over them, the worker image's override included.
+func TestTwoShardsMergeShardsYamlLast(t *testing.T) {
+	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml", "-f", "shards.yaml"}, stackFiles("", 2))
+	require.Equal(t, []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml", "-f", "worker-image.yaml", "-f", "shards.yaml"},
+		stackFiles("hopper-example-worker:dev", 2))
 }

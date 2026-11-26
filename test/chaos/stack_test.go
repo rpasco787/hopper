@@ -41,16 +41,40 @@ const project = "hopper-chaos"
 // (docs/design/conformance.md).
 var workerImage = os.Getenv("HOPPER_CONFORMANCE_WORKER")
 
-// composeFiles are docker-compose.yml with the suite's changes merged over it,
-// and worker-image.yaml over both when a worker image is named.
-var composeFiles = stackFiles(workerImage)
+// composeFiles are the files TestMain builds from. A second shard adds no
+// image, so one shard's files build everything every stack runs.
+var composeFiles = stackFiles(workerImage, 1)
 
-func stackFiles(image string) []string {
+// stackFiles are docker-compose.yml with the suite's changes merged over it,
+// worker-image.yaml over both when a worker image is named, and shards.yaml
+// over those when the stack runs two shards.
+func stackFiles(image string, shards int) []string {
 	files := []string{"-f", "../../docker-compose.yml", "-f", "compose.yaml"}
 	if image != "" {
 		files = append(files, "-f", "worker-image.yaml")
 	}
+	if shards == 2 {
+		files = append(files, "-f", "shards.yaml")
+	}
 	return files
+}
+
+// shardsSetting is how many PostgreSQL shards a stack runs:
+// HOPPER_CHAOS_SHARDS from the test's own env if it sets one, which is how a
+// test forces shards whatever the suite's setting, and from the suite's
+// environment otherwise. One is the default; only 1 and 2 are allowed.
+func shardsSetting(t *testing.T, env []string) int {
+	t.Helper()
+	v := setting("HOPPER_CHAOS_SHARDS", "1")
+	for _, e := range env {
+		if after, ok := strings.CutPrefix(e, "HOPPER_CHAOS_SHARDS="); ok {
+			v = after
+		}
+	}
+	n, err := strconv.Atoi(v)
+	require.NoError(t, err, "HOPPER_CHAOS_SHARDS=%q", v)
+	require.Contains(t, []int{1, 2}, n, "HOPPER_CHAOS_SHARDS=%d: only 1 and 2 are supported", n)
+	return n
 }
 
 // buildServices are what TestMain builds from the working tree: both brokers,
@@ -100,7 +124,7 @@ func TestMain(m *testing.M) {
 	cmd := exec.CommandContext(ctx, "docker", append(append(append([]string{"compose", "-p", project}, composeFiles...),
 		"build"), buildServices(workerImage)...)...)
 	// compose.yaml requires its port variables even to build.
-	cmd.Env = append(os.Environ(), portEnv("1", "2", "3")...)
+	cmd.Env = append(os.Environ(), portEnv("1", "2", "3", "4")...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
@@ -111,21 +135,28 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func portEnv(pg, broker, standby string) []string {
-	return []string{"HOPPER_CHAOS_PG_PORT=" + pg, "HOPPER_CHAOS_BROKER_PORT=" + broker, "HOPPER_CHAOS_STANDBY_PORT=" + standby}
+func portEnv(pg, broker, standby, pg1 string) []string {
+	return []string{"HOPPER_CHAOS_PG_PORT=" + pg, "HOPPER_CHAOS_BROKER_PORT=" + broker,
+		"HOPPER_CHAOS_STANDBY_PORT=" + standby, "HOPPER_CHAOS_PG1_PORT=" + pg1}
 }
 
-// stack is one test's Compose stack: PostgreSQL, two brokers and three
-// workers, published on loopback ports chosen for it.
+// stack is one test's Compose stack: PostgreSQL (one database, or two shards),
+// two brokers and three workers, published on loopback ports chosen for it.
 type stack struct {
 	t *testing.T
 	// ctx bounds everything the test does. It ends cleanupReserve before the
 	// test binary's deadline, so an operation that runs out of time fails the
 	// test while cleanup still has time to run.
-	ctx context.Context
-	dir string // this test's evidence
-	env []string
+	ctx   context.Context
+	dir   string // this test's evidence
+	env   []string
+	files []string // the Compose files, for this stack's shard count
 
+	// dsns and dbs reach each shard's PostgreSQL from the host, in shard
+	// order; an unsharded stack has one. dsn and db are shard 0's, which is
+	// the "postgres" service the outage tests stop and the probe watches.
+	dsns                    []string
+	dbs                     []*pgxpool.Pool
 	dsn                     string
 	brokerAddr, standbyAddr string
 	db                      *pgxpool.Pool
@@ -137,7 +168,8 @@ type stack struct {
 // up starts a fresh stack for one test and removes it when the test ends,
 // saving every container's log into the evidence directory first, pass or
 // fail. env adds variables to every Compose command, for the opt-ins in
-// compose.yaml.
+// compose.yaml; HOPPER_CHAOS_SHARDS=2 in env runs the stack over two shards
+// whatever the suite's setting (shardsSetting).
 func up(t *testing.T, name string, env ...string) *stack {
 	t.Helper()
 	deadline, ok := t.Deadline()
@@ -151,13 +183,30 @@ func up(t *testing.T, name string, env ...string) *stack {
 	events, err := os.Create(filepath.Join(dir, "events.csv"))
 	require.NoError(t, err)
 	fmt.Fprintln(events, "time,action,container")
+	shards := shardsSetting(t, env)
 	pg, broker, standby := freePort(t), freePort(t), freePort(t)
-	s := &stack{t: t, ctx: ctx, dir: dir, env: append(portEnv(pg, broker, standby), env...), events: events,
-		dsn:        fmt.Sprintf("postgres://hopper:hopper@127.0.0.1:%s/hopper?sslmode=disable&connect_timeout=5", pg),
+	pgPorts, pg1 := []string{pg}, "5" // a dummy when unsharded: only shards.yaml reads it
+	if shards == 2 {
+		pg1 = freePort(t)
+		pgPorts = append(pgPorts, pg1)
+	}
+	s := &stack{t: t, ctx: ctx, dir: dir, env: append(portEnv(pg, broker, standby, pg1), env...), events: events,
+		files:      stackFiles(workerImage, shards),
 		brokerAddr: "127.0.0.1:" + broker, standbyAddr: "127.0.0.1:" + standby}
+	for _, port := range pgPorts {
+		s.dsns = append(s.dsns, fmt.Sprintf("postgres://hopper:hopper@127.0.0.1:%s/hopper?sslmode=disable&connect_timeout=5", port))
+	}
+	s.dsn = s.dsns[0]
 
-	// A previous run that was interrupted may have left the project behind.
-	s.compose(downLimit, "down", "-v", "--remove-orphans")
+	// A previous run that was interrupted may have left the project behind,
+	// sharded or not, so this down names every service a stack can have.
+	func() {
+		ctx, cancel := s.within(downLimit)
+		defer cancel()
+		_, err := s.output(ctx, append(append([]string{"compose", "-p", project}, stackFiles(workerImage, 2)...),
+			"down", "-v", "--remove-orphans")...)
+		require.NoError(t, err)
+	}()
 	t.Cleanup(func() {
 		// Its own budget: the test's may already be spent.
 		ctx, cancel := context.WithTimeout(context.Background(), cleanupReserve)
@@ -169,12 +218,19 @@ func up(t *testing.T, name string, env ...string) *stack {
 		_ = events.Close()
 		t.Logf("evidence in %s", dir)
 	})
-	s.compose(upLimit, "up", "-d", "--no-build", "--wait", "--scale", "worker=3",
-		"postgres", "broker", "broker-standby", "worker")
+	services := []string{"postgres", "broker", "broker-standby", "worker"}
+	if shards == 2 {
+		services = append([]string{"postgres-1"}, services...)
+	}
+	s.compose(upLimit, append([]string{"up", "-d", "--no-build", "--wait", "--scale", "worker=3"}, services...)...)
 
-	s.db, err = pgxpool.New(ctx, s.dsn)
-	require.NoError(t, err)
-	t.Cleanup(s.db.Close)
+	for _, dsn := range s.dsns {
+		db, err := pgxpool.New(ctx, dsn)
+		require.NoError(t, err)
+		t.Cleanup(db.Close)
+		s.dbs = append(s.dbs, db)
+	}
+	s.db = s.dbs[0]
 	for _, addr := range []string{s.brokerAddr, s.standbyAddr} {
 		cl := s.client(addr)
 		s.eventually(func() bool {
@@ -242,7 +298,7 @@ func (s *stack) run(limit time.Duration, args ...string) string {
 }
 
 func (s *stack) composeOutput(ctx context.Context, args ...string) (string, error) {
-	return s.output(ctx, append(append([]string{"compose", "-p", project}, composeFiles...), args...)...)
+	return s.output(ctx, append(append([]string{"compose", "-p", project}, s.files...), args...)...)
 }
 
 func (s *stack) compose(limit time.Duration, args ...string) string {
@@ -447,15 +503,45 @@ func (s *stack) gate(run string, n, ms int) []string {
 	return ids
 }
 
+// queryAll runs sql on every shard and calls scan on each row, shard by
+// shard. Every reader of jobs goes through it: a job lives on exactly one
+// shard, so rows never repeat.
+func (s *stack) queryAll(ctx context.Context, scan func(pgx.Rows) error, sql string, args ...any) error {
+	for i, db := range s.dbs {
+		rows, err := db.Query(ctx, sql, args...)
+		if err != nil {
+			return fmt.Errorf("shard %d: %w", i, err)
+		}
+		for rows.Next() {
+			if err := scan(rows); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("shard %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
 // counts reads how many of the run's jobs completed and how many finished in
-// any terminal state. It never fails the test: the database may be down.
+// any terminal state, summed over every shard. It never fails the test: a
+// database may be down.
 func (s *stack) counts(run string) (completed, finished int, err error) {
 	ctx, cancel := s.within(dbLimit)
 	defer cancel()
-	err = s.db.QueryRow(ctx, `
+	err = s.queryAll(ctx, func(rows pgx.Rows) error {
+		var c, f int
+		if err := rows.Scan(&c, &f); err != nil {
+			return err
+		}
+		completed, finished = completed+c, finished+f
+		return nil
+	}, `
 		select count(*) filter (where state = 'completed'),
 		       count(*) filter (where state in ('completed', 'dead', 'cancelled'))
-		from jobs where idempotency_key like $1 || '-%'`, run).Scan(&completed, &finished)
+		from jobs where idempotency_key like $1 || '-%'`, run)
 	return completed, finished, err
 }
 
@@ -475,13 +561,20 @@ func (s *stack) waitFinished(run string, n int, timeout time.Duration) {
 	}, timeout, time.Second, "run %s never finished all %d jobs", run, n)
 }
 
-// waitDatabase waits until the suite's own pool reaches PostgreSQL again.
+// waitDatabase waits until the suite's own pools reach every shard's
+// PostgreSQL again.
 func (s *stack) waitDatabase() {
 	s.t.Helper()
 	s.eventually(func() bool {
-		ctx, cancel := s.within(dbLimit)
-		defer cancel()
-		return s.db.Ping(ctx) == nil
+		for _, db := range s.dbs {
+			ctx, cancel := s.within(dbLimit)
+			err := db.Ping(ctx)
+			cancel()
+			if err != nil {
+				return false
+			}
+		}
+		return true
 	}, 2*time.Minute, 100*time.Millisecond, "PostgreSQL never came back")
 }
 
@@ -512,6 +605,7 @@ func (w probeWindow) String() string {
 		w.LastFail.Sub(w.FirstFail).Round(10*time.Millisecond), w.Recovered.Sub(w.LastOK).Round(10*time.Millisecond))
 }
 
+// startProbe watches shard 0 only: the database the outage tests stop.
 func (s *stack) startProbe() *probe {
 	ctx, cancel := context.WithCancel(s.ctx)
 	p := &probe{cancel: cancel, done: make(chan struct{}), recovered: make(chan struct{})}
@@ -569,26 +663,26 @@ func (p *probe) stop() probeWindow {
 	return p.w
 }
 
-// reconcile matches the run's rows against every worker's whole log, and
-// keeps the report with the evidence.
+// reconcile matches the run's rows, from every shard, against every worker's
+// whole log, and keeps the report with the evidence.
 func (s *stack) reconcile(run string) accounting.Report {
 	s.t.Helper()
 	ctx, cancel := s.within(reportLimit)
 	defer cancel()
-	rows, err := s.db.Query(ctx,
-		`select id, state::text, attempts, lease_id from jobs where idempotency_key like $1 || '-%'`, run)
-	require.NoError(s.t, err)
 	var got []accounting.Row
-	for rows.Next() {
+	err := s.queryAll(ctx, func(rows pgx.Rows) error {
 		var r accounting.Row
 		var lease *uuid.UUID
-		require.NoError(s.t, rows.Scan(&r.ID, &r.State, &r.Attempts, &lease))
+		if err := rows.Scan(&r.ID, &r.State, &r.Attempts, &lease); err != nil {
+			return err
+		}
 		if lease != nil {
 			r.LeaseID = *lease
 		}
 		got = append(got, r)
-	}
-	require.NoError(s.t, rows.Err())
+		return nil
+	}, `select id, state::text, attempts, lease_id from jobs where idempotency_key like $1 || '-%'`, run)
+	require.NoError(s.t, err)
 	var logs []accounting.Log
 	for _, w := range s.containers("worker") {
 		lctx, lcancel := s.within(logsLimit)

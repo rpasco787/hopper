@@ -19,6 +19,15 @@
 // choice of victims, and HOPPER_CHAOS_LONG_OUTAGE sets how long the
 // longer-than-the-lease outage lasts (default 40s).
 //
+// HOPPER_CHAOS_SHARDS=2 runs every stack over two PostgreSQL shards:
+// shards.yaml adds postgres-1 and gives both brokers HOPPER_SHARD_DSNS in
+// shard order (and an empty HOPPER_DSN, since a broker refuses both). Unset or
+// 1 is one database, as before; no other value is allowed. The suite reads
+// every shard when it counts and reconciles a run, while the tests that stop
+// "PostgreSQL" stop shard 0 only, and the probe watches shard 0. A test can
+// pass HOPPER_CHAOS_SHARDS=2 to up itself to run sharded whatever the suite's
+// setting, as the one-shard-down test does.
+//
 // HOPPER_CONFORMANCE_WORKER runs every test against a named worker image
 // instead of the Go worker built from the tree (scripts/conformance.sh java
 // builds the Java one); worker-image.yaml is merged over the stack for it. The
