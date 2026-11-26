@@ -65,6 +65,7 @@ type soakConfig struct {
 	debugNamespace, debugImage string
 	drainTimeout               time.Duration
 	prometheus                 string // namespace/service:port of the Prometheus with the brokers' metrics
+	logCheck                   bool   // refuse to start when the kubelet would rotate a worker's log mid-run
 }
 
 func soakSettings(t *testing.T) soakConfig {
@@ -98,6 +99,7 @@ func soakSettings(t *testing.T) soakConfig {
 		debugImage:         setting("HOPPER_SOAK_DEBUG_IMAGE", "busybox:1.37.0"),
 		drainTimeout:       dur("HOPPER_SOAK_DRAIN_TIMEOUT", "30m"),
 		prometheus:         setting("HOPPER_SOAK_PROMETHEUS", "monitoring/prometheus-operated:9090"),
+		logCheck:           setting("HOPPER_SOAK_LOG_CHECK", "on") != "off",
 	}
 	require.Positive(t, cfg.duration, "HOPPER_SOAK_DURATION")
 	require.Positive(t, cfg.rate, "HOPPER_SOAK_RATE")
@@ -133,6 +135,70 @@ func faultSchedule(duration, killEvery, restartEvery time.Duration, failoverAt f
 		return cmp.Or(cmp.Compare(a.At, b.At), cmp.Compare(rank[a.Kind], rank[b.Kind]))
 	})
 	return out
+}
+
+// soakLogBytesPerJob is about what workers log per job: three lines (job
+// started, handler finished, job confirmed) of about 300 bytes. The kind
+// rehearsal measured 880.
+const soakLogBytesPerJob = 900
+
+// quantityBytes reads a byte quantity as the kubelet writes one: 10Mi, 1Gi,
+// 500Ki or plain bytes.
+func quantityBytes(q string) (int64, error) {
+	for i, suffix := range []string{"Ki", "Mi", "Gi", "Ti"} {
+		if n, ok := strings.CutSuffix(q, suffix); ok {
+			v, err := strconv.ParseInt(n, 10, 64)
+			return v << (10 * (i + 1)), err
+		}
+	}
+	return strconv.ParseInt(q, 10, 64)
+}
+
+// TestQuantityBytes needs no cluster.
+func TestQuantityBytes(t *testing.T) {
+	for q, want := range map[string]int64{"10Mi": 10 << 20, "1Gi": 1 << 30, "500Ki": 500 << 10, "1024": 1024} {
+		got, err := quantityBytes(q)
+		require.NoError(t, err, q)
+		require.Equal(t, want, got, q)
+	}
+	_, err := quantityBytes("1G")
+	require.Error(t, err)
+}
+
+// logRotation reads containerLogMaxSize from the kubelet of every node that
+// runs a worker. A kubelet rotates a container's log at that size, and
+// `kubectl logs --follow` can miss the lines written as it does, which the
+// accounting would report as a capture that is incomplete. need is what one
+// worker may log in the run: twice its share, since the lease streams don't
+// spread work evenly.
+func logRotation(t *testing.T, c *cluster, workers string, cfg soakConfig, nworkers int) (size string, enough bool) {
+	t.Helper()
+	need := int64(cfg.rate*cfg.duration.Seconds()) * soakLogBytesPerJob * 2 / int64(nworkers)
+	nodes := map[string]bool{}
+	for _, n := range strings.Fields(c.run("get", "pods", "-l", workers, "-o", "jsonpath={.items[*].spec.nodeName}")) {
+		nodes[n] = true
+	}
+	enough = true
+	var sizes []string
+	for node := range nodes {
+		raw, err := c.output(context.Background(), "get", "--raw", "/api/v1/nodes/"+node+"/proxy/configz")
+		require.NoError(t, err, "node %s's kubelet configuration", node)
+		var cz struct {
+			Kubelet struct {
+				ContainerLogMaxSize string `json:"containerLogMaxSize"`
+			} `json:"kubeletconfig"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(raw), &cz))
+		q := cmp.Or(cz.Kubelet.ContainerLogMaxSize, "10Mi")
+		b, err := quantityBytes(q)
+		require.NoError(t, err, "node %s containerLogMaxSize %q", node, q)
+		sizes = append(sizes, node+"="+q)
+		if b < need {
+			enough = false
+		}
+	}
+	slices.Sort(sizes)
+	return fmt.Sprintf("%s (a worker may log about %d MiB)", strings.Join(sizes, " "), need>>20), enough
 }
 
 // TestFaultScheduleHasOneFailover needs no cluster.
@@ -1204,6 +1270,7 @@ type soakReport struct {
 	Skipped           []string       `json:"skipped_faults,omitempty"`
 	WorkerRestarts    int            `json:"worker_container_restarts"`
 	ProxySwitches     int            `json:"broker_forward_switches"`
+	KubeletLogMaxSize string         `json:"kubelet_container_log_max_size"`
 	MaxRSSBeforeParse int64          `json:"harness_max_rss_bytes_before_reconciling"`
 	MaxRSSAfterParse  int64          `json:"harness_max_rss_bytes_after_reconciling"`
 	LogBytes          int64          `json:"worker_log_bytes"`
@@ -1253,6 +1320,17 @@ func TestSoak(t *testing.T) {
 		require.NoError(t, err, "HOPPER_SOAK_FAILOVER_SHARD")
 	}
 	restartsBefore := restarts(c, workers)
+	rotation, enough := logRotation(t, c, workers, cfg, len(wpods))
+	rep.KubeletLogMaxSize = rotation
+	if !enough {
+		msg := "the kubelet would rotate a worker's log mid-run, and kubectl logs --follow can miss lines at a rotation: " +
+			"containerLogMaxSize " + rotation + ". On kind, recreate the cluster from deploy/kind/cluster.yaml; elsewhere raise " +
+			"the kubelet's containerLogMaxSize (GKE: node system config), or set HOPPER_SOAK_LOG_CHECK=off to run anyway"
+		if cfg.logCheck {
+			require.FailNow(t, msg)
+		}
+		t.Logf("HOPPER_SOAK_LOG_CHECK=off: %s", msg)
+	}
 
 	cp := startRestartCapture(c, workers, workerLogs)
 	t.Cleanup(func() { _ = cp.stop() })

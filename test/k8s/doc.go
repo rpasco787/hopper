@@ -58,7 +58,11 @@
 // HOPPER_SOAK_DEBUG_IMAGE, default busybox:1.37.0). HOPPER_SOAK_DRAIN_TIMEOUT
 // (default 30m) bounds the drain, and HOPPER_SOAK_PROMETHEUS (default
 // monitoring/prometheus-operated:9090) is where pickup p99 comes from; without
-// it that column is blank.
+// it that column is blank. The soak refuses to start when a worker's node
+// rotates container logs at less than twice a worker's share of the run's
+// logs (about 900 bytes a job): kubectl logs --follow can miss lines at a
+// rotation. deploy/kind/cluster.yaml sets 1Gi; HOPPER_SOAK_LOG_CHECK=off
+// runs anyway.
 // HOPPER_PROOF_DIR keeps the captured logs, timeline and report instead of
 // discarding them with the test's temp directory.
 // A failover run writes failover.json, lost.json when a job was lost, and,
