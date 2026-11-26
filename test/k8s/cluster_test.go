@@ -474,6 +474,23 @@ func (cp *capture) snapshot(pods []string) {
 	}
 }
 
+// snapshotAppend is snapshot for a restart capture: it re-reads the current
+// container's log of pods still running and appends the lines the file lacks,
+// as a re-attach does (appendFile), streaming, so memory stays bounded however
+// long the log. snapshot holds a whole log and a set of its lines.
+func (cp *capture) snapshotAppend(pods []string) {
+	for _, pod := range pods {
+		a, err := openAppend(filepath.Join(cp.dir, pod+".log"))
+		require.NoError(cp.c.t, err)
+		cmd := cp.c.cmd(context.Background(), "logs", "pod/"+pod)
+		cmd.Stdout = a
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		require.NoError(cp.c.t, errors.Join(runErr, a.Close()), "kubectl logs pod/%s: %s", pod, stderr.String())
+	}
+}
+
 // mergeLog returns followed's complete lines, then every line of reread that
 // followed lacks, in reread's order. An unterminated last line in followed was
 // cut off mid-stream, and reread holds it whole. Every log line carries a

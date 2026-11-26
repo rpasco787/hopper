@@ -1431,7 +1431,7 @@ func TestSoak(t *testing.T) {
 	require.Zero(t, left, "run %s did not drain within %s", prefix, cfg.drainTimeout)
 
 	require.NoError(t, cp.stop(), "worker log capture")
-	cp.snapshot(c.livePods(workers))
+	cp.snapshotAppend(c.livePods(workers))
 	rep.WorkerRestarts = restarts(c, workers) - restartsBefore
 	proxy.mu.Lock()
 	rep.ProxySwitches = proxy.switches
