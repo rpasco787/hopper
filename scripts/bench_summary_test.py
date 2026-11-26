@@ -11,7 +11,7 @@ def row(**kw):
     r = dict(ref='abc1234', scenario='drain', workers='8', concurrency='16', vm_cpus='8',
              pinned='0', brokers='1', throughput='9000', postgres_cpu='100', broker_cpu='50',
              worker_cpu='100', on_cpu_pct='50.0', lock_pct='1.0', lwlock_pct='4.0', io_pct='20.0',
-             lease_mean_ms='0.400', lease_blks_per_call='10.0')
+             lease_mean_ms='0.400', lease_blks_per_call='10.0', shards='1')
     r.update({k: str(v) for k, v in kw.items()})
     return r
 
@@ -84,11 +84,14 @@ class SummaryTest(unittest.TestCase):
         def row4(out):
             return next(l for l in out.splitlines() if l.startswith('| 4 |'))
         # Four brokers on CPUs 2-3 saturate at 90% of two cores: 180 in total.
-        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=170))).endswith('| none |'))
-        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=185))).endswith('| brokers |'))
+        # (PostgreSQL below its one shard's 90, so only the brokers can be hot.)
+        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=170,
+                                                          postgres_cpu=50))).endswith('| none |'))
+        self.assertTrue(row4(bench_summary.summarize(runs(4, [1, 2, 3], pinned=1, broker_cpu=185,
+                                                          postgres_cpu=50))).endswith('| brokers |'))
 
     def test_one_pinned_broker_has_both_cores(self):
-        out = bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, broker_cpu=170))
+        out = bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, broker_cpu=170, postgres_cpu=50))
         row1 = next(l for l in out.splitlines() if l.startswith('| 1 |'))
         self.assertTrue(row1.endswith('| none |'), row1)
 
@@ -132,6 +135,31 @@ class SummaryTest(unittest.TestCase):
         out = bench_summary.summarize(rs)
         self.assertIn('| 1 | 3 | – | – | 1,500 | 110.5 | 31 | 640 |', out)
 
+
+    def test_shard_counts_are_separate_setups_with_a_shard_verdict(self):
+        out = bench_summary.summarize(runs(2, [9000, 9100, 9200]) + runs(2, [16000, 16380, 16500], shards=2))
+        self.assertIn('shards=1', out)
+        self.assertIn('shards=2', out)
+        self.assertIn('**Shard verdict** at 2 brokers: 2 shards faster; the 2-shard median is 1.80× '
+                      'the 1-shard median (16,380 against 9,100).', out)
+
+    def test_shard_verdicts_compare_only_otherwise_equal_setups(self):
+        out = bench_summary.summarize(runs(2, [9000, 9100, 9200], variant='a') +
+                                      runs(2, [16000, 16380, 16500], shards=2, variant='b'))
+        self.assertNotIn('Shard verdict', out)
+
+    def test_shard_verdict_ranges_must_not_overlap(self):
+        out = bench_summary.summarize(runs(2, [9000, 9100, 12000]) + runs(2, [11000, 11500, 12500], shards=2))
+        self.assertIn('**Shard verdict** at 2 brokers: inconclusive (ranges overlap)', out)
+
+    def test_pinned_postgres_has_one_cpu_per_shard(self):
+        def row1(out):
+            return next(l for l in out.splitlines() if l.startswith('| 1 |'))
+        # One shard on CPU 0 saturates at 90; two on CPUs 0 and 1 at 180.
+        self.assertTrue(row1(bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, postgres_cpu=95))).endswith('| postgres |'))
+        self.assertTrue(row1(bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, postgres_cpu=170, shards=2))).endswith('| none |'))
+        # A row from before shards (no column) had both CPUs for its one database.
+        self.assertTrue(row1(bench_summary.summarize(runs(1, [1, 2, 3], pinned=1, postgres_cpu=170, shards=''))).endswith('| none |'))
 
 if __name__ == '__main__':
     unittest.main()

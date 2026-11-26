@@ -13,14 +13,14 @@ import bench_compare  # noqa: E402
 
 def write(path, rows):
     with open(path, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['variant', 'brokers', 'sync_commit', 'throughput', 'enqueue_p99_ms'])
+        w = csv.DictWriter(f, fieldnames=['variant', 'brokers', 'sync_commit', 'throughput', 'enqueue_p99_ms', 'shards'])
         w.writeheader()
         w.writerows(rows)
 
 
-def rows(variant, brokers, values, metric='throughput', sync_commit='on'):
+def rows(variant, brokers, values, metric='throughput', sync_commit='on', shards='1'):
     return [{'variant': variant, 'brokers': brokers, 'sync_commit': sync_commit,
-             'throughput': '', 'enqueue_p99_ms': '', metric: v}
+             'throughput': '', 'enqueue_p99_ms': '', 'shards': shards, metric: v}
             for v in values]
 
 
@@ -76,6 +76,19 @@ class MainTest(unittest.TestCase):
                 bench_compare.main([str(p), 'nobatch', 'batch', '--where', 'sync_commit=on'])
             self.assertIn('vs nobatch 101 (100-102)', out.getvalue())
             self.assertTrue(out.getvalue().rstrip().endswith('helps'), out.getvalue())
+
+    def test_column_picks_control_and_treatment_by_another_column(self):
+        # One variant per layout; the shard count is the treatment.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'r.csv'
+            write(p, rows('w8c16', 2, [100, 101, 102]) + rows('w8c16', 2, [150, 151, 152], shards='2') +
+                     rows('w2c256', 2, [999, 999, 999], shards='2'))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                bench_compare.main([str(p), '1', '2', '--column', 'shards', '--where', 'variant=w8c16'])
+            line = out.getvalue().strip()
+            self.assertTrue(line.startswith('b2 throughput: 2 151 (150-152) vs 1 101 (100-102)'), line)
+            self.assertTrue(line.endswith('helps'), line)
 
     def test_no_shared_broker_count_exits(self):
         with tempfile.TemporaryDirectory() as tmp:

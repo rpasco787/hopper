@@ -11,8 +11,25 @@ services:
   postgres:
     # pg_stat_statements attributes database time to statements.
     # synchronous_commit stays on: "off" is a diagnostic, never a result.
-    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements",
-              "-c", "synchronous_commit=${HOPPER_BENCH_SYNC_COMMIT:-on}"]
+    command: &bench-postgres-command
+      ["postgres", "-c", "shared_preload_libraries=pg_stat_statements",
+       "-c", "synchronous_commit=${HOPPER_BENCH_SYNC_COMMIT:-on}"]
+
+  # Shard 1, started only by SHARDS=2 (scripts/bench.sh, which also gives the
+  # brokers both DSNs). It is configured as docker-compose.yml configures
+  # postgres, with the same command, so the two shards differ only in data.
+  postgres-1:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hopper
+      POSTGRES_PASSWORD: hopper
+      POSTGRES_DB: hopper
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hopper -d hopper"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    command: *bench-postgres-command
 
   broker:
     image: hopper-bench/broker:${HOPPER_BENCH_TAG:?set by scripts/bench.sh}
