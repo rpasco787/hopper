@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" font-family="system-ui, sans-serif" font-size="12">
+<title>Completed jobs/s</title>
+<rect width="640" height="300" fill="#ffffff"/>
+<g transform="translate(0,0)">
+<text x="72" y="20" font-size="14" fill="#111827">Completed jobs/s</text>
+<line x1="72" x2="520" y1="252.0" y2="252.0" stroke="#e5e7eb"/>
+<text x="64" y="256.0" text-anchor="end" fill="#374151">0</text>
+<line x1="72" x2="520" y1="198.0" y2="198.0" stroke="#e5e7eb"/>
+<text x="64" y="202.0" text-anchor="end" fill="#374151">58</text>
+<line x1="72" x2="520" y1="144.0" y2="144.0" stroke="#e5e7eb"/>
+<text x="64" y="148.0" text-anchor="end" fill="#374151">115</text>
+<line x1="72" x2="520" y1="90.0" y2="90.0" stroke="#e5e7eb"/>
+<text x="64" y="94.0" text-anchor="end" fill="#374151">173</text>
+<line x1="72" x2="520" y1="36.0" y2="36.0" stroke="#e5e7eb"/>
+<text x="64" y="40.0" text-anchor="end" fill="#374151">231</text>
+<text x="72.0" y="270" text-anchor="middle" fill="#374151">0m</text>
+<text x="184.0" y="270" text-anchor="middle" fill="#374151">2m</text>
+<text x="296.0" y="270" text-anchor="middle" fill="#374151">3m</text>
+<text x="408.0" y="270" text-anchor="middle" fill="#374151">4m</text>
+<text x="520.0" y="270" text-anchor="middle" fill="#374151">5m</text>
+<text x="18" y="144.0" text-anchor="middle" fill="#111827" transform="rotate(-90 18 144.0)">jobs/s</text>
+<polyline points="72.0,64.5 121.6,64.7 171.2,64.5 220.8,64.6 270.4,64.5 369.6,97.6 420.8,64.8 470.4,64.6 520.0,65.8" fill="none" stroke="#1f6feb" stroke-width="2"/>
+<line x1="534" x2="552" y1="36" y2="36" stroke="#1f6feb" stroke-width="2"/>
+<text x="558" y="40" fill="#111827">completed</text>
+<polyline points="72.0,64.2 121.6,64.6 171.2,64.6 220.8,64.6 270.4,64.6 320.0,196.5 369.6,64.6 420.8,64.6 470.4,64.6 520.0,64.6" fill="none" stroke="#d97706" stroke-width="2"/>
+<line x1="534" x2="552" y1="56" y2="56" stroke="#d97706" stroke-width="2"/>
+<text x="558" y="60" fill="#111827">offered</text>
+</g>
+<circle cx="72.0" cy="64.5" r="2.5" fill="#1f6feb"><title>30s: 200.1</title></circle>
+<circle cx="121.6" cy="64.7" r="2.5" fill="#1f6feb"><title>60s: 199.9</title></circle>
+<circle cx="171.2" cy="64.5" r="2.5" fill="#1f6feb"><title>90s: 200.1</title></circle>
+<circle cx="220.8" cy="64.6" r="2.5" fill="#1f6feb"><title>120s: 200.0</title></circle>
+<circle cx="270.4" cy="64.5" r="2.5" fill="#1f6feb"><title>150s: 200.2</title></circle>
+<circle cx="369.6" cy="97.6" r="2.5" fill="#1f6feb"><title>210s: 164.8</title></circle>
+<circle cx="420.8" cy="64.8" r="2.5" fill="#1f6feb"><title>241s: 199.8</title></circle>
+<circle cx="470.4" cy="64.6" r="2.5" fill="#1f6feb"><title>271s: 200.0</title></circle>
+<circle cx="520.0" cy="65.8" r="2.5" fill="#1f6feb"><title>301s: 198.8</title></circle>
+</svg>

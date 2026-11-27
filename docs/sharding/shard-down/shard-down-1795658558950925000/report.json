@@ -1,0 +1,166 @@
+{
+  "Jobs": 2251,
+  "Completed": 2251,
+  "Duplicated": {
+    "01a21597-3bf2-76cc-b301-8ecf6720347e": 2,
+    "01a21597-3bf2-7971-9701-0707ed411f7e": 2,
+    "01a21597-3bf2-7c18-bf01-a81c4193af37": 2,
+    "01a21597-3bf2-7ef8-a601-613cf2a4d496": 2,
+    "01a21597-3bf3-727f-8501-9dc7bc86a8d1": 2,
+    "01a21597-3bf3-7528-a001-8ec0c97b30a6": 2,
+    "01a21597-3bf3-77db-8701-ba1c44ac096a": 2
+  },
+  "NeverStarted": null,
+  "Unfinished": null,
+  "Extras": [
+    {
+      "ID": "01a21597-3bf2-76cc-b301-8ecf6720347e",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf2-7971-9701-0707ed411f7e",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf3-77db-8701-ba1c44ac096a",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf3-7528-a001-8ec0c97b30a6",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf3-727f-8501-9dc7bc86a8d1",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf2-7c18-bf01-a81c4193af37",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21597-3bf2-7ef8-a601-613cf2a4d496",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    }
+  ],
+  "ExtraLeases": 7,
+  "UnstartedNacks": 0,
+  "Restarted": 7,
+  "NeverReceived": 0,
+  "Shutdowns": null,
+  "Unparsed": {},
+  "Processes": [
+    {
+      "Pod": "hopper-chaos-worker-1",
+      "N": 1,
+      "Starts": 559,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:03:15.924859751Z"
+    },
+    {
+      "Pod": "hopper-chaos-worker-2",
+      "N": 1,
+      "Starts": 629,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:03:15.931236334Z"
+    },
+    {
+      "Pod": "hopper-chaos-worker-3",
+      "N": 1,
+      "Starts": 1070,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:03:16.702239543Z"
+    }
+  ],
+  "Repeats": [
+    {
+      "ID": "01a21597-3bf2-76cc-b301-8ecf6720347e",
+      "LeaseID": "9736fdf7-49ab-49ab-9b58-0d3a01885721",
+      "Pod": "hopper-chaos-worker-2",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.290709416Z",
+      "NextStartedAt": "2026-11-26T02:03:15.903701001Z"
+    },
+    {
+      "ID": "01a21597-3bf2-7971-9701-0707ed411f7e",
+      "LeaseID": "8a25572f-fb17-46c2-bf5b-57193b9a9cb1",
+      "Pod": "hopper-chaos-worker-3",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.291511208Z",
+      "NextStartedAt": "2026-11-26T02:03:16.678554293Z"
+    },
+    {
+      "ID": "01a21597-3bf3-77db-8701-ba1c44ac096a",
+      "LeaseID": "98159f7e-b0e4-4567-94db-b9633330c6ef",
+      "Pod": "hopper-chaos-worker-2",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.305388541Z",
+      "NextStartedAt": "2026-11-26T02:03:15.910507876Z"
+    },
+    {
+      "ID": "01a21597-3bf3-7528-a001-8ec0c97b30a6",
+      "LeaseID": "bb7dc69c-70d7-41ed-bf47-1799cc93a7f9",
+      "Pod": "hopper-chaos-worker-2",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.305406666Z",
+      "NextStartedAt": "2026-11-26T02:03:15.903809793Z"
+    },
+    {
+      "ID": "01a21597-3bf3-727f-8501-9dc7bc86a8d1",
+      "LeaseID": "b8aba763-e5dc-484b-9afe-c161aa9096f3",
+      "Pod": "hopper-chaos-worker-1",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.29736925Z",
+      "NextStartedAt": "2026-11-26T02:03:15.909646168Z"
+    },
+    {
+      "ID": "01a21597-3bf2-7c18-bf01-a81c4193af37",
+      "LeaseID": "a6a463dd-438f-4666-b4b2-7c72dbb500fd",
+      "Pod": "hopper-chaos-worker-1",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.296159666Z",
+      "NextStartedAt": "2026-11-26T02:03:16.678555835Z"
+    },
+    {
+      "ID": "01a21597-3bf2-7ef8-a601-613cf2a4d496",
+      "LeaseID": "7d105c6a-a318-4242-82ba-7f6ca376ccd4",
+      "Pod": "hopper-chaos-worker-1",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:02:43.297408291Z",
+      "NextStartedAt": "2026-11-26T02:03:15.909793543Z"
+    }
+  ]
+}

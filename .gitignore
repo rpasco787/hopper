@@ -49,3 +49,9 @@ __pycache__/
 
 # A failover proof's captured logs; failover.json and lost.json are the evidence.
 docs/failover/**/logs/
+
+# Phase 4: a soak's captured worker logs (about 150 MB a run) and its lists of
+# acknowledged IDs (about 11 MB a run) stay local; summary.md, report.json,
+# timeline.csv, events.csv and the SVGs are the evidence (docs/sharding.md).
+docs/sharding/**/logs/
+docs/sharding/**/acked-*.txt

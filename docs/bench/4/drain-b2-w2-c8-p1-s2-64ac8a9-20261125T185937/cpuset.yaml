@@ -1,0 +1,17 @@
+# Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
+# the layout is the same at every broker and shard count, so only the counts
+# change. Each PostgreSQL shard gets one CPU (shard 0 CPU 0, shard 1 CPU 1).
+# Every broker may use CPUs 2 and 3, so the brokers' CPU budget is two CPUs
+# however many there are; Go sizes GOMAXPROCS from the set.
+services:
+  postgres: {cpuset: "0"}
+  postgres-1: {cpuset: "1"}
+  broker: {cpuset: "2-3"}
+  broker-standby: {cpuset: "2-3"}
+  broker-3: {cpuset: "2-3"}
+  broker-4: {cpuset: "2-3"}
+  worker: {cpuset: "4-6"}
+  worker-b: {cpuset: "4-6"}
+  worker-c: {cpuset: "4-6"}
+  worker-d: {cpuset: "4-6"}
+  loadgen: {cpuset: "7"}

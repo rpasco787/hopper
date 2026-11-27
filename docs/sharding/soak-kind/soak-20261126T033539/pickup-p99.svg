@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" font-family="system-ui, sans-serif" font-size="12">
+<title>p99 latency (ms)</title>
+<rect width="640" height="300" fill="#ffffff"/>
+<g transform="translate(0,0)">
+<text x="72" y="20" font-size="14" fill="#111827">p99 latency (ms)</text>
+<line x1="72" x2="520" y1="252.0" y2="252.0" stroke="#e5e7eb"/>
+<text x="64" y="256.0" text-anchor="end" fill="#374151">0</text>
+<line x1="72" x2="520" y1="198.0" y2="198.0" stroke="#e5e7eb"/>
+<text x="64" y="202.0" text-anchor="end" fill="#374151">13</text>
+<line x1="72" x2="520" y1="144.0" y2="144.0" stroke="#e5e7eb"/>
+<text x="64" y="148.0" text-anchor="end" fill="#374151">25</text>
+<line x1="72" x2="520" y1="90.0" y2="90.0" stroke="#e5e7eb"/>
+<text x="64" y="94.0" text-anchor="end" fill="#374151">38</text>
+<line x1="72" x2="520" y1="36.0" y2="36.0" stroke="#e5e7eb"/>
+<text x="64" y="40.0" text-anchor="end" fill="#374151">51</text>
+<text x="72.0" y="270" text-anchor="middle" fill="#374151">0m</text>
+<text x="184.0" y="270" text-anchor="middle" fill="#374151">4m</text>
+<text x="296.0" y="270" text-anchor="middle" fill="#374151">8m</text>
+<text x="408.0" y="270" text-anchor="middle" fill="#374151">11m</text>
+<text x="520.0" y="270" text-anchor="middle" fill="#374151">15m</text>
+<text x="18" y="144.0" text-anchor="middle" fill="#111827" transform="rotate(-90 18 144.0)">ms</text>
+<line x1="534" x2="552" y1="36" y2="36" stroke="#1f6feb" stroke-width="2"/>
+<text x="558" y="40" fill="#111827">pickup p99</text>
+<polyline points="72.0,81.6 87.4,219.6 102.8,206.4 118.2,208.5 133.7,216.2 149.1,212.6 164.5,193.7 179.9,208.5 195.3,190.9 210.7,196.5 226.1,97.5 241.5,193.7 257.5,118.5 272.9,217.9 288.3,165.9 303.7,187.8 319.1,64.2 334.5,97.5 349.9,184.6 365.4,184.6 380.8,73.1 396.2,212.6 411.6,184.6 427.0,187.8 442.4,118.5 458.3,208.5 473.8,193.7 489.2,208.5 504.6,225.3 520.0,212.6" fill="none" stroke="#d97706" stroke-width="2"/>
+<line x1="534" x2="552" y1="56" y2="56" stroke="#d97706" stroke-width="2"/>
+<text x="558" y="60" fill="#111827">enqueue p99</text>
+</g>
+<text x="72" y="292" fill="#6b7280">no pickup samples: Prometheus was not running</text>
+</svg>

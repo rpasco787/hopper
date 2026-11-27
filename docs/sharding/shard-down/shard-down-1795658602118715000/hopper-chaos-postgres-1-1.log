@@ -1,0 +1,80 @@
+The files belonging to this database system will be owned by user "postgres".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "en_US.utf8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /var/lib/postgresql/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... UTC
+creating configuration files ... ok
+running bootstrap script ... ok
+sh: locale: not found
+2026-11-26 02:03:23.622 UTC [35] WARNING:  no usable system locales were found
+performing post-bootstrap initialization ... ok
+initdb: warning: enabling "trust" authentication for local connections
+initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+syncing data to disk ... ok
+
+
+Success. You can now start the database server using:
+
+    pg_ctl -D /var/lib/postgresql/data -l logfile start
+
+waiting for server to start....2026-11-26 02:03:23.940 UTC [41] LOG:  starting PostgreSQL 16.16 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-11-26 02:03:23.940 UTC [41] LOG:  listening on Unix socket "/run/postgresql/.s.PGSQL.5432"
+2026-11-26 02:03:23.945 UTC [44] LOG:  database system was shut down at 2026-11-26 02:03:23 UTC
+2026-11-26 02:03:23.948 UTC [41] LOG:  database system is ready to accept connections
+ done
+server started
+CREATE DATABASE
+
+
+/usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*
+
+waiting for server to shut down....2026-11-26 02:03:24.079 UTC [41] LOG:  received fast shutdown request
+2026-11-26 02:03:24.083 UTC [41] LOG:  aborting any active transactions
+2026-11-26 02:03:24.085 UTC [41] LOG:  background worker "logical replication launcher" (PID 47) exited with exit code 1
+2026-11-26 02:03:24.085 UTC [42] LOG:  shutting down
+2026-11-26 02:03:24.086 UTC [42] LOG:  checkpoint starting: shutdown immediate
+2026-11-26 02:03:24.126 UTC [42] LOG:  checkpoint complete: wrote 935 buffers (5.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.012 s, sync=0.025 s, total=0.041 s; sync files=301, longest=0.013 s, average=0.001 s; distance=4355 kB, estimate=4355 kB; lsn=0/1949C50, redo lsn=0/1949C50
+2026-11-26 02:03:24.128 UTC [41] LOG:  database system is shut down
+ done
+server stopped
+
+PostgreSQL init process complete; ready for start up.
+
+2026-11-26 02:03:24.191 UTC [1] LOG:  starting PostgreSQL 16.16 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-11-26 02:03:24.191 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-11-26 02:03:24.191 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-11-26 02:03:24.192 UTC [1] LOG:  listening on Unix socket "/run/postgresql/.s.PGSQL.5432"
+2026-11-26 02:03:24.194 UTC [57] LOG:  database system was shut down at 2026-11-26 02:03:24 UTC
+2026-11-26 02:03:24.196 UTC [1] LOG:  database system is ready to accept connections
+2026-11-26 02:03:26.733 UTC [77] FATAL:  terminating connection due to unexpected postmaster exit
+
+PostgreSQL Database directory appears to contain a database; Skipping initialization
+
+2026-11-26 02:03:57.061 UTC [1] LOG:  starting PostgreSQL 16.16 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-11-26 02:03:57.061 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-11-26 02:03:57.061 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-11-26 02:03:57.062 UTC [1] LOG:  listening on Unix socket "/run/postgresql/.s.PGSQL.5432"
+2026-11-26 02:03:57.064 UTC [29] LOG:  database system was interrupted; last known up at 2026-11-26 02:03:24 UTC
+2026-11-26 02:03:57.085 UTC [30] FATAL:  the database system is starting up
+2026-11-26 02:03:57.085 UTC [31] FATAL:  the database system is starting up
+2026-11-26 02:03:57.086 UTC [32] FATAL:  the database system is starting up
+2026-11-26 02:03:57.086 UTC [33] FATAL:  the database system is starting up
+2026-11-26 02:03:57.086 UTC [34] FATAL:  the database system is starting up
+2026-11-26 02:03:57.086 UTC [35] FATAL:  the database system is starting up
+2026-11-26 02:03:57.111 UTC [29] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-11-26 02:03:57.113 UTC [29] LOG:  redo starts at 0/1949CC8
+2026-11-26 02:03:57.116 UTC [29] LOG:  invalid record length at 0/1A446D0: expected at least 24, got 0
+2026-11-26 02:03:57.116 UTC [29] LOG:  redo done at 0/1A446A8 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-11-26 02:03:57.117 UTC [27] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-11-26 02:03:57.126 UTC [27] LOG:  checkpoint complete: wrote 123 buffers (0.8%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.002 s, sync=0.006 s, total=0.010 s; sync files=58, longest=0.005 s, average=0.001 s; distance=1002 kB, estimate=1002 kB; lsn=0/1A446D0, redo lsn=0/1A446D0
+2026-11-26 02:03:57.127 UTC [1] LOG:  database system is ready to accept connections

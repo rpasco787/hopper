@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320" font-family="system-ui, sans-serif" font-size="12">
+<rect width="600" height="320" fill="#ffffff"/>
+<line x1="72" x2="470" y1="268.0" y2="268.0" stroke="#e5e7eb"/>
+<text x="64" y="272.0" text-anchor="end" fill="#374151">0</text>
+<line x1="72" x2="470" y1="208.0" y2="208.0" stroke="#e5e7eb"/>
+<text x="64" y="212.0" text-anchor="end" fill="#374151">4,687</text>
+<line x1="72" x2="470" y1="148.0" y2="148.0" stroke="#e5e7eb"/>
+<text x="64" y="152.0" text-anchor="end" fill="#374151">9,373</text>
+<line x1="72" x2="470" y1="88.0" y2="88.0" stroke="#e5e7eb"/>
+<text x="64" y="92.0" text-anchor="end" fill="#374151">14,060</text>
+<line x1="72" x2="470" y1="28.0" y2="28.0" stroke="#e5e7eb"/>
+<text x="64" y="32.0" text-anchor="end" fill="#374151">18,746</text>
+<text x="72.0" y="286" text-anchor="middle" fill="#374151">1</text>
+<text x="470.0" y="286" text-anchor="middle" fill="#374151">2</text>
+<text x="271.0" y="308" text-anchor="middle" fill="#111827">shards</text>
+<text x="18" y="148.0" text-anchor="middle" fill="#111827" transform="rotate(-90 18 148.0)">jobs/s, drain median</text>
+<polyline points="72.0,181.9 470.0,169.2" fill="none" stroke="#8a8f98" stroke-width="2.5"/>
+<circle cx="72.0" cy="181.9" r="4" fill="#8a8f98"/>
+<text x="72.0" y="172.9" text-anchor="middle" fill="#8a8f98">6,727</text>
+<circle cx="470.0" cy="169.2" r="4" fill="#8a8f98"/>
+<text x="470.0" y="160.2" text-anchor="middle" fill="#8a8f98">7,715</text>
+<line x1="486" x2="506" y1="28" y2="28" stroke="#8a8f98" stroke-width="2.5"/>
+<text x="512" y="32" fill="#111827">8 x 16 (plan's arm)</text>
+<polyline points="72.0,65.6 470.0,59.3" fill="none" stroke="#1f6feb" stroke-width="2.5"/>
+<circle cx="72.0" cy="65.6" r="4" fill="#1f6feb"/>
+<text x="72.0" y="56.6" text-anchor="middle" fill="#1f6feb">15,808</text>
+<circle cx="470.0" cy="59.3" r="4" fill="#1f6feb"/>
+<text x="470.0" y="50.3" text-anchor="middle" fill="#1f6feb">16,301</text>
+<line x1="486" x2="506" y1="48" y2="48" stroke="#1f6feb" stroke-width="2.5"/>
+<text x="512" y="52" fill="#111827">2 x 256 (credit-rich)</text>
+</svg>

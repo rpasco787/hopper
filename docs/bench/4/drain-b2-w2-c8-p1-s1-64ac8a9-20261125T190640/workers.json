@@ -1,0 +1,60 @@
+[
+  {
+    "Id": "d8990dc7153ca97fa816dde58f312ea4933ba9a639d96ac208e0c89c69453fc1",
+    "Name": "/hopper-bench-worker-1",
+    "Image": "sha256:aaae66e2835ebedd2b7c68ab140e27212342f318ea71f31494bc66baa5a3e5cc",
+    "Config": {
+      "Hostname": "d8990dc7153c",
+      "Env": [
+        "HOPPER_METRICS_LISTEN=0.0.0.0:9092",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "HOPPER_BROKER=broker:9090",
+        "HOPPER_CONCURRENCY=256",
+        "HOPPER_LOG_LEVEL=warn",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-26T03:07:03.888024801Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 2951
+    },
+    "HostConfig": {
+      "Memory": 0,
+      "MemorySwap": 0,
+      "CpusetCpus": "4-6"
+    }
+  },
+  {
+    "Id": "a2b0fc9072340fb15e78453b1d655af3a18b219efb026850aaa2335aef49e436",
+    "Name": "/hopper-bench-worker-b-1",
+    "Image": "sha256:aaae66e2835ebedd2b7c68ab140e27212342f318ea71f31494bc66baa5a3e5cc",
+    "Config": {
+      "Hostname": "a2b0fc907234",
+      "Env": [
+        "HOPPER_METRICS_LISTEN=0.0.0.0:9092",
+        "HOPPER_CONCURRENCY=256",
+        "HOPPER_LOG_LEVEL=warn",
+        "HOPPER_BROKER=broker-standby:9090",
+        "HOPPER_SHUTDOWN_TIMEOUT=45s",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      ]
+    },
+    "State": {
+      "StartedAt": "2026-11-26T03:07:03.882739842Z",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "Pid": 2943
+    },
+    "HostConfig": {
+      "Memory": 0,
+      "MemorySwap": 0,
+      "CpusetCpus": "4-6"
+    }
+  }
+]

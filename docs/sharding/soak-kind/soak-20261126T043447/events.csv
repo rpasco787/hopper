@@ -1,0 +1,4 @@
+at_s,kind,target,outcome,detail
+150.0,failover,shard 1 hopper-db-1-1,ok,hopper-db-1-2 promoted after 18.6s; healthy after 31s
+185.1,worker-kill,hopper-worker-8675f8d864-9k4qb,ok,container 0ee4404ffc7f on hopper-control-plane via crictl-debug; restarted in place (restarts 1)
+300.0,broker-restart,deployment/hopper-broker,ok,rolled out in 14s

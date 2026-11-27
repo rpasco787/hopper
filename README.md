@@ -16,7 +16,18 @@ renew their leases by heartbeat.
   [Replicated PostgreSQL](#replicated-postgresql)). A retry is answered only
   once a standby has what it found
   ([docs/semantics.md §11 item 7](docs/semantics.md#11-where-duplicates-come-from-the-honest-list)).
-- **Stateless, replicated brokers** in front of PostgreSQL: one development instance, or a replicated CloudNativePG Cluster.
+- **Stateless, replicated brokers** in front of one or more PostgreSQL databases: one development instance, a replicated CloudNativePG Cluster, or N shards of either.
+- **Sharding** across 2 to 256 PostgreSQL databases, with a job's shard in
+  its ID ([Sharding](#sharding)). With one of two shards down, the other kept
+  serving and nothing was lost (4 of 4 runs). On GKE, 4 shards drained 2.7×
+  one shard (11.0k → 29.7k jobs/s), and a 10M-job soak under worker kills,
+  broker restarts and a shard failover lost 0 jobs with 0 unexplained
+  repeats. Those GKE numbers are as reported from a hand-run sitting whose raw
+  files aren't committed yet
+  ([docs/sharding/gke/results.md](docs/sharding/gke/results.md)). On a
+  laptop, where both shards share one disk, two shards drained 1.03–1.15× one,
+  no measurable effect (`bash docs/bench/4/loop.sh`). The other reproduce
+  commands are in [Sharding](#sharding).
 - **Retries, dead-lettering, priorities, delayed jobs and idempotency keys.**
 - **Cron schedules**, run by one leader-elected broker with no double-fires
   across failover.
@@ -53,6 +64,7 @@ is needed.
 - [Conformance](#conformance)
 - [Observability](#observability)
 - [Kubernetes](#kubernetes)
+- [Sharding](#sharding)
 - [Performance](#performance)
 - [Development](#development)
 - [Repository layout](#repository-layout)
@@ -441,8 +453,8 @@ answers `GET /metrics` only.
 
 | Broker metric | Meaning |
 |---|---|
-| `hopper_queue_depth{queue,state}` | Jobs `scheduled`, `available`, `leased` and `dead`, sampled every 5s |
-| `hopper_queue_depth_last_sample_timestamp_seconds` | When this broker last sampled depth successfully |
+| `hopper_queue_depth{queue,state,shard}` | Jobs `scheduled`, `available`, `leased` and `dead` on one shard, sampled every 5s; `shard` is `0` without sharding |
+| `hopper_queue_depth_last_sample_timestamp_seconds{shard}` | When this broker last sampled that shard's depth successfully |
 | `hopper_jobs_{enqueued,completed,failed,dead}_total{queue}` | Committed transitions; `failed` counts attempts, not jobs |
 | `hopper_lease_expirations_total{queue}` | Leases the reaper took back |
 | `hopper_lease_streams_open` | Lease streams this broker is serving now |
@@ -469,9 +481,10 @@ profiles on both the broker and the worker; it is off by default
 `_other`, so clients cannot create unbounded series. Give every broker the same
 list.
 
-> **Reading depth:** every broker reports the same depth. Drop brokers whose
-> sample is older than 15s and take `max by (queue, state)`, never `sum`.
-> Counters are per-process events, so sum those.
+> **Reading depth:** every broker reports the same depth for each shard. Drop
+> each broker's samples of a shard older than 15s, take `max` across brokers
+> per shard, then `sum` across shards; never `sum` across brokers. Counters
+> are per-process events, so sum those.
 
 **Logs.** Every broker and worker log line about a delivery carries `job_id`
 and `lease_id`, and every other line about a job carries `job_id`, so you can
@@ -543,6 +556,7 @@ with a reachable broker, a writable database and a worker serving `sleep`.
 | `postgres.mode` | `bundled` | `bundled`: one development PostgreSQL. `cloudnativepg`: a replicated CloudNativePG Cluster `<release>-db`; needs the operator (`scripts/kind-cnpg.sh`) |
 | `postgres.cloudnativepg.instances` | `3` | Primary plus standbys; at least `synchronousStandbys + 2` |
 | `postgres.cloudnativepg.synchronousStandbys` | `1` | Standbys that must flush each commit before it returns; `0` is asynchronous, and a failover can then lose acknowledged jobs |
+| `postgres.shards` | `1` | Databases to split jobs across, 1 to 16: N bundled PostgreSQLs, or N CloudNativePG Clusters `<release>-db-<i>`. Fixed for a release's life ([Sharding](#sharding)) |
 
 **Shutdown budgets.** Kubernetes counts the grace period from pod deletion, and
 the preStop hook runs inside it, so
@@ -681,6 +695,68 @@ The query, the fallback, the scale-down argument and the ownership rule are in
   retention and no persistence, and no Alertmanager.
 
 Tear down with `kind delete cluster --name hopper`.
+
+## Sharding
+
+One PostgreSQL's commit flush is the ceiling for one database
+([docs/scaling.md](docs/scaling.md)). Sharding splits jobs across N
+independent PostgreSQL databases. Each shard is a whole hopper database, and
+nothing replicates between shards. Byte 9 of a job's UUIDv7 ID names its
+shard, so every call that names a job routes from the ID alone: the wire
+protocol, both SDKs and `hopperctl` are unchanged. A keyed enqueue goes to
+`fnv1a64(queue, 0x00, key) mod N`, so a key always meets its earlier row and
+deduplicates. An unkeyed enqueue goes round robin over healthy shards, and a
+lease starts at a rotating shard. The design is in
+[docs/design/sharding.md](docs/design/sharding.md), and the report, with
+every measurement and decision, is in [docs/sharding.md](docs/sharding.md).
+
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `-shard-dsns` | `HOPPER_SHARD_DSNS` | unset | 2 to 256 space-separated `postgres://` URLs, in shard order. Replaces `-dsn`; a broker given both refuses to start. |
+| `-db-max-conns` | `HOPPER_DB_MAX_CONNS` | `16` | With shards, applies to each shard's pool, so size each shard's `max_connections` as brokers × this. |
+
+A broker migrates every shard, then refuses to start if a database's recorded
+shard identity or migration set disagrees with its configuration. In the
+chart, set `postgres.shards` (above). With one DSN, or `postgres.shards: 1`,
+nothing changes: the plain PostgreSQL store serves, and IDs are not stamped.
+
+**What it gives up** ([docs/semantics.md](docs/semantics.md) §8, §9, §11,
+§12, §13):
+- Priority and `run_at` order hold within a shard, not across shards.
+- `EnqueueBatch` can leave any subset committed, not only a prefix. Retrying
+  with stable keys still deduplicates.
+- An idle lease stream polls every shard: N queries per poll interval.
+- While a shard is down, keyed enqueues to it fail `UNAVAILABLE`, and its
+  jobs wait for it. Unkeyed enqueues and leases carry on over the other
+  shards.
+- Cron, the leader lock and the clock live on shard 0. While shard 0 is down,
+  no tick fires.
+- Resharding is not supported. N is fixed for a deployment's life.
+
+**Measured** (details and evidence in [docs/sharding.md](docs/sharding.md)):
+
+| What | Result | Reproduce |
+|---|---|---|
+| One of two shards down for 30 s | the other shard's keyed enqueues succeeded (p99 13–16 ms), the down shard's failed `UNAVAILABLE` in under 23 ms, unkeyed enqueues 100%; nothing lost, every repeat explained; 4 of 4 runs | `go test -tags chaos -count=1 -timeout 30m -v -run TestOneShardDownServesTheRest ./test/chaos` |
+| Chaos suite and conformance (Go, Java, mixed fleet) over two shards | pass | `HOPPER_CHAOS_SHARDS=2 go test -tags chaos -count=1 -timeout 60m -v ./test/chaos`, `HOPPER_CHAOS_SHARDS=2 bash scripts/conformance.sh all` |
+| Laptop drain, 1 → 2 shards on one disk | 1.15× (8 × 16) and 1.03× (2 × 256): no measurable effect | `bash docs/bench/4/loop.sh` (about 16 minutes) |
+| GKE drain, 1 → 2 → 4 shards | 1.8×, then 2.7× (11.0k → 29.7k jobs/s); capacity 71% of the drain, enqueue p99 18 ms at capacity | not reproducible from the tree: the drains' script isn't committed |
+| GKE soak, 4 shards, faults injected | 10M jobs, 0 lost, 0 unexplained; redelivery 1e-4; a shard failover promoted in 26 s and was back at the offered rate after 3 min; pickup p99 140 ms | `HOPPER_K8S_CONTEXT=<gke> HOPPER_SOAK_KILL=crictl-debug HOPPER_SOAK_RATE=<r> HOPPER_SOAK_DURATION=<d> HOPPER_PROOF_DIR=$PWD/docs/sharding/gke/soak go test -tags k8s -count=1 -timeout <d+1h> -run TestSoak -v ./test/k8s` |
+| kind soak, 2 shards, 15 min | 192,509 jobs, 0 lost, 0 unexplained | [Kubernetes proofs](#kubernetes-proofs) |
+
+![Laptop drain throughput, one shard against two](docs/img/shards-laptop.svg)
+
+*One shard against two on the laptop: 2 brokers, each shard on its own CPU and
+both on one virtual disk, five-run medians from one interleaved loop at
+`64ac8a9` (`bash docs/bench/4/loop.sh`; [docs/bench/4/summary.md](docs/bench/4/summary.md)).*
+
+The GKE rows are as reported from a hand-run sitting whose raw files
+(`scaling.csv`, the soak directory, the cluster script and values) are not
+committed ([docs/sharding/gke/results.md](docs/sharding/gke/results.md)). Its
+cost was not published. On the laptop both shards wrote to one virtual disk,
+neither CPU was the ceiling, and the largest waits were for WAL writes and
+flushes, so the likely bound is commit-flush latency; that is a hypothesis,
+not a measurement. On GKE each shard had its own disk and node.
 
 ## Performance
 
@@ -845,6 +921,9 @@ and takes about 12 minutes a pass:
 go test -tags chaos -count=1 -timeout 60m -v ./test/chaos
 ```
 
+`HOPPER_CHAOS_SHARDS=2` runs every stack over two PostgreSQL shards
+([Sharding](#sharding)).
+
 ### Kubernetes proofs
 
 The `k8s` proofs run against the kind cluster, one at a time, and each needs
@@ -857,6 +936,7 @@ its release set up its own way:
 | `TestUnknownDepthHoldsTheFallback` | With the brokers refused at the database, KEDA holds the fallback. |
 | `TestPrimaryFailoverLosesNothing` | Crashing the CloudNativePG primary under load, with synchronous replication, loses no acknowledged job. With `HOPPER_FAILOVER_LAG=3s` it finds the cancelled-wait window. |
 | `TestAsynchronousFailoverCountsWhatItLoses` | The same crash under asynchronous replication counts the acknowledged jobs it loses. |
+| `TestSoak` | An open-loop soak over the release's shards, with worker kills, broker restarts and, on CloudNativePG, one shard failover, loses no job and explains every repeat. |
 
 ```bash
 # A fixed worker count; --force-conflicts takes it back from the HPA if
@@ -877,6 +957,13 @@ scripts/kind-up.sh -f deploy/kind/replicated.yaml --timeout 10m
 go test -tags k8s -count=5 -timeout 90m -v -run TestPrimaryFailoverLosesNothing ./test/k8s
 scripts/kind-up.sh -f deploy/kind/replicated.yaml -f deploy/kind/asynchronous.yaml --timeout 10m
 go test -tags k8s -count=3 -timeout 60m -v -run TestAsynchronousFailoverCountsWhatItLoses ./test/k8s
+
+# The soak, on two shards. With --set postgres.mode=cloudnativepg (after
+# scripts/kind-cnpg.sh) it also fails one shard over.
+scripts/kind-up.sh -f deploy/kind/shards.yaml
+HOPPER_SOAK_DURATION=15m HOPPER_SOAK_CHUNK=100000 HOPPER_SOAK_BROKER_RESTART_EVERY=5m \
+HOPPER_PROOF_DIR=$PWD/docs/sharding/soak-kind \
+  go test -tags k8s -count=1 -timeout 60m -v -run TestSoak ./test/k8s
 ```
 
 ## Repository layout

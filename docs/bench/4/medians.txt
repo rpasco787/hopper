@@ -1,0 +1,5 @@
+variant|shards|runs|min|max|throughput|commits_per_job|wal_syncs_per_job|wal_kb_per_job|postgres_cpu|broker_cpu|worker_cpu|lease_rows_per_call|lease_calls_per_job|lease_mean_ms|ack_batch|active_backends|max_leased
+w2c256|1|5|12583|17538|15808|0.12|0.045|1.36|38|31|50|29.41|0.034|0.844|15|3|135
+w2c256|2|5|13442|16709|16301|0.14|0.083|1.3|44|31|43|26.65|0.038|0.692|10.3|2.5|155
+w8c16|1|5|6209|7277|6727|0.34|0.068|1.27|58|33|53|5.62|0.178|0.588|9.2|6.43|89
+w8c16|2|5|6700|8120|7715|0.44|0.145|1.14|75|37|61|4.87|0.205|0.418|4.8|5.5|117

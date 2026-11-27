@@ -28,7 +28,9 @@ acknowledged: enqueued jobs vanish, and acked jobs run again (§11, item 6).
 Synchronous replication still lets a commit whose wait for the standby was
 cancelled become visible on the primary alone; since bf90316 no
 caller is told it succeeded until a standby has it (§11, item 7). Measured
-in §15.
+in §15. On a sharded deployment "never lost" holds per shard: each job's
+commit is on its own shard's database, and the replication requirement above
+applies to every shard ([design](design/sharding.md)).
 
 ## 2. Job states
 
@@ -397,6 +399,13 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
   costs one wait for a synchronous standby; the committed items
   deduplicate, but only while their rows exist (retention or purge ends it). The
   producer client does not retry for you.
+- **On a sharded deployment, `EnqueueBatch` can leave any subset committed,
+  not only a prefix.** The broker groups the items by shard and runs each
+  shard's group concurrently, in order within the group, so a failure on one
+  shard leaves the other shards' items committed. Retrying the whole batch
+  with stable keys still inserts nothing twice: a key always routes to the
+  same shard (`store.KeyShard`), where its earlier row is, and the unique
+  index deduplicates there.
 - **Message ceiling.** The broker enforces a 4 MiB limit on each incoming and
   outgoing gRPC message. A response can exceed it after every store call has
   already succeeded, so `RESOURCE_EXHAUSTED` from `EnqueueBatch` does **not**
@@ -447,6 +456,13 @@ same `(queue, key)` returns the existing job's id and inserts nothing.
     sustained load streams are rarely idle, so wakeups gain nothing there; at
     3,000 jobs a second on one broker they cost enqueue latency (p99 8.1 ms
     polling, 25.8 ms with wakeups). There is still no strict delivery bound.
+- **With shards, priority and `run_at` order hold within a shard only.** A
+  lease starts at a rotating shard and asks each shard in turn for what it
+  still lacks, so a priority-10 job on one shard can wait while priority-0
+  jobs are handed out from another. A stream visits shards in rotation, one
+  lease call after another. An idle stream polls every shard, so an idle poll
+  costs N queries. Every broker listens for wakeups on every shard, and an
+  announcement goes to one healthy shard.
 - **`ListJobs` order is by ID, not by creation.** Pages are keyed on the last
   ID seen. UUIDv7 ids follow application clocks, so order approximates but does
   not equal `created_at` or commit order. A traversal is live, not a snapshot:
@@ -727,14 +743,38 @@ does catch a busy worker can still redeliver a delivery in flight (item 5).
 A worker killed with SIGKILL is item 1: its interrupted handlers run again, each
 under a new lease, and `attempts` accounts for every one (§15).
 
+**Sharding adds no source of duplicates.** Every call that names a job goes
+to the shard its ID names, and a keyed enqueue goes to its key's shard. An
+unkeyed enqueue moves to another shard only on `store.ErrNotSent`, a failure
+that certainly happened before the insert was sent: a failed connection
+attempt, the batch's 1 s wait for a connection, or an error pgconn says preceded
+sending. A failure that may have sent the insert reaches the client as
+`UNAVAILABLE`, exactly as on one database, so hopper itself never writes the
+job twice. What sharding does add is an availability limit: while a shard is
+down, keyed enqueues whose key routes to it fail `UNAVAILABLE`, and so do
+calls that name its jobs. Unkeyed enqueues and leases carry on over the other
+shards, and the down shard's jobs wait for it (§15, the one-shard-down
+row).
+
 ## 12. Non-goals
 
 - **Exactly-once execution.** Not offered, and no queue can offer it across
   a network boundary; put idempotency in the handler.
 - **Ordering** across jobs or per key.
 - **Workflows, sagas, child jobs, or cross-job transactions.**
-- **Multi-region or multi-Postgres.** One Postgres is the source of truth;
-  brokers scale horizontally against it.
+- **Multi-region.** Each database is the source of truth for its jobs, and
+  brokers scale horizontally against one or more of them, in one region.
+- **Resharding.** N is fixed for a deployment's life (`shard_identity`): a
+  broker whose shard count or order disagrees with what the databases
+  recorded refuses to start. Moving from one database to N, or N to M, is a
+  migration project ([design](design/sharding.md)).
+- **Cross-shard ordering.** Priority and `run_at` order hold within a shard,
+  not across shards (§9).
+- **Cron on more than one database.** Schedules, the scheduler's leader lock
+  and the clock live on shard 0 alone (§13). A silent leader loses the role
+  within the TTL (§13, fixed in `cf3f370`), but while shard 0 is down no tick
+  fires, though the other shards keep serving. The pending tick fires once
+  when shard 0 is back.
 - **Payload inspection**, routing on payload contents, or per-job rate limits.
 - **Unbounded retention.** Completed history is pruned; ship it to your logs
   or warehouse if you need it.
@@ -832,6 +872,15 @@ cron line, a descriptor such as `@hourly`, or `@every <duration>`. `@every`
 works in whole seconds: sub-second parts are truncated, with a one-second
 floor, so `@every 1500ms` ticks every second. The broker embeds `tzdata`
 because its distroless runtime image has no zoneinfo database.
+
+**With shards.** Schedules, the leader lock and the clock live on shard 0:
+`cron_schedules` is read and advanced there, every broker contends for one
+advisory lock there, and `Now` reads shard 0's clock. A tick job is an
+ordinary keyed enqueue, so it goes to its key's shard
+(`store.KeyShard(queue, name@tick)`), and a re-fired tick meets its earlier
+row on that shard. Every claim below holds as stated with "the database"
+meaning shard 0 for schedules and the lock, and the key's shard for the
+job.
 
 **Exactly one active scheduler.** Every broker runs the scheduler loop, but it
 does work only while it holds a session-scoped advisory lock taken with
@@ -1134,7 +1183,9 @@ as an empty queue. For KEDA's Prometheus scaler, that means
 `ignoreNullValues: false`, so an empty result is an error rather than zero
 depth; see **Autoscaling** below for what the error does. When every broker is
 stale on one shard only (that shard is down), the sum leaves that shard out: it
-reads the other shards' depth, and the worst sample age shows the gap.
+reads the other shards' depth, and the worst sample age shows the gap. An
+autoscaler then sees less than the real backlog. No worker could lease the
+down shard's jobs anyway.
 
 **Depth cost.** N brokers each run the grouped count every 5s, and each branch
 reads every row in its state, so the cost grows with the non-terminal backlog.
@@ -1531,6 +1582,16 @@ not in this table.
 | The window tests pin the check path | `worker: TestAFastFailedRenewalCostsOneInterval`, `TestASlowFailedRenewalCanSpendTheLease`, `TestAConfirmationHasOnlyWhatIsLeftOfTheLease`, `TestALateConfirmationStillLandsBeforeTheDeadline`, and the four of `WindowTest` in `hopper-worker`; the mutant "a failed renewal moves the deadline", on a scratch copy | the old tests `-count=3`; the new setup `-count=3`; clean `-count=5`; Java three builds (2026-11-24, `b3abfbe`) | the mutant survived the old tests (`ok`) and died with `checkEveryDelivery(true)` in the last two (3 of 3 failed; the clean tree passed 5 of 5). Java: `hopper-worker` 4 of 4 three times; the module counts proto 20, client 38, worker 187, example worker 45, all green |
 | The Linux codegen pins | `scripts/java-gen.sh`'s `Linux-x86_64` case: both binaries downloaded from Maven Central and checksummed, never executed | 1 (2026-11-24) | protoc 4.36.2 SHA-256 `f6ee22d6…f864`, SHA-1 `bb3742d0…1ba4`; protoc-gen-grpc-java 1.85.1 SHA-256 `e0701e7a…a540`, SHA-1 `19389e4a…3c3e`; each SHA-1 equals Maven's own `.sha1`. The Linux branch has not run |
 | The CI steps, through one script | `scripts/ci.sh go-checks`, `go-test`, `java-build`, `java-gen-check` (and `conformance`, above) | 1 each (2026-11-24, 15:33–15:35) | exit 0 each: the checks (buf, helm lint, promtool in a container), 15 of 15 Go packages, `BUILD SUCCESSFUL`, `java stubs are current`. The workflow's 11 `uses:` lines are each pinned by a 40-character commit. **First GitHub Actions run: not done** |
+| The delivery path still passes the old gates on one database after the sharding changes | `go test -race -count=1 ./...`, `scripts/ci.sh go-checks`, `go test -tags chaos -count=1 ./test/chaos` and `scripts/conformance.sh go` at `ade5eae`; `scripts/conformance.sh java` at `d78ac4b` | 1 invocation each (2026-11-26 UTC) | pass: every package; chaos 9 of 9 tests, 595.4 s (the 40 s outage repeated 12, all `lost`; 9 worker kills repeated 32, all `killed`; PostgreSQL restarts answered 47 and 48 `Ack`s `UNAVAILABLE`, 0 `INTERNAL`); Go conformance 299.4 s; Java and the mixed fleet 348.2 s (`.plan-runs/phase-4-evidence/p4-gate-*`, local) |
+| With one of two shards down for 30 s, keyed enqueues to the other shard succeed, keyed enqueues to the down shard fail `UNAVAILABLE` at once, unkeyed enqueues succeed on the other shard, the other shard keeps completing, and nothing is lost or repeated unexplained | `chaos: TestOneShardDownServesTheRest` (2 shards, 2 brokers, 3 workers, 1,000 jobs a shard, 25 s of sampled enqueues) at `69b4689` | **4 of 4** (2026-11-26 UTC) | pass: shard 0 keyed 251 of 251 a run, p99 13.1–15.8 ms; shard 1 keyed 251 of 251 `UNAVAILABLE`, slowest 18.9–22.9 ms; unkeyed 251 of 251 (100%), all on shard 0; shard 0 completed 1,307–1,327 more during the outage; 2,251 of 2,251 completed; 5–8 repeats a run, all `lost`; shard 1's first completion 0.61–0.73 s after its restart ([sharding/shard-down/](sharding/shard-down/)) |
+| The chaos suite passes over two shards | `HOPPER_CHAOS_SHARDS=2 go test -tags chaos -count=1 ./test/chaos` at `12a0b92` (the PostgreSQL tests stop shard 0, and their gated jobs are on it) | 1 invocation (2026-11-26 UTC) | pass: 10 of 10 tests, 644.9 s. The 40 s outage repeated 9, all `lost`; 9 worker kills repeated 34, all `killed`; PostgreSQL restarts answered 41 and 28 `Ack`s `UNAVAILABLE`, 0 `INTERNAL`; the storm left 999 rows for 999 keys (`.plan-runs/phase-4-evidence/task-16/p4-sharded-chaos.txt`, local) |
+| Go, Java and a mixed fleet meet the conformance contract over two shards | `HOPPER_CHAOS_SHARDS=2 scripts/conformance.sh go` at `4ee25e4`; `HOPPER_CHAOS_SHARDS=2 scripts/conformance.sh java` (with `TestConformanceMixedFleet`) at `d78ac4b` | 1 pass each (2026-11-26 UTC) | pass: Go 318.5 s; Java and the mixed fleet 342.8 s (`.plan-runs/phase-4-evidence/task-16/`, local) |
+| Two shards drain faster than one on a laptop | `bash docs/bench/4/loop.sh` at `64ac8a9`: 2 brokers, `PIN=1` (one CPU a shard, one disk for both), 40,000 jobs of 300 B, layouts 8 × 16 and 2 × 256 | 5 a configuration, interleaved (2026-11-26 UTC) | **the prediction (1.6–2.0×) failed**: no measurable effect. 8 × 16: 7,715 jobs/s (6,700–8,120) against 6,727 (6,209–7,277), 1.15×; 2 × 256: 16,301 (13,442–16,709) against 15,808 (12,583–17,538), 1.03×. Commits per job +29% and +17%, WAL syncs per job about 2×; brokers at 31–37 of 180, PostgreSQL at 22–39 of 90 a shard; waits mostly `LWLock:WALWrite`, then `IO:WALSync` ([bench/4/summary.md](bench/4/summary.md)) |
+| A soak over two shards, with worker kills and broker restarts, loses nothing and explains every repeat | `k8s: TestSoak` on kind, bundled, 200 jobs/s open loop, 15 min, at `85bf556` | 1 (2026-11-26 UTC); the run before it, at `63f1639`, failed on a log capture gap (next row) | pass: 192,509 jobs, 0 lost, 0 unexplained, 0 rows on the wrong shard; 5 worker kills and 3 broker restarts; redelivery rate 0.000031; enqueue p99 44.1 ms; harness peak RSS 457 MiB ([sharding/soak-kind/soak-20261126T041519](sharding/soak-kind/soak-20261126T041519/summary.md)) |
+| An incomplete log capture fails the soak | `k8s: TestSoak` at `63f1639`, as above | 1 (2026-11-26 UTC) | failed: 1 job "completed, but no worker logged its start"; the capture lost about 50 ms at a kubelet log rotation. A harness failure: the job ran once. kind's kubelet now keeps a container's log in one file up to 1Gi, and the soak refuses to start when a worker would rotate mid-run ([sharding/soak-kind/soak-20261126T035404](sharding/soak-kind/soak-20261126T035404/NOTE.txt)) |
+| A shard failover mid-soak loses nothing | `k8s: TestSoak` on kind, `postgres.mode=cloudnativepg`, 2 shards, 5 min, `HOPPER_SOAK_KILL=crictl-debug`, shard 1's primary crashed at 150 s, at `d78ac4b` | 1 (2026-11-26 UTC) | pass: promoted after 18.6 s, the Cluster healthy after 31 s; 58,241 jobs, 0 lost, 0 unexplained; 4,426 of 62,835 offered calls behind, 208 retries answered deduplicated ([sharding/soak-kind/soak-20261126T043447](sharding/soak-kind/soak-20261126T043447/summary.md)) |
+| Throughput rises with shard count on GKE | 3 drains of 1,000,000 jobs of 300 B at 1, 2 and 4 shards, each shard a CloudNativePG Cluster with one synchronous standby on pd-ssd. **Reported** from a hand-run sitting (Task 20); `scaling.csv` and the drains' script are not committed | 3 a shard count (date not recorded) | as reported: 1 shard 11.0k jobs/s; 1 → 2 1.8×; 1 → 4 2.7× (29.7k jobs/s); spread 19%; capacity at 4 shards 71% of the drain, enqueue p99 18 ms at capacity ([sharding/gke/results.md](sharding/gke/results.md)) |
+| A 10M-job soak on 4 shards under worker kills, broker restarts and a shard failover loses nothing and explains every repeat | `k8s: TestSoak` on GKE, `HOPPER_SOAK_KILL=crictl-debug`, a worker kill every 3 m, a broker restart every 15 m, shard 1 failed over at half. **Reported** from the same sitting; the soak directory is not committed | 1 (date not recorded) | as reported: 10M jobs, 0 lost, 0 unexplained; redelivery rate 1e-4; completed within 0.9% of offered; promotion 26 s, back to the offered rate after 3 min; pickup p99 140 ms ([sharding/gke/results.md](sharding/gke/results.md)) |
 
 The Phase 2 rows are tabulated per run in [failover/summary.md](failover/summary.md).
 After a promotion the new primary has no synchronous standby for a few seconds,
