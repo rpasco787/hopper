@@ -1,0 +1,10 @@
+at_s,kind,target,outcome,detail
+180.0,worker-kill,hopper-worker-556b749c45-2ndm7,ok,container 85fe8547ac57 on hopper-control-plane via crictl-docker; restarted in place (restarts 3)
+300.0,broker-restart,deployment/hopper-broker,ok,rolled out in 6s
+360.0,worker-kill,hopper-worker-556b749c45-2ndm7,ok,container 9a3155a060cf on hopper-control-plane via crictl-docker; restarted in place (restarts 4)
+450.0,failover,shard 1,skipped,bundled mode: a shard has no standby to promote; run with postgres.mode=cloudnativepg
+540.0,worker-kill,hopper-worker-556b749c45-27k4v,ok,container 369a7fd51918 on hopper-control-plane via crictl-docker; restarted in place (restarts 4)
+600.0,broker-restart,deployment/hopper-broker,ok,rolled out in 7s
+720.0,worker-kill,hopper-worker-556b749c45-27k4v,ok,container 1dec1791305c on hopper-control-plane via crictl-docker; restarted in place (restarts 5)
+900.0,worker-kill,hopper-worker-556b749c45-2ndm7,ok,container d56f44b5446f on hopper-control-plane via crictl-docker; restarted in place (restarts 5)
+929.7,broker-restart,deployment/hopper-broker,ok,rolled out in 7s

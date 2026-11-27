@@ -663,6 +663,11 @@ Against the improvement plan's bands:
 
 ## What's left
 
+**The single-database ceiling's answer is sharding** (Phase 4): see
+[sharding.md](sharding.md) for one shard against two on this laptop
+(no measurable effect, one disk) and 1, 2 and 4 shards on GKE (2.7× at four,
+as reported).
+
 Separate-plan items that came out of Phase 1b:
 
 - **H4, the ownership Heartbeat (done 2026-11-23).** Credit-anchored freshness
@@ -719,4 +724,6 @@ Not measured in Phase 1b:
   throughput scales with brokers.
 - **Shard comparisons use one layout.** Phase 4's shard chart must compare
   against a one-broker baseline measured at the same layout and in the same
-  loop.
+  loop. Phase 4's laptop loop compared one and two shards at the same
+  layouts, 8 × 16 and 2 × 256 with 2 brokers, in one interleaved loop
+  ([bench/4/](bench/4/summary.md)).

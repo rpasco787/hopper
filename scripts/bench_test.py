@@ -2,6 +2,7 @@
 import csv
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,8 @@ import unittest
 # BENCH_TEST_MEMORY each worker's memory limit in bytes, BENCH_TEST_EXITED=1
 # makes the workers exited, and BENCH_TEST_NO_JFR=1 leaves docker cp nothing.
 # The warm-throughput query answers its offset plus 21, so a test sees the offset.
+# Each SQL call names its shard's service (postgres or postgres-1) after -T;
+# shard 1 answers its own counters, rate curve and drain span.
 FAKE_DOCKER = r'''#!/usr/bin/env python3
 import json, os, re, sys, time
 from pathlib import Path
@@ -92,25 +95,40 @@ elif args[0] == 'compose':
     event('compose files: ' + ' '.join(a for a in args if a.endswith(('.yml', '.yaml'))))
     if 'up' in args:
         event('compose up: ' + ' '.join(args))
+        if '--wait' in args and os.environ.get('BENCH_TEST_UP_FAIL') == '1':
+            print('container hopper-bench-broker-standby-1 exited (1)', file=sys.stderr)
+            sys.exit(1)
+    if 'logs' in args and '--no-color' in args and '--no-log-prefix' not in args:
+        event('compose logs')
+    if 'down' in args:
+        event('compose down')
     if 'up' in args and 'worker-b' in args:
         event('workers consuming')
         time.sleep(0.2)
     elif 'exec' in args:
         sql = args[-1]
-        event('sql: ' + ' '.join(sql.split())[:60])
+        # The service after -T is the shard: postgres is shard 0, postgres-1 shard 1.
+        svc = args[args.index('-T') + 1]
+        shard = 1 if svc == 'postgres-1' else 0
+        event(('sql: ' if shard == 0 else 'sql@%s: ' % svc) + ' '.join(sql.split())[:60])
         if "filter (where state = 'completed')" in sql:
             print('%s|%s' % (completed(), os.environ.get('BENCH_TEST_LEASED', '3')))
         elif 'offset' in sql: print(int(re.search(r'offset (\d+)', sql).group(1)) + 21)
-        elif 'floor(extract' in sql:
+        elif 'floor(' in sql:
             event('rate sql: ' + ' '.join(sql.split()))
-            print('0|5\n1|7')
+            print('0|5\n1|7' if shard == 0 else '1|2\n2|4')
         elif "where state = 'completed'" in sql: print(completed())
         elif 'to_regclass' in sql: print('t')
-        elif 'extract(epoch' in sql: print('100|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
+        elif 'extract(epoch' in sql:
+            # jobs|first lease|last finish (epoch seconds)|retried: 100 jobs in
+            # one second on shard 0; shard 1's 40 widen the span to two.
+            if shard == 0: print('100|1795566010.25|1795566011.25|' + os.environ.get('BENCH_TEST_RETRIED', '0'))
+            else: print('40|1795566010.75|1795566012.25|0')
         elif "select 'total|" in sql: print('total|statements=1|calls=1|total_ms=1')
         elif 'pg_stat_wal' in sql:
-            event('counters')
-            n = trace.read_text().splitlines().count('counters')
+            # Shard 1's counters grow twice as fast as shard 0's.
+            event('counters ' + svc)
+            n = trace.read_text().splitlines().count('counters ' + svc) * (shard + 1)
             print('%d|%d|%d|%d|%d|%d' % (1000 * n, 100 * n, 4096000 * n, 300 * n, 30 * n, 50 * n))
         elif 'wal_sync_method' in sql: print(os.environ.get('BENCH_TEST_WAL_SYNC', 'on|fdatasync'))
         elif "'ack_batch'" in sql:
@@ -121,7 +139,9 @@ elif args[0] == 'compose':
                 print('12:00:00.000|LWLock|LockManager|1')
                 print('12:00:00.000|CPU|running|3')
         elif 'n_live_tup' in sql: print('12:00:00|10|5.0|3|4|0')
-        elif 'with next as' in sql: print('0.500|12.0|4.00|250')
+        # The lease statement's sums: total ms, blocks, rows, calls (0.5 ms,
+        # 12 blocks and 4 rows a call, over 250 calls).
+        elif 'with next as' in sql: print('125.0|3000|1000|250')
     elif 'config' in args:
         services = {}
         path = next((a for a in args if a.endswith('settings.yaml')), None)
@@ -164,7 +184,11 @@ echo "${b}\"+Inf\"} $((a * n))"
 
 
 def run_bench(root, scenario='drain', **overrides):
-    """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess."""
+    """Runs scripts/bench.sh against the fake docker; returns the CompletedProcess.
+
+    It runs in its own process group, and a run that times out is killed with
+    the whole group: a sampler subshell left behind would outlive the test's
+    temporary directory and then find the real docker on PATH."""
     fake = root / 'docker'
     fake.write_text(FAKE_DOCKER)
     fake.chmod(0o755)
@@ -177,8 +201,15 @@ def run_bench(root, scenario='drain', **overrides):
                REF='HEAD', JOBS='1', BROKERS='1', WORKERS='4', PROFILE='0', KEEP='0',
                STATS_SETTLE='0', BENCH_TEST_CURLS=str(root / 'curls'))
     env.update(overrides)
-    return subprocess.run(['bash', 'scripts/bench.sh', scenario], env=env,
-                          capture_output=True, text=True, timeout=30)
+    p = subprocess.Popen(['bash', 'scripts/bench.sh', scenario], env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
 
 def trace(root):
@@ -259,7 +290,9 @@ class BenchmarkTest(unittest.TestCase):
             [row] = rows(root)
             self.assertEqual(row['pinned'], '1')
             cpuset = (evidence_dir(root) / 'cpuset.yaml').read_text()
-            self.assertIn('postgres: {cpuset: "0-1"}', cpuset)
+            # One CPU per shard, so one shard and two compare like with like.
+            self.assertIn('postgres: {cpuset: "0"}', cpuset)
+            self.assertIn('postgres-1: {cpuset: "1"}', cpuset)
             self.assertIn('broker-standby: {cpuset: "2-3"}', cpuset)
             self.assertIn('broker: {cpuset: "2-3"}', cpuset)
             self.assertIn('broker-4: {cpuset: "2-3"}', cpuset)
@@ -268,6 +301,105 @@ class BenchmarkTest(unittest.TestCase):
             self.assertTrue(compose_calls)
             for call in compose_calls:
                 self.assertIn('cpuset.yaml', call)
+
+    def test_one_shard_is_the_default_and_the_column_sits_before_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['shards'], '1')
+            header = (root / 'out' / 'results.csv').read_text().splitlines()[0].split(',')
+            self.assertEqual(header[-2:], ['shards', 'evidence'])
+            self.assertFalse(any('postgres-1' in e for e in trace(root) if e.startswith('compose up: ')))
+            self.assertFalse(any(e.startswith('sql@') for e in trace(root)))
+            self.assertFalse((evidence_dir(root) / 'shards.yaml').exists())
+            self.assertIn('shards: 1', (evidence_dir(root) / 'machine.txt').read_text())
+
+    def test_shards_must_be_one_or_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), SHARDS='3')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('SHARDS must be 1 or 2', result.stderr)
+
+    def test_two_shards_start_postgres_1_and_give_every_broker_both_dsns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, SHARDS='2', BROKERS='2')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['shards'], '2')
+            ups = [e for e in trace(root) if e.startswith('compose up: ')]
+            self.assertTrue(any('postgres postgres-1 broker broker-standby' in e for e in ups), ups)
+            shards = (evidence_dir(root) / 'shards.yaml').read_text()
+            for svc in ('broker', 'broker-standby', 'broker-3', 'broker-4'):
+                self.assertIn('  %s:\n' % svc, shards)
+            self.assertEqual(shards.count('HOPPER_DSN: ""'), 4)
+            self.assertEqual(shards.count(
+                'HOPPER_SHARD_DSNS: "postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable '
+                'postgres://hopper:hopper@postgres-1:5432/hopper?sslmode=disable"'), 4)
+            for call in [e for e in trace(root) if e.startswith('compose files:')]:
+                self.assertIn('shards.yaml', call)
+            # Every shard gets the extension and the server settings.
+            self.assertIn('sql@postgres-1: create extension pg_stat_statements', trace(root))
+            self.assertIn('postgres-1:', (evidence_dir(root) / 'postgres.yaml').read_text())
+
+    def test_two_shards_sum_their_counters_and_statements(self):
+        # Shard 0's counters grow by 1,000 commits and shard 1's by 2,000, over
+        # JOBS=1000: 3.00 commits a job. Each shard ran 10 ack batches and 5
+        # single acks, and 250 lease calls, for the fake curl's 1,000 Ack RPCs;
+        # each shard reports 500 of the 1,000 jobs completed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, SHARDS='2', JOBS='1000', BENCH_TEST_COMPLETED='500',
+                               BENCH_TEST_ACKS='1000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            [row] = rows(root)
+            self.assertEqual(row['commits_per_job'], '3.00')
+            self.assertEqual(row['wal_syncs_per_job'], '0.300')
+            self.assertEqual(row['wal_kb_per_job'], '12.00')
+            self.assertEqual(row['dead_tuples'], '300')  # 100 on shard 0 and 200 on shard 1 at the end
+            self.assertEqual((row['ack_batch'], row['ack_fallback_pct']), ('50.0', '1.0'))
+            self.assertEqual((row['lease_mean_ms'], row['lease_blks_per_call']), ('0.500', '12.0'))
+            self.assertEqual((row['lease_rows_per_call'], row['lease_calls_per_job']), ('4.00', '0.500'))
+            # 140 jobs from the first lease on either shard to the last finish: 2 s.
+            self.assertEqual(row['throughput'], '70')
+            # Leased rows add up across shards: 3 on each.
+            self.assertEqual(row['max_leased'], '6')
+            # Wait samples are taken from both shards at once: 4 active on each.
+            self.assertEqual(row['active_backends'], '8.00')
+            ev = evidence_dir(root)
+            for i in (0, 1):
+                self.assertTrue((ev / f'statements-{i}.txt').exists())
+                self.assertTrue((ev / f'waits-{i}.psv').exists())
+                self.assertEqual(len((ev / f'counters-{i}.txt').read_text().splitlines()), 2)
+                self.assertIn('ack_one|5|5', (ev / f'confirmations-{i}.txt').read_text())
+            self.assertIn('ack_one|10|10', (ev / 'confirmations.txt').read_text())
+            self.assertFalse((ev / 'statements.txt').exists())
+            # The rate curve adds the shards' tenths: 5, 7+2 and 4, counted
+            # from the earliest first lease, to the microsecond.
+            self.assertIn('0|5\n1|9\n2|4', (ev / 'rate.psv').read_text())
+            rate = [e for e in trace(root) if e.startswith('rate sql: ')]
+            self.assertEqual(len(rate), 2, rate)
+            for q in rate:
+                self.assertIn('(extract(epoch from finished_at) - 1795566010.250000)', q)
+
+    def test_two_shards_refuse_warm_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_bench(Path(tmp), SHARDS='2', JOBS='1000', WARM_JOBS='100')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('WARM_JOBS needs SHARDS=1', result.stderr)
+
+    def test_a_stack_that_fails_to_start_still_keeps_its_logs_and_comes_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_bench(root, SHARDS='2', BENCH_TEST_UP_FAIL='1')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('command not found', result.stderr)
+            events = trace(root)
+            self.assertIn('compose logs', events)
+            self.assertEqual(events[-1], 'compose down', events[-3:])
+            self.assertTrue((evidence_dir(root) / 'logs.txt').exists())
 
     def test_four_brokers_split_the_workers_evenly(self):
         with tempfile.TemporaryDirectory() as tmp:

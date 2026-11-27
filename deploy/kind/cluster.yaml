@@ -1,9 +1,20 @@
 # The hopper development cluster. The node image is pinned by digest to the
 # kind v0.33.0 release's 1.35 build: kubectl 1.34 supports up to 1.35, and the
 # chart's preStop sleep action needs at least 1.34.
+#
+# The kubelet rotates a container's log at containerLogMaxSize (10Mi by
+# default), and a `kubectl logs --follow` open across a rotation can miss the
+# lines written as it happens: the soak's log capture lost about 50 ms of one
+# worker's lines that way (Phase 4, Task 19). 1Gi keeps a worker's log in one
+# file for a whole kind proof, so the captures the accounting reads are whole.
+# test/k8s TestSoak checks the setting before it starts.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: hopper
 nodes:
   - role: control-plane
     image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        containerLogMaxSize: 1Gi

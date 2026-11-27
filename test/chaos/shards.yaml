@@ -1,0 +1,35 @@
+# Two shards for the chaos suite (HOPPER_CHAOS_SHARDS=2, or a test that asks
+# for them): a second PostgreSQL, and both brokers given both DSNs in shard
+# order. HOPPER_DSN is emptied because a broker refuses both settings.
+# postgres-1 is configured as docker-compose.yml configures postgres, so the
+# two databases differ only in their data.
+services:
+  postgres-1:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hopper
+      POSTGRES_PASSWORD: hopper
+      POSTGRES_DB: hopper
+    ports:
+      - "127.0.0.1:${HOPPER_CHAOS_PG1_PORT:?set by the chaos suite}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hopper -d hopper"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  broker:
+    depends_on:
+      postgres-1: {condition: service_healthy}
+    environment:
+      HOPPER_DSN: ""
+      HOPPER_SHARD_DSNS: >-
+        postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
+        postgres://hopper:hopper@postgres-1:5432/hopper?sslmode=disable
+  broker-standby:
+    depends_on:
+      postgres-1: {condition: service_healthy}
+    environment:
+      HOPPER_DSN: ""
+      HOPPER_SHARD_DSNS: >-
+        postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable
+        postgres://hopper:hopper@postgres-1:5432/hopper?sslmode=disable

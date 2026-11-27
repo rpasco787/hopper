@@ -153,7 +153,7 @@ func TestALockedRowDelaysOnlyItsOwnCaller(t *testing.T) {
 	first := ack(warm)
 	<-batches // the only flight is busy, so the next two queue together
 	freeDone, lockedDone := ack(free), ack(locked)
-	require.Eventually(t, func() bool { return svc.acks.queued() == 2 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return svc.acks[0].queued() == 2 }, time.Second, time.Millisecond)
 	close(hold)
 	require.NoError(t, <-first)
 	require.Len(t, <-batches, 2, "the free and the locked pair share a batch")

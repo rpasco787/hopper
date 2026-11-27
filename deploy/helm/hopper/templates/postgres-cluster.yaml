@@ -1,22 +1,28 @@
 {{- if eq .Values.postgres.mode "cloudnativepg" }}
 {{- $c := .Values.postgres.cloudnativepg }}
+{{- /* One Cluster per shard: <release>-db for one, <release>-db-<i> for more. */}}
+{{- $shards := include "hopper.shards" . | int }}
+{{- range $i := until $shards }}
+{{- if gt $i 0 }}
+---
+{{- end }}
 # A replicated PostgreSQL run by the CloudNativePG operator. Brokers reach the
 # primary through <name>-rw, which the operator moves on failover.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: {{ include "hopper.fullname" . }}-db
+  name: {{ include "hopper.fullname" $ }}-db{{ if gt $shards 1 }}-{{ $i }}{{ end }}
   labels:
-    {{- include "hopper.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+    {{- include "hopper.labels" (dict "root" $ "component" "postgres") | nindent 4 }}
 spec:
   instances: {{ $c.instances }}
   imageName: {{ $c.image }}
   bootstrap:
     initdb:
-      database: {{ .Values.postgres.database | quote }}
-      owner: {{ .Values.postgres.user | quote }}
+      database: {{ $.Values.postgres.database | quote }}
+      owner: {{ $.Values.postgres.user | quote }}
       secret:
-        name: {{ include "hopper.fullname" . }}-postgres
+        name: {{ include "hopper.fullname" $ }}-postgres
   {{- if gt ($c.synchronousStandbys | int) 0 }}
   # A commit returns only after this many standbys have flushed it, so a
   # failover to the most advanced standby keeps every acknowledged commit.
@@ -31,4 +37,5 @@ spec:
     size: {{ $c.storage }}
   resources:
     {{- toYaml $c.resources | nindent 4 }}
+{{- end }}
 {{- end }}

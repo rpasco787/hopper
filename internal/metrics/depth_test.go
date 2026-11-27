@@ -68,15 +68,60 @@ func TestDepthReportsEveryStateForLabelledQueues(t *testing.T) {
 	require.NoError(t, b.UpdateDepth([]store.QueueDepth{{Queue: "a", State: store.StateAvailable, Count: 3}}, time.Unix(10, 0)))
 	require.NoError(t, testutil.CollectAndCompare(b.depth, strings.NewReader(`# HELP hopper_queue_depth Jobs in each non-terminal work state at the last successful sample.
 # TYPE hopper_queue_depth gauge
-hopper_queue_depth{queue="_other",state="available"} 0
-hopper_queue_depth{queue="_other",state="dead"} 0
-hopper_queue_depth{queue="_other",state="leased"} 0
-hopper_queue_depth{queue="_other",state="scheduled"} 0
-hopper_queue_depth{queue="a",state="available"} 3
-hopper_queue_depth{queue="a",state="dead"} 0
-hopper_queue_depth{queue="a",state="leased"} 0
-hopper_queue_depth{queue="a",state="scheduled"} 0
+hopper_queue_depth{queue="_other",shard="0",state="available"} 0
+hopper_queue_depth{queue="_other",shard="0",state="dead"} 0
+hopper_queue_depth{queue="_other",shard="0",state="leased"} 0
+hopper_queue_depth{queue="_other",shard="0",state="scheduled"} 0
+hopper_queue_depth{queue="a",shard="0",state="available"} 3
+hopper_queue_depth{queue="a",shard="0",state="dead"} 0
+hopper_queue_depth{queue="a",shard="0",state="leased"} 0
+hopper_queue_depth{queue="a",shard="0",state="scheduled"} 0
 `), "hopper_queue_depth"))
+}
+
+func TestDepthCarriesItsShard(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	b, err := NewBroker(reg, []string{"a"})
+	require.NoError(t, err)
+	require.NoError(t, b.UpdateShardDepth(0, []store.QueueDepth{{Queue: "a", State: store.StateAvailable, Count: 3}}, time.Unix(10, 0)))
+	require.NoError(t, b.UpdateShardDepth(1, []store.QueueDepth{{Queue: "a", State: store.StateAvailable, Count: 4}}, time.Unix(11, 0)))
+	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`# HELP hopper_queue_depth Jobs in each non-terminal work state at the last successful sample.
+# TYPE hopper_queue_depth gauge
+hopper_queue_depth{queue="_other",shard="0",state="available"} 0
+hopper_queue_depth{queue="_other",shard="0",state="dead"} 0
+hopper_queue_depth{queue="_other",shard="0",state="leased"} 0
+hopper_queue_depth{queue="_other",shard="0",state="scheduled"} 0
+hopper_queue_depth{queue="_other",shard="1",state="available"} 0
+hopper_queue_depth{queue="_other",shard="1",state="dead"} 0
+hopper_queue_depth{queue="_other",shard="1",state="leased"} 0
+hopper_queue_depth{queue="_other",shard="1",state="scheduled"} 0
+hopper_queue_depth{queue="a",shard="0",state="available"} 3
+hopper_queue_depth{queue="a",shard="0",state="dead"} 0
+hopper_queue_depth{queue="a",shard="0",state="leased"} 0
+hopper_queue_depth{queue="a",shard="0",state="scheduled"} 0
+hopper_queue_depth{queue="a",shard="1",state="available"} 4
+hopper_queue_depth{queue="a",shard="1",state="dead"} 0
+hopper_queue_depth{queue="a",shard="1",state="leased"} 0
+hopper_queue_depth{queue="a",shard="1",state="scheduled"} 0
+# HELP hopper_queue_depth_last_sample_timestamp_seconds Unix time of this broker's last successful queue depth sample.
+# TYPE hopper_queue_depth_last_sample_timestamp_seconds gauge
+hopper_queue_depth_last_sample_timestamp_seconds{shard="0"} 10
+hopper_queue_depth_last_sample_timestamp_seconds{shard="1"} 11
+`), "hopper_queue_depth", "hopper_queue_depth_last_sample_timestamp_seconds"))
+}
+
+// TestAnUnsampledShardHasNoTimestamp: a shard reports zeros and no timestamp
+// until its first sample, as a broker does; shard 0 is always reported.
+func TestAnUnsampledShardHasNoTimestamp(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	b, err := NewBroker(reg, []string{"a"})
+	require.NoError(t, err)
+	require.NoError(t, b.UpdateShardDepth(1, []store.QueueDepth{{Queue: "a", State: store.StateAvailable, Count: 4}}, time.Unix(11, 0)))
+	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`# HELP hopper_queue_depth_last_sample_timestamp_seconds Unix time of this broker's last successful queue depth sample.
+# TYPE hopper_queue_depth_last_sample_timestamp_seconds gauge
+hopper_queue_depth_last_sample_timestamp_seconds{shard="1"} 11
+`), "hopper_queue_depth_last_sample_timestamp_seconds"))
+	require.Equal(t, 16, testutil.CollectAndCount(b.depth, "hopper_queue_depth"), "shard 0's zeros and shard 1's sample")
 }
 
 func TestDrainedQueueReadsZero(t *testing.T) {
@@ -245,4 +290,18 @@ func TestSamplerBoundsEachSample(t *testing.T) {
 	require.Eventually(t, func() bool { return source.count() >= 2 }, 100*time.Millisecond, 5*time.Millisecond)
 	cancel()
 	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+func TestSamplerPublishesUnderItsShard(t *testing.T) {
+	reg, b := newDepthBroker(t)
+	sampler := &DepthSampler{Source: &fakeDepthSource{rows: depthRows(2)}, Metrics: b, Shard: 1, Interval: time.Second}
+	require.NoError(t, sampler.Once(context.Background()))
+	family := metricFamily(t, reg, "hopper_queue_depth")
+	got := map[string]float64{}
+	for _, metric := range family.Metric {
+		if l := metricLabels(metric); l["queue"] == "a" && l["state"] == "available" {
+			got[l["shard"]] = metric.GetGauge().GetValue()
+		}
+	}
+	require.Equal(t, map[string]float64{"0": 0, "1": 2}, got)
 }

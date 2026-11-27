@@ -13,8 +13,11 @@
 # test/chart fails if this copy drifts from it. The 15 is
 # metrics.DepthFreshness in seconds.
 #
-# Each broker's sample timestamp is its own series; "advancing" means it equals
-# the evaluation time, "frozen" means it stopped at 40s.
+# Each broker samples every shard, and each (broker, shard) sample timestamp is
+# its own series; "advancing" means it equals the evaluation time, "frozen"
+# means it stopped at 40s. Depth is read as: drop stale (broker, shard)
+# samples, take max across brokers per (queue, shard), then sum across shards.
+# The single-shard cases carry shard="0", as an unsharded broker exports.
 
 rule_files: []
 evaluation_interval: 5s
@@ -24,22 +27,22 @@ tests:
   # read ignores it; the unsafe max would report the stale 10000.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="available"}'
         values: '0x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="available"}'
         values: '10000x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091",shard="0"}'
         values: '0+5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091",shard="0"}'
         values: '0+5x8 40x12'
     promql_expr_test:
-      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+      - expr: sum by (queue) (max by (queue, shard) (hopper_queue_depth{state="available"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{queue="m"}'
             value: 0
       # Why the filter exists.
-      - expr: max by (queue) (hopper_queue_depth{state="available"})
+      - expr: sum by (queue) (max by (queue, shard) (hopper_queue_depth{state="available"}))
         eval_time: 100s
         exp_samples:
           - labels: '{queue="m"}'
@@ -54,60 +57,89 @@ tests:
   # Every broker is stale: fresh depth is empty ("no data"), never 0.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="available"}'
         values: '5x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="available"}'
         values: '5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091",shard="0"}'
         values: '0+5x8 40x12'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091",shard="0"}'
         values: '0+5x8 40x12'
     promql_expr_test:
-      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+      - expr: sum by (queue) (max by (queue, shard) (hopper_queue_depth{state="available"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples: []
-      - expr: sum(max by (queue) (hopper_queue_depth{state="dead"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+      - expr: sum(max by (queue, shard) (hopper_queue_depth{state="dead"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples: []
 
-  # Both brokers fresh and agreeing: max, not sum. Totals across queues sum the
-  # per-queue max, so two queues with 2 and 3 dead jobs read 5, not 10.
+  # Two shards, two brokers. Broker b's sample of shard 1 froze at 40s with a
+  # stale 10000; its shard 0 sample is fresh. Fresh-only reads drop exactly
+  # (b, shard 1): available = max over brokers per shard (5 and 7), summed = 12.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="available"}'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="available"}'
+        values: '5x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="1",state="available"}'
         values: '7x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="available"}'
-        values: '7x20'
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="leased"}'
-        values: '4x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="leased"}'
-        values: '4x20'
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",state="dead"}'
-        values: '2x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",state="dead"}'
-        values: '2x20'
-      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="n",state="dead"}'
-        values: '3x20'
-      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="n",state="dead"}'
-        values: '3x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="1",state="available"}'
+        values: '10000x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091",shard="0"}'
         values: '0+5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091",shard="0"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091",shard="1"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091",shard="1"}'
+        values: '0+5x8 40x12'
+    promql_expr_test:
+      - expr: sum by (queue) (max by (queue, shard) (hopper_queue_depth{state="available"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+        eval_time: 100s
+        exp_samples:
+          - labels: '{queue="m"}'
+            value: 12
+
+  # Both brokers fresh and agreeing: max across brokers, not sum. Totals across
+  # queues sum the per-queue max, so two queues with 2 and 3 dead jobs read 5,
+  # not 10.
+  - interval: 5s
+    input_series:
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="available"}'
+        values: '7x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="available"}'
+        values: '7x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="leased"}'
+        values: '4x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="leased"}'
+        values: '4x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="m",shard="0",state="dead"}'
+        values: '2x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="m",shard="0",state="dead"}'
+        values: '2x20'
+      - series: 'hopper_queue_depth{job="broker",instance="a:9091",queue="n",shard="0",state="dead"}'
+        values: '3x20'
+      - series: 'hopper_queue_depth{job="broker",instance="b:9091",queue="n",shard="0",state="dead"}'
+        values: '3x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="a:9091",shard="0"}'
+        values: '0+5x20'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{job="broker",instance="b:9091",shard="0"}'
         values: '0+5x20'
     promql_expr_test:
-      - expr: max by (queue) (hopper_queue_depth{state="available"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15))
+      - expr: sum by (queue) (max by (queue, shard) (hopper_queue_depth{state="available"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{queue="m"}'
             value: 7
-      - expr: sum by (state) (max by (queue, state) (hopper_queue_depth{state=~"scheduled|available|leased"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+      - expr: sum by (state) (max by (queue, state, shard) (hopper_queue_depth{state=~"scheduled|available|leased"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{state="available"}'
             value: 7
           - labels: '{state="leased"}'
             value: 4
-      - expr: sum(max by (queue) (hopper_queue_depth{state="dead"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
+      - expr: sum(max by (queue, shard) (hopper_queue_depth{state="dead"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{}'
@@ -149,28 +181,28 @@ tests:
   # broker of another release.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",shard="0",state="available"}'
         values: '300x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",shard="0",state="available"}'
         values: '300x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="cpu_burn",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="cpu_burn",shard="0",state="available"}'
         values: '100x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="cpu_burn",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="cpu_burn",shard="0",state="available"}'
         values: '100x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="leased"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",shard="0",state="leased"}'
         values: '160x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="_other",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="_other",shard="0",state="available"}'
         values: '5000x20'
-      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",shard="0",state="available"}'
         values: '999x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091",shard="0"}'
         values: '0+5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091",shard="0"}'
         values: '0+5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091",shard="0"}'
         values: '0+5x20'
     promql_expr_test:
-      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+      - expr: sum(max by (queue, shard) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{}'
@@ -180,16 +212,16 @@ tests:
   # workers up once a fresh broker sees the drain.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",shard="0",state="available"}'
         values: '0x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",shard="0",state="available"}'
         values: '10000x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091",shard="0"}'
         values: '0+5x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091",shard="0"}'
         values: '0+5x8 40x12'
     promql_expr_test:
-      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+      - expr: sum(max by (queue, shard) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
         eval_time: 100s
         exp_samples:
           - labels: '{}'
@@ -200,19 +232,19 @@ tests:
   # another release with its own backlog changes nothing.
   - interval: 5s
     input_series:
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="a:9091",queue="sleep",shard="0",state="available"}'
         values: '5x20'
-      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="hopper",job="hopper-broker",instance="b:9091",queue="sleep",shard="0",state="available"}'
         values: '5x20'
-      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",state="available"}'
+      - series: 'hopper_queue_depth{namespace="other",job="hopper-broker",instance="c:9091",queue="sleep",shard="0",state="available"}'
         values: '999x20'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="a:9091",shard="0"}'
         values: '0+5x8 40x12'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper",job="hopper-broker",instance="b:9091",shard="0"}'
         values: '0+5x8 40x12'
-      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091"}'
+      - series: 'hopper_queue_depth_last_sample_timestamp_seconds{namespace="other",job="hopper-broker",instance="c:9091",shard="0"}'
         values: '0+5x20'
     promql_expr_test:
-      - expr: sum(max by (queue) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
+      - expr: sum(max by (queue, shard) (hopper_queue_depth{namespace="hopper", job="hopper-broker", state="available", queue=~"sleep|fail_n_times|cpu_burn"} and on (job, instance, shard) (time() - hopper_queue_depth_last_sample_timestamp_seconds{namespace="hopper", job="hopper-broker"} < 15)))
         eval_time: 100s
         exp_samples: []

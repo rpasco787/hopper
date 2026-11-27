@@ -2,10 +2,13 @@ package broker
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/rpasco787/hopper/internal/store"
 )
 
 // Bounds on the wakeup machinery. Announcing and listening are hints, so
@@ -175,17 +178,31 @@ func (w *wakeups) take() []string {
 }
 
 // RunWakeups sends this broker's announcements to the others and delivers
-// theirs to its lease streams, until ctx ends. Without Config.Wakeups there is
-// nothing to run: streams on this broker are still woken by its own enqueues,
-// and everything else waits for the poll.
+// theirs to its lease streams, until ctx ends. It listens on every one of
+// Config.Listeners at once, one per shard for a sharded store, or on
+// Config.Wakeups when that is also a store.Listener. Without Config.Wakeups
+// there is nothing to run: streams on this broker are still woken by its own
+// enqueues, and everything else waits for the poll.
 func (s *Service) RunWakeups(ctx context.Context) error {
 	if s.cfg.Wakeups == nil {
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	listeners := s.cfg.Listeners
+	if listeners == nil {
+		if l, ok := s.cfg.Wakeups.(store.Listener); ok {
+			listeners = []store.Listener{l}
+		}
+	}
 	var wg sync.WaitGroup
 	wg.Go(func() { s.announceLoop(ctx) })
-	wg.Go(func() { s.listenLoop(ctx) })
+	for i, l := range listeners {
+		logger := s.cfg.Logger
+		if len(listeners) > 1 {
+			logger = logger.With("shard", i)
+		}
+		wg.Go(func() { s.listenLoop(ctx, l, logger) })
+	}
 	wg.Wait()
 	return ctx.Err()
 }
@@ -214,7 +231,9 @@ func (s *Service) announceLoop(ctx context.Context) {
 	}
 }
 
-func (s *Service) listenLoop(ctx context.Context) {
+// listenLoop runs one listener, l, reconnecting with backoff until ctx ends.
+// logger carries the listener's shard when there is more than one.
+func (s *Service) listenLoop(ctx context.Context, l store.Listener, logger *slog.Logger) {
 	delay := listenRetryMin
 	// lost is when the listener last went down; zero while it has never
 	// failed or is back. Listen calls wake on this goroutine, so the callback
@@ -222,15 +241,15 @@ func (s *Service) listenLoop(ctx context.Context) {
 	var lost time.Time
 	for {
 		started := time.Now()
-		err := s.cfg.Wakeups.Listen(ctx, func(queue string) {
+		err := l.Listen(ctx, func(queue string) {
 			s.wakes.wake(queue)
 			if queue != "" {
 				return
 			}
 			// Report readiness after the reconnect wake has been delivered.
-			s.cfg.Logger.DebugContext(ctx, "wakeup listener ready")
+			logger.DebugContext(ctx, "wakeup listener ready")
 			if !lost.IsZero() {
-				s.cfg.Logger.InfoContext(ctx, "wakeup listener reconnected",
+				logger.InfoContext(ctx, "wakeup listener reconnected",
 					"down_for", time.Since(lost).Round(time.Millisecond).String())
 				lost = time.Time{}
 			}
@@ -244,7 +263,7 @@ func (s *Service) listenLoop(ctx context.Context) {
 		if time.Since(started) > listenRetryMax {
 			delay = listenRetryMin // it was up for a while: this is a new failure
 		}
-		s.cfg.Logger.WarnContext(ctx, "wakeup listener stopped; lease streams poll until it reconnects",
+		logger.WarnContext(ctx, "wakeup listener stopped; lease streams poll until it reconnects",
 			"err", err, "retry_in", delay.String())
 		timer := time.NewTimer(delay)
 		select {

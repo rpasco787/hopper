@@ -11,7 +11,7 @@ import bench_chart  # noqa: E402
 
 def write(path, rows):
     with open(path, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['scenario', 'variant', 'brokers', 'throughput'])
+        w = csv.DictWriter(f, fieldnames=['scenario', 'variant', 'brokers', 'throughput', 'shards'])
         w.writeheader()
         w.writerows(rows)
 
@@ -36,6 +36,18 @@ class ChartTest(unittest.TestCase):
         self.assertIn('>after<', svg)
         self.assertIn('9,000', svg)
 
+
+    def test_medians_can_run_along_another_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'r.csv'
+            write(p, [dict(scenario='drain', variant='w8c16', brokers=2, shards=s, throughput=t)
+                      for s, t in ((1, 10), (1, 30), (2, 50), (2, 70))])
+            self.assertEqual(bench_chart.medians(p, 'w8c16', x='shards'), {1: 20.0, 2: 60.0})
+
+    def test_the_x_axis_is_named_after_its_column(self):
+        svg = bench_chart.chart([('w8c16', {1: 5000, 2: 9000})], x='shards')
+        self.assertIn('>shards<', svg)
+        self.assertNotIn('>brokers<', svg)
 
 if __name__ == '__main__':
     unittest.main()

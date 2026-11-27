@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rpasco787/hopper/client"
@@ -155,23 +156,32 @@ func TestEnqueueStormDeduplicates(t *testing.T) {
 	s.waitDatabase()
 
 	// Rows per key, counted by the database: a map from key to id would
-	// collapse duplicate rows into one.
+	// collapse duplicate rows into one. Each shard's counts are added, so a
+	// key with a row on two shards shows as two rows.
 	qctx, qcancel := s.within(reportLimit)
 	defer qcancel()
-	rows, err := s.db.Query(qctx, `select idempotency_key, count(*), (array_agg(id))[1] from jobs
-	                               where queue = 'storm' and idempotency_key like $1 || '-%' group by idempotency_key`, run)
-	require.NoError(t, err)
 	perKey, stored := map[string]int{}, map[string]uuid.UUID{}
-	for rows.Next() {
+	require.NoError(t, s.queryAll(qctx, func(rows pgx.Rows) error {
 		var k string
 		var n int
 		var id uuid.UUID
-		require.NoError(t, rows.Scan(&k, &n, &id))
-		perKey[k], stored[k] = n, id
-	}
-	require.NoError(t, rows.Err())
+		if err := rows.Scan(&k, &n, &id); err != nil {
+			return err
+		}
+		perKey[k] += n
+		stored[k] = id
+		return nil
+	}, `select idempotency_key, count(*), (array_agg(id))[1] from jobs
+	    where queue = 'storm' and idempotency_key like $1 || '-%' group by idempotency_key`, run))
 	var total int
-	require.NoError(t, s.db.QueryRow(qctx, `select count(*) from jobs where queue = 'storm' and idempotency_key like $1 || '-%'`, run).Scan(&total))
+	require.NoError(t, s.queryAll(qctx, func(rows pgx.Rows) error {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		total += n
+		return nil
+	}, `select count(*) from jobs where queue = 'storm' and idempotency_key like $1 || '-%'`, run))
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -15,4 +15,26 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
+{{- if gt (include "hopper.shards" . | int) 1 }}
+{{- range $i := until (include "hopper.shards" . | int) }}
+---
+# Shard {{ $i }}'s host: headless, and selecting StatefulSet pod {{ $i }} alone, so
+# its DNS name resolves straight to that pod's database once it is ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hopper.fullname" $ }}-postgres-{{ $i }}
+  labels:
+    {{- include "hopper.labels" (dict "root" $ "component" "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "hopper.selectorLabels" (dict "root" $ "component" "postgres") | nindent 4 }}
+    statefulset.kubernetes.io/pod-name: {{ include "hopper.fullname" $ }}-postgres-{{ $i }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- end }}
+{{- end }}
 {{- end }}

@@ -11,6 +11,10 @@ at least 10% better than the control's and the two ranges don't overlap. It is
 effect*. Both variants must come from the same interleaved loop
 (docs/scaling.md). --where KEY=VALUE keeps only rows with that column value,
 for loops where a variant name alone doesn't identify a configuration.
+--column KEY picks control and treatment by another column than variant, as
+for one shard against two:
+
+    python3 scripts/bench_compare.py docs/bench/4/results.csv 1 2 --column shards --where variant=w8c16
 """
 import argparse
 import csv
@@ -19,13 +23,13 @@ import sys
 from collections import defaultdict
 
 
-def values(path, variant, metric, where=()):
+def values(path, variant, metric, where=(), column='variant'):
     by = defaultdict(list)
     with open(path) as f:
         for r in csv.DictReader(f):
             if any(r.get(k, '') != v for k, v in where):
                 continue
-            if r.get('variant', '') == variant and r.get(metric, '') != '':
+            if r.get(column, '') == variant and r.get(metric, '') != '':
                 by[int(r['brokers'])].append(float(r[metric]))
     return by
 
@@ -58,6 +62,7 @@ def main(argv=None):
     p.add_argument('--metric', default='throughput')
     p.add_argument('--lower-is-better', action='store_true')
     p.add_argument('--where', action='append', default=[], metavar='KEY=VALUE')
+    p.add_argument('--column', default='variant', help='the column control and treatment are values of')
     a = p.parse_args(argv)
     where = []
     for w in a.where:
@@ -65,8 +70,8 @@ def main(argv=None):
         if not sep:
             sys.exit(f'--where needs KEY=VALUE, got {w!r}')
         where.append((k, v))
-    ctl = values(a.results, a.control, a.metric, where)
-    trt = values(a.results, a.treatment, a.metric, where)
+    ctl = values(a.results, a.control, a.metric, where, a.column)
+    trt = values(a.results, a.treatment, a.metric, where, a.column)
     counts = sorted(set(ctl) & set(trt))
     if not counts:
         sys.exit(f'no broker count has both {a.control!r} and {a.treatment!r} rows with {a.metric}')

@@ -1,0 +1,149 @@
+{
+  "Jobs": 2251,
+  "Completed": 2251,
+  "Duplicated": {
+    "01a21596-4e3e-71a6-9901-5b8444d8a53d": 2,
+    "01a21596-4e3e-7b0f-b201-33bb4f2aecbb": 2,
+    "01a21596-4e3f-7353-b501-1651114c24aa": 2,
+    "01a21596-4e3f-7977-9001-836ba1e7e351": 2,
+    "01a21596-4e3f-7ddc-b001-ef7b6642e6eb": 2,
+    "01a21596-4e40-72ae-9601-0047d90c3275": 2
+  },
+  "NeverStarted": null,
+  "Unfinished": null,
+  "Extras": [
+    {
+      "ID": "01a21596-4e3f-7353-b501-1651114c24aa",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21596-4e3f-7977-9001-836ba1e7e351",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21596-4e3e-71a6-9901-5b8444d8a53d",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21596-4e3e-7b0f-b201-33bb4f2aecbb",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21596-4e3f-7ddc-b001-ef7b6642e6eb",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    },
+    {
+      "ID": "01a21596-4e40-72ae-9601-0047d90c3275",
+      "Attempts": 2,
+      "UnstartedNacks": 0,
+      "Restarted": 1,
+      "NeverReceived": 0
+    }
+  ],
+  "ExtraLeases": 6,
+  "UnstartedNacks": 0,
+  "Restarted": 6,
+  "NeverReceived": 0,
+  "Shutdowns": null,
+  "Unparsed": {},
+  "Processes": [
+    {
+      "Pod": "hopper-chaos-worker-1",
+      "N": 1,
+      "Starts": 1002,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:02:15.045871917Z"
+    },
+    {
+      "Pod": "hopper-chaos-worker-2",
+      "N": 1,
+      "Starts": 860,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:02:15.046531834Z"
+    },
+    {
+      "Pod": "hopper-chaos-worker-3",
+      "N": 1,
+      "Starts": 395,
+      "Interrupted": 0,
+      "Stopped": false,
+      "Cut": false,
+      "Last": "2026-11-26T02:02:15.814967959Z"
+    }
+  ],
+  "Repeats": [
+    {
+      "ID": "01a21596-4e3f-7353-b501-1651114c24aa",
+      "LeaseID": "6a0eed26-0a1c-4c44-bc42-d1f48bfc2b85",
+      "Pod": "hopper-chaos-worker-2",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.446755014Z",
+      "NextStartedAt": "2026-11-26T02:02:15.024861251Z"
+    },
+    {
+      "ID": "01a21596-4e3f-7977-9001-836ba1e7e351",
+      "LeaseID": "68284bb6-1dab-450a-b3cb-bd42246b5fcc",
+      "Pod": "hopper-chaos-worker-3",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.452903722Z",
+      "NextStartedAt": "2026-11-26T02:02:15.791523834Z"
+    },
+    {
+      "ID": "01a21596-4e3e-71a6-9901-5b8444d8a53d",
+      "LeaseID": "d803eb45-1529-4521-953f-8a0cb68d09cb",
+      "Pod": "hopper-chaos-worker-3",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.446006514Z",
+      "NextStartedAt": "2026-11-26T02:02:15.024589084Z"
+    },
+    {
+      "ID": "01a21596-4e3e-7b0f-b201-33bb4f2aecbb",
+      "LeaseID": "12bd0771-bf49-43c6-ab17-2e6fab0e01d6",
+      "Pod": "hopper-chaos-worker-3",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.445968514Z",
+      "NextStartedAt": "2026-11-26T02:02:15.791520251Z"
+    },
+    {
+      "ID": "01a21596-4e3f-7ddc-b001-ef7b6642e6eb",
+      "LeaseID": "581b3080-36fe-4e03-ab2f-85d0b129be82",
+      "Pod": "hopper-chaos-worker-1",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.460357847Z",
+      "NextStartedAt": "2026-11-26T02:02:15.791466543Z"
+    },
+    {
+      "ID": "01a21596-4e40-72ae-9601-0047d90c3275",
+      "LeaseID": "795e09ce-af70-4f68-82d6-f6631871e2c6",
+      "Pod": "hopper-chaos-worker-3",
+      "Process": 1,
+      "Cause": "lost",
+      "StartedAt": "2026-11-26T02:01:42.465777805Z",
+      "NextStartedAt": "2026-11-26T02:02:15.791489209Z"
+    }
+  ]
+}

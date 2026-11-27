@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="600" viewBox="0 0 640 600" font-family="system-ui, sans-serif" font-size="12">
+<title>jobs table per shard</title>
+<rect width="640" height="600" fill="#ffffff"/>
+<g transform="translate(0,0)">
+<text x="72" y="20" font-size="14" fill="#111827">jobs table size (MiB, pg_total_relation_size)</text>
+<line x1="72" x2="520" y1="252.0" y2="252.0" stroke="#e5e7eb"/>
+<text x="64" y="256.0" text-anchor="end" fill="#374151">0</text>
+<line x1="72" x2="520" y1="198.0" y2="198.0" stroke="#e5e7eb"/>
+<text x="64" y="202.0" text-anchor="end" fill="#374151">12</text>
+<line x1="72" x2="520" y1="144.0" y2="144.0" stroke="#e5e7eb"/>
+<text x="64" y="148.0" text-anchor="end" fill="#374151">24</text>
+<line x1="72" x2="520" y1="90.0" y2="90.0" stroke="#e5e7eb"/>
+<text x="64" y="94.0" text-anchor="end" fill="#374151">36</text>
+<line x1="72" x2="520" y1="36.0" y2="36.0" stroke="#e5e7eb"/>
+<text x="64" y="40.0" text-anchor="end" fill="#374151">48</text>
+<text x="72.0" y="270" text-anchor="middle" fill="#374151">0m</text>
+<text x="184.0" y="270" text-anchor="middle" fill="#374151">4m</text>
+<text x="296.0" y="270" text-anchor="middle" fill="#374151">8m</text>
+<text x="408.0" y="270" text-anchor="middle" fill="#374151">11m</text>
+<text x="520.0" y="270" text-anchor="middle" fill="#374151">15m</text>
+<text x="18" y="144.0" text-anchor="middle" fill="#111827" transform="rotate(-90 18 144.0)">MiB</text>
+<polyline points="72.0,214.1 87.4,208.6 102.8,203.5 118.2,198.0 133.7,192.7 149.1,187.2 164.5,181.5 179.9,176.3 195.3,170.7 210.7,165.5 226.1,159.6 241.5,154.5 257.5,149.0 272.9,143.8 288.3,138.2 303.7,132.9 319.1,127.5 334.5,122.4 349.9,117.4 365.4,113.1 380.8,107.9 396.2,103.0 411.6,97.9 427.0,93.7 442.4,88.6 458.3,83.6 473.8,78.6 489.2,74.4 504.6,69.4 520.0,64.2" fill="none" stroke="#1f6feb" stroke-width="2"/>
+<line x1="534" x2="552" y1="36" y2="36" stroke="#1f6feb" stroke-width="2"/>
+<text x="558" y="40" fill="#111827">shard 0</text>
+<polyline points="72.0,214.1 87.4,208.7 102.8,203.5 118.2,198.1 133.7,192.7 149.1,187.3 164.5,181.8 179.9,176.4 195.3,171.1 210.7,165.6 226.1,160.1 241.5,154.7 257.5,149.3 272.9,143.9 288.3,138.5 303.7,133.0 319.1,127.4 334.5,122.5 349.9,118.1 365.4,113.2 380.8,107.9 396.2,103.0 411.6,98.6 427.0,93.7 442.4,88.5 458.3,83.6 473.8,79.3 489.2,74.3 504.6,69.3 520.0,64.3" fill="none" stroke="#d97706" stroke-width="2"/>
+<line x1="534" x2="552" y1="56" y2="56" stroke="#d97706" stroke-width="2"/>
+<text x="558" y="60" fill="#111827">shard 1</text>
+</g>
+<g transform="translate(0,300)">
+<text x="72" y="20" font-size="14" fill="#111827">jobs n_dead_tup</text>
+<line x1="72" x2="520" y1="252.0" y2="252.0" stroke="#e5e7eb"/>
+<text x="64" y="256.0" text-anchor="end" fill="#374151">0</text>
+<line x1="72" x2="520" y1="198.0" y2="198.0" stroke="#e5e7eb"/>
+<text x="64" y="202.0" text-anchor="end" fill="#374151">6,927</text>
+<line x1="72" x2="520" y1="144.0" y2="144.0" stroke="#e5e7eb"/>
+<text x="64" y="148.0" text-anchor="end" fill="#374151">13,854</text>
+<line x1="72" x2="520" y1="90.0" y2="90.0" stroke="#e5e7eb"/>
+<text x="64" y="94.0" text-anchor="end" fill="#374151">20,781</text>
+<line x1="72" x2="520" y1="36.0" y2="36.0" stroke="#e5e7eb"/>
+<text x="64" y="40.0" text-anchor="end" fill="#374151">27,708</text>
+<text x="72.0" y="270" text-anchor="middle" fill="#374151">0m</text>
+<text x="184.0" y="270" text-anchor="middle" fill="#374151">4m</text>
+<text x="296.0" y="270" text-anchor="middle" fill="#374151">8m</text>
+<text x="408.0" y="270" text-anchor="middle" fill="#374151">11m</text>
+<text x="520.0" y="270" text-anchor="middle" fill="#374151">15m</text>
+<text x="18" y="144.0" text-anchor="middle" fill="#111827" transform="rotate(-90 18 144.0)">dead tuples</text>
+<polyline points="72.0,203.9 87.4,157.3 102.8,219.3 118.2,172.8 133.7,220.4 149.1,172.8 164.5,251.9 179.9,203.1 195.3,252.0 210.7,205.2 226.1,251.9 241.5,203.7 257.5,251.8 272.9,204.8 288.3,251.9 303.7,205.3 319.1,158.3 334.5,111.3 349.9,64.2 365.4,235.3 380.8,187.5 396.2,140.3 411.6,93.4 427.0,235.6 442.4,189.9 458.3,141.4 473.8,94.2 489.2,236.4 504.6,187.8 520.0,138.8" fill="none" stroke="#1f6feb" stroke-width="2"/>
+<line x1="534" x2="552" y1="36" y2="36" stroke="#1f6feb" stroke-width="2"/>
+<text x="558" y="40" fill="#111827">shard 0</text>
+<polyline points="72.0,206.6 87.4,159.2 102.8,229.1 118.2,182.7 133.7,231.1 149.1,183.7 164.5,230.8 179.9,183.0 195.3,230.4 210.7,183.3 226.1,229.5 241.5,182.7 257.5,230.0 272.9,182.1 288.3,229.5 303.7,183.6 319.1,135.9 334.5,89.0 349.9,229.8 365.4,181.3 380.8,136.0 396.2,90.1 411.6,230.4 427.0,182.5 442.4,134.0 458.3,88.6 473.8,229.6 489.2,182.6 504.6,134.6 520.0,87.5" fill="none" stroke="#d97706" stroke-width="2"/>
+<line x1="534" x2="552" y1="56" y2="56" stroke="#d97706" stroke-width="2"/>
+<text x="558" y="60" fill="#111827">shard 1</text>
+</g>
+</svg>

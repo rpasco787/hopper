@@ -1,0 +1,22 @@
+{"time":"2026-11-26T02:58:52.337043004Z","level":"INFO","msg":"metrics queues","count":3}
+{"time":"2026-11-26T02:58:52.340233337Z","level":"WARN","msg":"listening beyond loopback: the API is plaintext and unauthenticated, so anyone who can connect can read and mutate every job, including lease tokens","addr":"0.0.0.0:9090"}
+{"time":"2026-11-26T02:58:52.340278337Z","level":"INFO","msg":"confirmation batching on","batch":64,"flights":2,"shards":2}
+{"time":"2026-11-26T02:58:52.340622087Z","level":"INFO","msg":"scheduler configured","enabled":false,"interval":"5s","definitions":2}
+{"time":"2026-11-26T02:58:52.340655545Z","level":"INFO","msg":"metrics listening","addr":"[::]:9091"}
+{"time":"2026-11-26T02:58:52.340677754Z","level":"WARN","msg":"debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect","addr":"[::]:6060"}
+{"time":"2026-11-26T02:58:52.340687087Z","level":"INFO","msg":"broker listening","addr":"[::]:9090","shards":2,"lease_duration":"30s","reaper_interval":"1s","retention":"24h0m0s","db_max_conns":16,"lease_stream_max_age":"5m0s","max_connection_age":"5m0s"}
+{"time":"2026-11-26T02:59:12.200938013Z","level":"INFO","msg":"lease stream opened","worker_id":"6d4fdf0bac86-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:12.59206368Z","level":"INFO","msg":"lease stream opened","worker_id":"7a8e660d9b98-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:12.909264805Z","level":"INFO","msg":"lease stream opened","worker_id":"841152184b91-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:13.15928768Z","level":"INFO","msg":"lease stream opened","worker_id":"fc75d74c4ebc-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:58:52.337107962Z","level":"INFO","msg":"metrics queues","count":3}
+{"time":"2026-11-26T02:58:52.340173837Z","level":"WARN","msg":"listening beyond loopback: the API is plaintext and unauthenticated, so anyone who can connect can read and mutate every job, including lease tokens","addr":"0.0.0.0:9090"}
+{"time":"2026-11-26T02:58:52.340277879Z","level":"INFO","msg":"confirmation batching on","batch":64,"flights":2,"shards":2}
+{"time":"2026-11-26T02:58:52.340841545Z","level":"INFO","msg":"scheduler configured","enabled":false,"interval":"5s","definitions":2}
+{"time":"2026-11-26T02:58:52.34086617Z","level":"INFO","msg":"metrics listening","addr":"[::]:9091"}
+{"time":"2026-11-26T02:58:52.340882379Z","level":"WARN","msg":"debug endpoint listening: it serves CPU, heap and goroutine profiles to anyone who can connect","addr":"[::]:6060"}
+{"time":"2026-11-26T02:58:52.34088567Z","level":"INFO","msg":"broker listening","addr":"[::]:9090","shards":2,"lease_duration":"30s","reaper_interval":"1s","retention":"24h0m0s","db_max_conns":16,"lease_stream_max_age":"5m0s","max_connection_age":"5m0s"}
+{"time":"2026-11-26T02:59:12.201854055Z","level":"INFO","msg":"lease stream opened","worker_id":"acc5eda8a046-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:12.707380305Z","level":"INFO","msg":"lease stream opened","worker_id":"9cad90645c7b-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:13.020190472Z","level":"INFO","msg":"lease stream opened","worker_id":"660b721d3c00-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}
+{"time":"2026-11-26T02:59:13.223838014Z","level":"INFO","msg":"lease stream opened","worker_id":"75a832cb1a06-1","queues":["cpu_burn","fail_n_times","sleep"],"credit":16}

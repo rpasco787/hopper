@@ -4,8 +4,9 @@
     python3 scripts/bench_summary.py docs/bench/lite/e1/results.csv > docs/bench/lite/e1/summary.md
 
 Rows are grouped by everything that must match for runs to be comparable;
-the broker count is the only thing that varies inside a group. Columns an
-older results.csv lacks show as a dash.
+the broker count is the only thing that varies inside a group. The shard
+count is part of the setup, and setups that differ only in it get a shard
+verdict per broker count. Columns an older results.csv lacks show as a dash.
 """
 import csv
 import statistics
@@ -16,12 +17,17 @@ from collections import defaultdict
 # own (BROKER_ENV, WORKER_ENV, PG_ARGS, BENCH_SQL, EXPLAIN) are folded into
 # variant: scripts/bench.sh refuses them without one.
 SETUP = ('ref', 'harness', 'scenario', 'variant', 'payload_bytes', 'sync_commit', 'db_max_conns',
-         'workers', 'concurrency', 'vm_cpus', 'pinned', 'worker_sdk', 'worker_mem')
+         'workers', 'concurrency', 'vm_cpus', 'pinned', 'worker_sdk', 'worker_mem', 'shards')
 WANT = 5
 # Under PIN=1, a role is saturated at 90% of the cores scripts/bench.sh gives
 # it, in percent of one core. Every broker may use CPUs 2 and 3, so the
-# brokers together saturate at 180 however many there are.
-PINNED_LIMITS = (('postgres', 'postgres_cpu', 180), ('workers', 'worker_cpu', 270))
+# brokers together saturate at 180 however many there are. Each PostgreSQL
+# shard has one CPU, and postgres_cpu adds the shards, so PostgreSQL
+# saturates at 90 per shard; a row from before the shards column had both of
+# CPUs 0 and 1 for its one database.
+PINNED_LIMITS = (('workers', 'worker_cpu', 270),)
+POSTGRES_LIMIT_PER_SHARD = 90
+POSTGRES_LIMIT_UNSHARDED = 180
 BROKERS_LIMIT = 180
 # The evidence rule: medians at least 10% apart, and ranges that don't overlap.
 MEASURABLE = 0.10
@@ -60,9 +66,14 @@ def verdict(one, other, n):
     return 'no measurable difference (ranges apart, medians under 10% apart)'
 
 
-def saturation(cpu, brokers, vm_cpus, pinned):
+def postgres_limit(shards):
+    return POSTGRES_LIMIT_PER_SHARD * int(shards) if shards else POSTGRES_LIMIT_UNSHARDED
+
+
+def saturation(cpu, brokers, vm_cpus, pinned, shards=''):
     if pinned:
-        hot = [name for name, key, limit in PINNED_LIMITS if cpu[key] >= limit]
+        hot = ['postgres'] if cpu['postgres_cpu'] >= postgres_limit(shards) else []
+        hot += [name for name, key, limit in PINNED_LIMITS if cpu[key] >= limit]
         if cpu['per_broker_cpu'] * brokers >= BROKERS_LIMIT:
             hot.append('brokers')
         return ', '.join(hot) or 'none'
@@ -108,7 +119,7 @@ def summarize(rows):
                 fmt(med('ack_p99_ms'), 2), fmt(med('heartbeat_p99_ms'), 2),
                 pair(med('ack_batch'), med('heartbeat_batch')),
                 pair(med('ack_fallback_pct'), med('heartbeat_fallback_pct')),
-                saturation(cpu, brokers, int(fields['vm_cpus']), fields['pinned'] == '1'),
+                saturation(cpu, brokers, int(fields['vm_cpus']), fields['pinned'] == '1', fields['shards']),
             ]
             lines.append('| ' + ' | '.join(cells) + ' |')
         lines.append('')
@@ -132,7 +143,37 @@ def summarize(rows):
                 lines.append(f'**Verdict:** {verdict(throughputs[1], throughputs[n], n)}; '
                              f'the {n}-broker median is {ratio:.2f}× the 1-broker median.')
             lines.append('')
+    lines += shard_verdicts(groups)
     return '\n'.join(lines)
+
+
+def shard_verdicts(groups):
+    """At each broker count, every shard count against one shard, for setups equal but for shards."""
+    i = SETUP.index('shards')
+    by_rest = defaultdict(dict)
+    for setup in groups:
+        if setup[i] != '':
+            by_rest[setup[:i] + setup[i + 1:]][int(setup[i])] = groups[setup]
+    lines = []
+    for rest in sorted(by_rest):
+        shards = by_rest[rest]
+        if 1 not in shards or len(shards) < 2:
+            continue
+        fields = dict(zip(SETUP[:i] + SETUP[i + 1:], rest))
+        lines += ['## Shards: ' + ', '.join(f'{k}={v}' for k, v in fields.items() if v != ''), '']
+        for n in sorted(shards):
+            if n == 1:
+                continue
+            for brokers in sorted(set(shards[1]) & set(shards[n])):
+                one = [float(r['throughput']) for r in shards[1][brokers]]
+                other = [float(r['throughput']) for r in shards[n][brokers]]
+                ratio = statistics.median(other) / statistics.median(one)
+                word = verdict(one, other, n).replace('brokers', 'shards')
+                lines.append(f'**Shard verdict** at {brokers} brokers: {word}; the {n}-shard median is '
+                             f'{ratio:.2f}× the 1-shard median ({fmt(statistics.median(other))} against '
+                             f'{fmt(statistics.median(one))}).')
+        lines.append('')
+    return lines
 
 
 def main():

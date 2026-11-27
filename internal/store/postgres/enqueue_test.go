@@ -260,3 +260,29 @@ func TestIdempotencyStorm(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, `select count(*) from jobs`).Scan(&n))
 	require.Equal(t, keys, n, "1000 enqueues, 10 keys, 10 rows")
 }
+
+func TestEnqueueStampsTheShardWhenGivenOne(t *testing.T) {
+	base := newStore(t)
+	ctx := ctxT(t)
+	for _, shard := range []int{0, 3, 255} {
+		job, inserted, err := base.WithShard(shard).Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+		require.NoError(t, err)
+		require.True(t, inserted)
+		got, err := store.ShardOf(job.ID, store.MaxShards)
+		require.NoError(t, err)
+		require.Equal(t, shard, got)
+	}
+}
+
+// An unsharded store leaves IDs as google/uuid made them, so a deployment
+// that never shards sees no change.
+func TestEnqueueWithoutAShardLeavesTheIDAlone(t *testing.T) {
+	s := newStore(t)
+	seen := map[byte]bool{}
+	for range 200 {
+		job, _, err := s.Enqueue(ctxT(t), store.EnqueueParams{Queue: "q"})
+		require.NoError(t, err)
+		seen[job.ID[9]] = true
+	}
+	require.Greater(t, len(seen), 50, "byte 9 is still random")
+}

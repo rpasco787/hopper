@@ -1,0 +1,57 @@
+{
+  "run": "shard-down",
+  "backlog_shard0": 1000,
+  "backlog_shard1": 1000,
+  "outage_seconds": 30.007606,
+  "sampled_seconds": 25.0135505,
+  "keyed_shard0": {
+    "calls": 251,
+    "ok": 251,
+    "failures_by_code": null,
+    "latency_ms": {
+      "P50": 4.932,
+      "P99": 13.055,
+      "Max": 16.406
+    }
+  },
+  "keyed_shard1": {
+    "calls": 251,
+    "ok": 0,
+    "failures_by_code": {
+      "Unavailable": 251
+    },
+    "latency_ms": {
+      "P50": 9.435,
+      "P99": 18.243,
+      "Max": 21.774
+    },
+    "first_errors": [
+      "hopper: enqueue: rpc error: code = Unavailable desc = database unavailable",
+      "hopper: enqueue: rpc error: code = Unavailable desc = database unavailable",
+      "hopper: enqueue: rpc error: code = Unavailable desc = database unavailable",
+      "hopper: enqueue: rpc error: code = Unavailable desc = database unavailable",
+      "hopper: enqueue: rpc error: code = Unavailable desc = database unavailable"
+    ]
+  },
+  "unkeyed": {
+    "calls": 251,
+    "ok": 251,
+    "failures_by_code": null,
+    "latency_ms": {
+      "P50": 4.628,
+      "P99": 13.445,
+      "Max": 18.01
+    }
+  },
+  "unkeyed_success_rate": 1,
+  "unkeyed_successes_not_on_shard0": 0,
+  "shard0_completed_at_kill": 194,
+  "shard0_completed_at_restart": 1502,
+  "shard0_completed_rise": 1308,
+  "restart_to_first_shard1_completed_seconds": 0.721822,
+  "start_call_to_database_seconds": 0.217999792,
+  "repeats_by_cause": {
+    "lost": 8
+  },
+  "summary": "2251 jobs, 2251 completed; 8 handler starts repeated map[lost:8] across 8 jobs; 0 processes cut, 0 handlers interrupted; 8 redelivered jobs, 8 lost leases (8 restarted, 0 unstarted nacks, 0 never received)"
+}

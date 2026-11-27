@@ -8,6 +8,10 @@
 # Settings, all from the environment:
 #   REF            build broker and worker from this git ref (default: the working tree)
 #   BROKERS        1, 2 or 4 (default 1); workers split evenly, one worker service per broker, and producers alternate
+#   SHARDS         1 or 2 PostgreSQL shards (default 1). 2 adds postgres-1 and gives every broker
+#                  both DSNs (HOPPER_SHARD_DSNS, HOPPER_DSN emptied); each shard's statistics are
+#                  kept apart (statements-<i>.txt, waits-<i>.psv, counters-<i>.txt) and summed
+#                  into the row. WARM_JOBS needs SHARDS=1
 #   WORKERS        worker containers (default 4), CONCURRENCY slots each (default 16)
 #   WORKER         go (default) runs cmd/worker; java runs the Java example worker
 #                  (java/hopper-example-worker), built from REF's java/ (deploy/bench/java.yaml)
@@ -39,7 +43,8 @@
 #                  TRACE_EVERY seconds (default 10) into trace.psv, to see drift
 #   STATS_SETTLE   seconds to wait before each snapshot of cumulative statistics (default 11)
 #   PROFILE        1 takes a CPU profile of `broker` mid-run (REF must have -debug-listen)
-#   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below)
+#   PIN            1 pins each role to its own Docker VM CPUs (needs 8; see the layout below).
+#                  Each shard gets one CPU, so SHARDS=1 runs PostgreSQL on CPU 0 alone
 #   JFR            WORKER=java drains: a JFR recording (settings=profile, pinned virtual
 #                  threads at any duration) of this many seconds from each JVM's start,
 #                  copied to <worker>.jfr JFR_SETTLE (default 5) seconds after it ends
@@ -75,6 +80,11 @@ brokers="${BROKERS:-1}"
 workers="${WORKERS:-4}"
 concurrency="${CONCURRENCY:-16}"
 case "$brokers" in 1 | 2 | 4) ;; *) echo "BROKERS must be 1, 2 or 4" >&2; exit 2 ;; esac
+shards="${SHARDS:-1}"
+case "$shards" in 1 | 2) ;; *) echo "SHARDS must be 1 or 2" >&2; exit 2 ;; esac
+# Shard i's PostgreSQL service, in shard order.
+pg_services="postgres"
+if [ "$shards" = 2 ]; then pg_services="postgres postgres-1"; fi
 pin="${PIN:-0}"
 case "$pin" in 0 | 1) ;; *) echo "PIN must be 0 or 1" >&2; exit 2 ;; esac
 worker_sdk="${WORKER:-go}"
@@ -116,6 +126,8 @@ fi
 if [ "${WARM_JOBS:-0}" != 0 ]; then
   [ "$scenario" = drain ] || { echo "WARM_JOBS applies to drain only" >&2; exit 2; }
   [ "$WARM_JOBS" -lt "$jobs" ] || { echo "WARM_JOBS must be less than JOBS" >&2; exit 2; }
+  # The warm pace orders completions across every shard; only one is supported.
+  [ "$shards" = 1 ] || { echo "WARM_JOBS needs SHARDS=1" >&2; exit 2; }
 fi
 if [ "${WARMUP:-0}" != 0 ] && [ "$scenario" != steady ]; then
   echo "WARMUP applies to steady only" >&2; exit 2
@@ -194,23 +206,25 @@ fi
 docker build -q -f deploy/docker/Dockerfile --build-arg BINARY=loadgen -t hopper-bench/loadgen:wt . >/dev/null
 
 out="${OUT:-${TMPDIR:-/tmp}/hopper-bench}"
-header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,lease_rows_per_call,lease_calls_per_job,evidence"
+header="label,scenario,ref,brokers,workers,concurrency,db_max_conns,sync_commit,vm_cpus,pinned,throughput,retried,enqueue_p50_ms,enqueue_p99_ms,pickup_p50_ms,pickup_p99_ms,e2e_p50_ms,e2e_p99_ms,offered,max_lag_ms,kept_up,postgres_cpu,broker_cpu,worker_cpu,active_backends,on_cpu_pct,lock_pct,lwlock_pct,io_pct,lease_mean_ms,lease_blks_per_call,variant,payload_bytes,harness,commits_per_job,wal_syncs_per_job,wal_kb_per_job,hot_update_pct,dead_tuples,ack_p99_ms,heartbeat_p99_ms,ack_batch,ack_fallback_pct,heartbeat_batch,heartbeat_fallback_pct,worker_sdk,worker_mem,warm_throughput,max_leased,worker_cpu_ms_per_1k,worker_peak_rss_mib,worker_threads,startup_ms,lease_rows_per_call,lease_calls_per_job,shards,evidence"
 if [ -f "$out/results.csv" ] && [ "$(head -n 1 "$out/results.csv")" != "$header" ]; then
   echo "$out/results.csv has a different header; use a new OUT" >&2
   exit 2
 fi
-dir="$out/$scenario-b$brokers-w$workers-c$vm_cpus-p$pin-$sha-$(date +%Y%m%dT%H%M%S)"
+dir="$out/$scenario-b$brokers-w$workers-c$vm_cpus-p$pin-s$shards-$sha-$(date +%Y%m%dT%H%M%S)"
 mkdir -p "$dir"
 files=(-f docker-compose.yml -f deploy/bench/compose.yaml)
 if [ "$worker_sdk" = java ]; then files+=(-f deploy/bench/java.yaml); fi
 if [ "$pin" = 1 ]; then
   cat >"$dir/cpuset.yaml" <<'EOF'
 # Written by scripts/bench.sh for PIN=1. Each role gets its own VM CPUs, and
-# the layout is the same at every broker count, so only the broker count
-# changes. Every broker may use CPUs 2 and 3, so the brokers' CPU budget is
-# two CPUs however many there are; Go sizes GOMAXPROCS from the set.
+# the layout is the same at every broker and shard count, so only the counts
+# change. Each PostgreSQL shard gets one CPU (shard 0 CPU 0, shard 1 CPU 1).
+# Every broker may use CPUs 2 and 3, so the brokers' CPU budget is two CPUs
+# however many there are; Go sizes GOMAXPROCS from the set.
 services:
-  postgres: {cpuset: "0-1"}
+  postgres: {cpuset: "0"}
+  postgres-1: {cpuset: "1"}
   broker: {cpuset: "2-3"}
   broker-standby: {cpuset: "2-3"}
   broker-3: {cpuset: "2-3"}
@@ -241,14 +255,30 @@ fi
 # shellcheck disable=SC2086
 for kv in ${PG_ARGS:-}; do pg_settings+=("$kv"); done
 {
-  echo "# Written by scripts/bench.sh: the server settings for this run."
+  echo "# Written by scripts/bench.sh: the server settings for this run, every shard's."
   echo "services:"
-  echo "  postgres:"
-  printf '    command: ["postgres"'
-  for kv in "${pg_settings[@]}"; do printf ', "-c", "%s"' "$kv"; done
-  echo ']'
+  for svc in $pg_services; do
+    echo "  $svc:"
+    printf '    command: ["postgres"'
+    for kv in "${pg_settings[@]}"; do printf ', "-c", "%s"' "$kv"; done
+    echo ']'
+  done
 } >"$dir/postgres.yaml"
 files+=(-f "$dir/postgres.yaml")
+# Two shards: every broker gets both DSNs in shard order, and HOPPER_DSN is
+# emptied, because a broker given both refuses to start.
+if [ "$shards" = 2 ]; then
+  dsns="postgres://hopper:hopper@postgres:5432/hopper?sslmode=disable postgres://hopper:hopper@postgres-1:5432/hopper?sslmode=disable"
+  {
+    echo "# Written by scripts/bench.sh for SHARDS=2."
+    echo "services:"
+    for svc in broker broker-standby broker-3 broker-4; do
+      printf '  %s:\n    depends_on:\n      postgres-1: {condition: service_healthy}\n' "$svc"
+      printf '    environment:\n      HOPPER_DSN: ""\n      HOPPER_SHARD_DSNS: "%s"\n' "$dsns"
+    done
+  } >"$dir/shards.yaml"
+  files+=(-f "$dir/shards.yaml")
+fi
 # One memory limit for every worker container, with no swap beyond it, so both
 # SDKs run under the same ceiling and a Java heap is sized from it.
 if [ -n "$worker_mem" ]; then
@@ -285,6 +315,7 @@ fi
   echo "host: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)"
   echo "docker: $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes, server {{.ServerVersion}}')"
   echo "pinned: $pin"
+  echo "shards: $shards"
   echo "worker: $worker_sdk"
   echo "worker memory: ${worker_mem:-none}"
   if [ "$worker_sdk" = java ]; then echo "java opts: $java_opts"; fi
@@ -308,11 +339,23 @@ export HOPPER_BENCH_TAG="$tag" HOPPER_BENCH_BROKER_ENV="$dir/broker.env"
 export HOPPER_BENCH_SYNC_COMMIT="${SYNC_COMMIT:-on}" HOPPER_BENCH_CONCURRENCY="$concurrency"
 export HOPPER_BENCH_JAVA_OPTS="$java_opts"
 compose() { docker compose -p hopper-bench "${files[@]}" "$@"; }
-sql() { compose exec -T postgres psql -U hopper -d hopper -qAt -c "$1"; }
+# sql_on runs a statement on one shard's service; sql on shard 0; sql_each on
+# every shard in shard order, one shard's output after another's.
+sql_on() { compose exec -T "$1" psql -U hopper -d hopper -qAt -c "$2"; }
+sql() { sql_on postgres "$1"; }
+# Its own IFS, because a caller's `IFS='|' read ... <<<"$(sql_each ...)"` is
+# in effect here too, and the service list splits on spaces.
+sql_each() { local svc IFS=$' \t\n'; for svc in $pg_services; do sql_on "$svc" "$1"; done; }
+# Adds up |-separated numeric lines column by column, into one line.
+sum_columns() {
+  awk -F'|' '{ for (i = 1; i <= NF; i++) s[i] += $i; if (NF > n) n = NF }
+    END { for (i = 1; i <= n; i++) printf "%s%.0f", (i > 1 ? "|" : ""), s[i]; printf "\n" }'
+}
 # Commits and WAL across the database, and how updates landed on jobs, as
-# xact_commit|wal_sync|wal_bytes|n_tup_upd|n_tup_hot_upd|n_dead_tup.
-counters() {
-  sql "select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup
+# xact_commit|wal_sync|wal_bytes|n_tup_upd|n_tup_hot_upd|n_dead_tup: one line
+# per shard, in shard order.
+shard_counters() {
+  sql_each "select d.xact_commit, w.wal_sync, w.wal_bytes, t.n_tup_upd, t.n_tup_hot_upd, t.n_dead_tup
        from pg_stat_database d, pg_stat_wal w, pg_stat_user_tables t
        where d.datname = current_database() and t.relname = 'jobs'"
 }
@@ -341,8 +384,10 @@ warm_throughput=""
 pprofer=""
 jfr_missing=""
 max_leased=""
+# A run can stop before stop_samplers is defined (a broker that exits during
+# compose up --wait), and its logs and teardown matter most then.
 cleanup() {
-  stop_samplers
+  if declare -F stop_samplers >/dev/null; then stop_samplers; fi
   compose logs --no-color >"$dir/logs.txt" 2>&1 || true
   [ "${KEEP:-0}" = 1 ] || compose down -v --remove-orphans -t 10 >/dev/null 2>&1 || true
 }
@@ -354,20 +399,22 @@ case "$brokers" in
 2) broker_services="broker broker-standby" ;;
 4) broker_services="broker broker-standby broker-3 broker-4" ;;
 esac
-services="postgres $broker_services"
+services="$pg_services $broker_services"
 # shellcheck disable=SC2086 # word splitting is the point
 compose up -d --no-build --wait $services >/dev/null
-sql "create extension pg_stat_statements" >/dev/null
-# The brokers migrate on start, and nothing guarantees they are done when
-# Compose says they are running.
+sql_each "create extension pg_stat_statements" >/dev/null
+# The brokers migrate every shard on start, and nothing guarantees they are
+# done when Compose says they are running.
 deadline=$((SECONDS + 60))
-until [ "$(sql "select to_regclass('public.jobs') is not null")" = t ]; do
-  [ "$SECONDS" -lt "$deadline" ] || { echo "the brokers did not migrate within a minute" >&2; exit 1; }
-  sleep 0.25
+for svc in $pg_services; do
+  until [ "$(sql_on "$svc" "select to_regclass('public.jobs') is not null")" = t ]; do
+    [ "$SECONDS" -lt "$deadline" ] || { echo "the brokers did not migrate within a minute" >&2; exit 1; }
+    sleep 0.25
+  done
 done
 if [ -n "${BENCH_SQL:-}" ]; then
   printf '%s\n' "$BENCH_SQL" >"$dir/bench.sql"
-  sql "$BENCH_SQL" >/dev/null
+  sql_each "$BENCH_SQL" >/dev/null
 fi
 
 # Workers split evenly across the brokers, the first services taking any
@@ -455,25 +502,53 @@ stop_samplers() {
 # that is active with no wait event is on a CPU or queued for one, so a starved
 # host grows "CPU"; contention between lessors grows Lock and LWLock instead.
 # The harness's own psql sessions are left out.
-waits_once() {
-  sql "select to_char(clock_timestamp(), 'HH24:MI:SS.MS'), 'SAMPLE', '-', 0
+# With two shards each shard's samples go to waits-<i>.psv, taken back to back
+# once a second; waits.psv is then built from them (merge_waits).
+waits_query="select to_char(clock_timestamp(), 'HH24:MI:SS.MS'), 'SAMPLE', '-', 0
        union all
        select to_char(clock_timestamp(), 'HH24:MI:SS.MS'), coalesce(wait_event_type, 'CPU'),
               coalesce(wait_event, 'running'), count(*)
        from pg_stat_activity
        where backend_type = 'client backend' and state = 'active'
          and application_name <> 'psql' and pid <> pg_backend_pid()
-       group by 2, 3" >>"$dir/waits.psv" || true
+       group by 2, 3"
+waits_once() {
+  if [ "$shards" = 1 ]; then
+    sql "$waits_query" >>"$dir/waits.psv" || true
+    return 0
+  fi
+  local i=0 svc
+  for svc in $pg_services; do
+    sql_on "$svc" "$waits_query" >>"$dir/waits-$i.psv" || true
+    i=$((i + 1))
+  done
+}
+# One sample is one pass over every shard, so waits.psv keeps shard 0's
+# SAMPLE lines and every shard's backends: shares and active_mean are then
+# over all shards' backends.
+merge_waits() {
+  [ "$shards" != 1 ] || return 0
+  local i=0 svc
+  : >"$dir/waits.psv"
+  for svc in $pg_services; do
+    if [ "$i" = 0 ]; then cat "$dir/waits-$i.psv" >>"$dir/waits.psv" 2>/dev/null || true
+    else grep -v '|SAMPLE|' "$dir/waits-$i.psv" >>"$dir/waits.psv" 2>/dev/null || true; fi
+    i=$((i + 1))
+  done
 }
 waits() { until [ -e "$dir/samplers.stop" ]; do sleep 1; [ -e "$dir/samplers.stop" ] || waits_once; done; }
 # time|lease calls|lease total ms|n_dead_tup|n_live_tup|autovacuum_count
+# With two shards, each shard's samples go to trace-<i>.psv.
 trace_once() {
-  sql "select to_char(clock_timestamp(), 'HH24:MI:SS'), s.calls, round(s.total::numeric, 1),
+  local q="select to_char(clock_timestamp(), 'HH24:MI:SS'), s.calls, round(s.total::numeric, 1),
               t.n_dead_tup, t.n_live_tup, t.autovacuum_count
        from (select coalesce(sum(calls), 0) as calls, coalesce(sum(total_exec_time), 0) as total
              from pg_stat_statements
              where ltrim(regexp_replace(query, '\s+', ' ', 'g')) like 'with next as%') s,
-            pg_stat_user_tables t where t.relname = 'jobs'" >>"$dir/trace.psv" || true
+            pg_stat_user_tables t where t.relname = 'jobs'"
+  if [ "$shards" = 1 ]; then sql "$q" >>"$dir/trace.psv" || true; return 0; fi
+  local i=0 svc
+  for svc in $pg_services; do sql_on "$svc" "$q" >>"$dir/trace-$i.psv" || true; i=$((i + 1)); done
 }
 # The first sample is taken at once, so a run has its starting point and a
 # short run still leaves one row.
@@ -508,10 +583,10 @@ case "$scenario" in
 drain)
   loadgen -broker "$brokers_arg" -n "$jobs" -batch 500 -producers 4 -payload-bytes "$payload_bytes" \
     -work-ms "${WORK_MS:-0}" -wait=false -json >"$dir/preload.json"
-  sql "vacuum analyze jobs" >/dev/null
+  sql_each "vacuum analyze jobs" >/dev/null
   settle_stats
-  sql "select pg_stat_statements_reset()" >/dev/null
-  counters_before="$(counters)"
+  sql_each "select pg_stat_statements_reset()" >/dev/null
+  shard_counters_before="$(shard_counters)"
   sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
   sample_once
@@ -529,8 +604,8 @@ drain)
   max_leased=0
   deadline=$((SECONDS + 600))
   while :; do
-    IFS='|' read -r done_jobs leased <<<"$(sql "select count(*) filter (where state = 'completed'),
-      count(*) filter (where state = 'leased') from jobs")"
+    IFS='|' read -r done_jobs leased <<<"$(sql_each "select count(*) filter (where state = 'completed'),
+      count(*) filter (where state = 'leased') from jobs" | sum_columns)"
     if [ "${leased:-0}" -gt "$max_leased" ]; then max_leased="$leased"; fi
     [ "${done_jobs:-0}" -lt "$jobs" ] || break
     [ "$SECONDS" -lt "$deadline" ] || { echo "drain did not finish within 10 minutes" >&2; exit 1; }
@@ -550,20 +625,33 @@ drain)
       [ -s "$dir/$name.jfr" ] || jfr_missing="${jfr_missing:+$jfr_missing }$name"
     done
   fi
-  # The drain runs from the first lease to the last completion, on the
-  # database's clock; every job must have completed on its first lease.
-  IFS=, read -r throughput retried <<<"$(sql "
-    select round(count(*) / extract(epoch from max(finished_at) - min(leased_at))),
+  # The drain runs from the first lease on any shard to the last completion
+  # on any, on the databases' clocks (one VM's); every job must have completed
+  # on its first lease. Each shard reports jobs|first lease|last finish|retried.
+  IFS='|' read -r throughput retried origin <<<"$(sql_each "
+    select count(*), extract(epoch from min(leased_at)), extract(epoch from max(finished_at)),
            count(*) filter (where attempts > 1)
-    from jobs" | tr '|' ',')"
+    from jobs" | awk -F'|' '
+      { n += $1; r += $4
+        if ($2 != "" && (lo == "" || $2 + 0 < lo)) lo = $2 + 0
+        if ($3 != "" && (hi == "" || $3 + 0 > hi)) hi = $3 + 0 }
+      END { printf "%s|%d|%s\n", (hi > lo ? sprintf("%.0f", n / (hi - lo)) : ""), r, (lo == "" ? "" : sprintf("%.6f", lo)) }')"
   # Completions per tenth of a second from the first lease: how long the
   # workers take to reach their pace. The first lease is a scalar subquery,
   # which runs once; as a join, planned on statistics from before the drain
   # (no completed rows), it became a nested loop that rescanned jobs per job.
+  # With two shards the first lease is every shard's earliest, given to each
+  # shard's query as a number, and their tenths are added.
   {
     echo "# tenths of a second since the first lease|jobs completed in it"
-    sql "select floor(extract(epoch from finished_at - (select min(leased_at) from jobs)) * 10)::int, count(*)
-         from jobs where state = 'completed' group by 1 order by 1"
+    if [ "$shards" = 1 ]; then
+      sql "select floor(extract(epoch from finished_at - (select min(leased_at) from jobs)) * 10)::int, count(*)
+           from jobs where state = 'completed' group by 1 order by 1"
+    else
+      sql_each "select floor((extract(epoch from finished_at) - $origin) * 10)::int, count(*)
+           from jobs where state = 'completed' group by 1 order by 1" |
+        awk -F'|' '{ c[$1] += $2 } END { for (k in c) print k "|" c[k] }' | sort -t'|' -k1,1n
+    fi
   } >"$dir/rate.psv"
   if [ "${WARM_JOBS:-0}" != 0 ]; then
     # The pace once warm: the jobs that finished after the WARM_JOBS-th
@@ -582,7 +670,7 @@ steady)
   # Every worker has a stream open before the offered load starts.
   deadline=$((SECONDS + 120))
   # shellcheck disable=SC2086
-  until [ "$(compose logs ${services#postgres } 2>/dev/null | grep -c '"lease stream opened"')" -ge "$workers" ]; do
+  until [ "$(compose logs $broker_services 2>/dev/null | grep -c '"lease stream opened"')" -ge "$workers" ]; do
     [ "$SECONDS" -lt "$deadline" ] || { echo "the workers did not all open lease streams" >&2; exit 1; }
     sleep 0.25
   done
@@ -595,9 +683,9 @@ steady)
       -json >"$dir/warmup.json"
   fi
   settle_stats
-  sql "select pg_stat_statements_reset()" >/dev/null
-  counters_before="$(counters)"
-  completed_before="$(sql "select count(*) from jobs where state = 'completed'")"
+  sql_each "select pg_stat_statements_reset()" >/dev/null
+  shard_counters_before="$(shard_counters)"
+  completed_before="$(sql_each "select count(*) from jobs where state = 'completed'" | sum_columns)"
   sql "select current_setting('fsync') || '|' || current_setting('wal_sync_method')" >"$dir/wal_sync.txt"
   pool_snapshot before
   proc_snapshot before
@@ -617,34 +705,49 @@ steady)
   # Keeping up: at least 98% of offered, no call a second late.
   kept_up="$(awk -v t="$throughput" -v o="$offered" -v l="$max_lag" \
     'BEGIN { print (o > 0 && t >= 0.98 * o && l < 1000) ? "yes" : "no" }')"
-  completed=$(($(sql "select count(*) from jobs where state = 'completed'") - completed_before))
+  completed=$(($(sql_each "select count(*) from jobs where state = 'completed'" | sum_columns) - completed_before))
   ;;
 esac
 stop_samplers
+merge_waits
 settle_stats
-counters_after="$(counters)"
+shard_counters_after="$(shard_counters)"
+# counters.txt is every shard's sum, before and after; with two shards each
+# shard's own pair is in counters-<i>.txt.
+counters_before="$(sum_columns <<<"$shard_counters_before")"
+counters_after="$(sum_columns <<<"$shard_counters_after")"
+# A shard whose snapshot failed makes the sums wrong, not smaller: no row.
+[ "$(grep -c . <<<"$shard_counters_before")" = "$shards" ] || counters_before=""
+[ "$(grep -c . <<<"$shard_counters_after")" = "$shards" ] || counters_after=""
 printf '%s\n%s\n' "$counters_before" "$counters_after" >"$dir/counters.txt"
+if [ "$shards" != 1 ]; then
+  for i in $(seq 0 $((shards - 1))); do
+    printf '%s\n%s\n' "$(sed -n "$((i + 1))p" <<<"$shard_counters_before")" \
+      "$(sed -n "$((i + 1))p" <<<"$shard_counters_after")" >"$dir/counters-$i.txt"
+  done
+fi
 
 # Every statement counts toward the total, so a share is of all database time
-# in the interval, the harness's own polling included.
-{
+# in the interval, the harness's own polling included. Per shard with two
+# (statements-<i>.txt): a share is of that shard's time.
+statements() { # service
   echo "calls|total_ms|pct_of_total|mean_ms|rows_per_call|blks_per_call|query"
-  sql "select calls, round(total_exec_time::numeric),
+  sql_on "$1" "select calls, round(total_exec_time::numeric),
               round((100 * total_exec_time / nullif(sum(total_exec_time) over (), 0))::numeric, 1),
               round(mean_exec_time::numeric, 3), round(rows::numeric / calls, 1),
               round((shared_blks_hit + shared_blks_read)::numeric / calls, 1),
               left(regexp_replace(query, '\s+', ' ', 'g'), 90)
        from pg_stat_statements order by total_exec_time desc limit 15"
-  sql "select 'total|statements=' || count(*) || '|calls=' || sum(calls)
+  sql_on "$1" "select 'total|statements=' || count(*) || '|calls=' || sum(calls)
               || '|total_ms=' || round(sum(total_exec_time)::numeric) from pg_stat_statements"
-} >"$dir/statements.txt"
+}
 # Every confirmation statement's exact calls and rows, however small its share
 # of time (statements.txt keeps the 15 most expensive), as kind|calls|rows. A
 # batch statement's rows are the pairs it applied. The one-row statements are
 # its fallbacks with batching on, and every confirmation with it off.
-{
+confirmations() { # service
   echo "kind|calls|rows"
-  sql "select kind, sum(calls), sum(rows) from (
+  sql_on "$1" "select kind, sum(calls), sum(rows) from (
          select case
                   when q like 'with mine as ( select j.id from %' then 'ack_batch'
                   when q like 'with mine as ( select j.id, c.dur_us %' then 'heartbeat_batch'
@@ -654,7 +757,24 @@ printf '%s\n%s\n' "$counters_before" "$counters_after" >"$dir/counters.txt"
                 end as kind, calls, rows
          from (select ltrim(regexp_replace(query, '\s+', ' ', 'g')) as q, calls, rows from pg_stat_statements) s
        ) k where kind is not null group by kind order by kind"
-} >"$dir/confirmations.txt"
+}
+if [ "$shards" = 1 ]; then
+  statements postgres >"$dir/statements.txt"
+  confirmations postgres >"$dir/confirmations.txt"
+else
+  i=0
+  for svc in $pg_services; do
+    statements "$svc" >"$dir/statements-$i.txt"
+    confirmations "$svc" >"$dir/confirmations-$i.txt"
+    i=$((i + 1))
+  done
+  # Every shard's confirmations, added up by kind.
+  {
+    echo "kind|calls|rows"
+    for i in $(seq 0 $((shards - 1))); do tail -n +2 "$dir/confirmations-$i.txt"; done |
+      awk -F'|' 'NF == 3 { c[$1] += $2; r[$1] += $3 } END { for (k in c) print k "|" c[k] "|" r[k] }' | sort
+  } >"$dir/confirmations.txt"
+fi
 confirm_calls() { awk -F'|' -v k="$1" '$1 == k { print $2; f = 1 } END { if (!f) print 0 }' "$dir/confirmations.txt"; }
 
 # Wait shares are of all active-backend samples; active_mean is per sample.
@@ -672,17 +792,20 @@ samples="$(wait_value samples)"; active_mean="$(wait_value active_mean)"
 on_cpu_pct="$(type_pct CPU)"; lock_pct="$(type_pct Lock)"; lwlock_pct="$(type_pct LWLock)"; io_pct="$(type_pct IO)"
 # The lease statement (internal/store/postgres/lease.go), found by its text:
 # mean ms and blocks per call, rows per call, and every call in the window.
-IFS='|' read -r lease_mean lease_blks lease_rows lease_calls <<<"$(sql "
-  select round((sum(total_exec_time) / nullif(sum(calls), 0))::numeric, 3),
-         round(sum(shared_blks_hit + shared_blks_read)::numeric / nullif(sum(calls), 0), 1),
-         round(sum(rows)::numeric / nullif(sum(calls), 0), 2),
-         coalesce(sum(calls), 0)
+# Each shard reports its sums (total ms, blocks, rows, calls); they are added
+# before dividing, so the means are over every shard's calls.
+IFS='|' read -r lease_mean lease_blks lease_rows lease_calls <<<"$(sql_each "
+  select coalesce(sum(total_exec_time), 0), coalesce(sum(shared_blks_hit + shared_blks_read), 0),
+         coalesce(sum(rows), 0), coalesce(sum(calls), 0)
   from pg_stat_statements
-  where ltrim(regexp_replace(query, '\s+', ' ', 'g')) like 'with next as%'")"
+  where ltrim(regexp_replace(query, '\s+', ' ', 'g')) like 'with next as%'" | awk -F'|' '
+    { t += $1; b += $2; r += $3; c += $4 }
+    END { if (c > 0) printf "%.3f|%.1f|%.2f|%d\n", t / c, b / c, r / c, c; else print "|||0" }')"
 # Lease calls per completed job, empty leases included: H1's "the thing to
 # measure" (docs/scaling.md), and H6's mechanism.
 lease_calls_per_job="$(awk -v c="${lease_calls:-0}" -v n="$completed" 'BEGIN { if (n < 1) n = 1; printf "%.3f", c / n }')"
-# Mean CPU per role, in percent of one core.
+# Mean CPU per role, in percent of one core, added over its containers (both
+# shards' for postgres).
 cpu() { awk -F, -v re="$1" '$1 ~ re { gsub("%", "", $2); s[$1] += $2; n[$1]++ }
   END { t = 0; for (c in s) t += s[c] / n[c]; printf "%.0f", t }' "$dir/stats.csv"; }
 pg_cpu="$(cpu 'postgres')"; broker_cpu="$(cpu 'broker')"; worker_cpu="$(cpu 'worker')"
@@ -754,7 +877,7 @@ for v in ack_batch ack_fallback_pct heartbeat_batch heartbeat_fallback_pct; do
   if [ "${!v}" = - ]; then printf -v "$v" '%s' ''; fi
 done
 
-row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$lease_rows,$lease_calls_per_job,$dir"
+row="$label,$scenario,$sha,$brokers,$workers,$concurrency,$pool,$HOPPER_BENCH_SYNC_COMMIT,$vm_cpus,$pin,$throughput,$retried,$enqueue_p50,$enqueue_p99,$pickup_p50,$pickup_p99,$e2e_p50,$e2e_p99,$offered,$max_lag,$kept_up,$pg_cpu,$broker_cpu,$worker_cpu,$active_mean,$on_cpu_pct,$lock_pct,$lwlock_pct,$io_pct,$lease_mean,$lease_blks,$variant,$payload_bytes,$harness,$commits_per_job,$wal_syncs_per_job,$wal_kb_per_job,$hot_update_pct,$dead_tuples,$ack_p99,$heartbeat_p99,$ack_batch,$ack_fallback_pct,$heartbeat_batch,$heartbeat_fallback_pct,$worker_sdk,$worker_mem,$warm_throughput,$max_leased,$worker_cpu_per_1k,$worker_peak_rss,$worker_threads,$startup_ms,$lease_rows,$lease_calls_per_job,$shards,$dir"
 [ -f "$out/results.csv" ] || echo "$header" >"$out/results.csv"
 echo "$row" >>"$out/results.csv"
 echo "$header"

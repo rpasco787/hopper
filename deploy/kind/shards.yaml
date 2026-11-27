@@ -1,0 +1,20 @@
+# Two shards on kind: the soak's rehearsal (test/k8s TestSoak) and the chart's
+# shard smoke. Small databases so the Docker VM holds two bundled ones, or, with
+# --set postgres.mode=cloudnativepg (after scripts/kind-cnpg.sh), two Clusters
+# of three instances at 128Mi each. Three workers, so killing one leaves two.
+#
+#   scripts/kind-up.sh -f deploy/kind/shards.yaml
+#
+# A release's shard count is fixed: changing it on an installed release is
+# resharding. Delete the release's volumes, or the cluster, first.
+postgres:
+  shards: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  cloudnativepg:
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {memory: 512Mi}
+worker:
+  replicas: 3

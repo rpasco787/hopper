@@ -19,14 +19,40 @@ import (
 // database call goes through here; TestEveryStoreErrorGoesThroughWrap keeps
 // it that way.
 func wrap(op string, err error) error {
-	if unavailable(err) {
+	switch {
+	case notSent(err):
+		return fmt.Errorf("store: %s: %w: %w: %w", op, store.ErrUnavailable, store.ErrNotSent, err)
+	case unavailable(err):
 		return fmt.Errorf("store: %s: %w: %w", op, store.ErrUnavailable, err)
 	}
 	return fmt.Errorf("store: %s: %w", op, err)
 }
 
+// notSent reports whether err certainly happened before anything reached the
+// server: a failed connection attempt, a batch that got no connection within
+// its bound, or an error pgconn itself says preceded sending. It implies
+// unavailable. The caller's own cancellation or deadline is never marked: it
+// is not the database's absence, even when nothing was sent.
+func notSent(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errNoConnection) {
+		return true
+	}
+	var connect *pgconn.ConnectError
+	if errors.As(err, &connect) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return pgconn.SafeToRetry(err) && unavailable(err)
+}
+
 // unavailable reports whether err says the database could not be reached or
-// dropped the connection, rather than rejecting the statement.
+// dropped the connection, rather than rejecting the statement. notSent is the
+// subset of these that certainly sent nothing.
 //
 //   - A failed connection attempt, for any reason, including a server that is
 //     starting up, shutting down or refusing connections. Nothing was sent.

@@ -14,6 +14,14 @@ postgres:
   # which needs the operator (scripts/kind-cnpg.sh). The two share no data:
   # changing an installed release's mode starts from an empty database.
   mode: bundled
+  # Independent databases that jobs are split across (docs/sharding.md), 1 to
+  # 16. Bundled: one StatefulSet pod per shard, each its own database reached
+  # through Service <release>-postgres-<i>. cloudnativepg: one Cluster per
+  # shard, <release>-db-<i>. 1 renders exactly the one-database chart. Fixed
+  # for a release's life: brokers refuse a changed count, and changing it is
+  # resharding, which hopper does not support (docs/semantics.md §12). Every
+  # broker opens up to 16 connections to each shard.
+  shards: 1
   image: postgres:16-alpine
   user: hopper
   database: hopper

@@ -21,6 +21,10 @@ type Store struct {
 	pool  *pgxpool.Pool
 	retry store.RetryPolicy
 	obs   store.Observer
+	// shard is written into byte 9 of every generated job ID when it is 0 or
+	// more (store.StampShard); -1, the default, leaves IDs alone, which is what
+	// an unsharded deployment runs.
+	shard int
 }
 
 // Compile-time proof that *Store satisfies the interface. This is what turns a
@@ -52,7 +56,16 @@ func qualify(alias, list string) string {
 // New returns a Store over an existing pool, using the default retry policy.
 // The caller owns the pool and is responsible for closing it.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, retry: store.DefaultRetryPolicy(), obs: store.NopObserver{}}
+	return &Store{pool: pool, retry: store.DefaultRetryPolicy(), obs: store.NopObserver{}, shard: -1}
+}
+
+// WithShard returns a copy of s that stamps shard into every job ID it
+// generates, so a sharded store can route by ID alone
+// (docs/design/sharding.md). It copies for the reason WithRetryPolicy does.
+func (s *Store) WithShard(shard int) *Store {
+	clone := *s
+	clone.shard = shard
+	return &clone
 }
 
 // WithRetryPolicy returns a copy of s that uses p for retry backoff. It copies

@@ -85,10 +85,14 @@ type Config struct {
 	// once. Zero takes DefaultConfirmFlights.
 	ConfirmFlights int
 
-	// Wakeups carries enqueue announcements between brokers. Nil keeps them
-	// within this broker; RunWakeups does the rest.
-	Wakeups store.Wakeups
-	Logger  *slog.Logger
+	// Wakeups carries this broker's enqueue announcements to the others. Nil
+	// keeps them within this broker; RunWakeups does the rest.
+	Wakeups store.Announcer
+	// Listeners deliver the other brokers' announcements, each on its own
+	// session: one per shard for a sharded store. Nil listens on Wakeups when
+	// it is also a store.Listener.
+	Listeners []store.Listener
+	Logger    *slog.Logger
 	// LeaseStreams counts lease streams from accepted subscription to end.
 	// Nil counts nothing.
 	LeaseStreams Gauge
@@ -122,9 +126,14 @@ type Service struct {
 
 	// wakes ends idle lease streams' waits when their queues get work.
 	wakes *wakeups
-	// acks and extends batch confirmations; nil confirms one call at a time.
-	acks    *batcher[store.LeaseRef]
-	extends *batcher[store.Extension]
+	// router names each job's shard when the store has more than one; nil
+	// otherwise.
+	router store.ShardRouter
+	// acks and extends batch confirmations, one batcher per shard, so a shard
+	// that has stopped answering holds no other shard's confirmations; nil
+	// confirms one call at a time.
+	acks    []*batcher[store.LeaseRef]
+	extends []*batcher[store.Extension]
 }
 
 // NewService returns a Service. Zero values in cfg take the package defaults.
@@ -151,11 +160,17 @@ func NewService(st store.Store, cfg Config) *Service {
 		cfg.ConfirmFlights = DefaultConfirmFlights
 	}
 	svc := &Service{store: st, cfg: cfg, shutdown: make(chan struct{}), wakes: newWakeups()}
+	shards := 1
+	if r, ok := st.(store.ShardRouter); ok && r.Shards() > 1 {
+		svc.router, shards = r, r.Shards()
+	}
 	if cfg.ConfirmBatch > 1 {
 		if bc, ok := st.(store.BatchConfirmer); ok {
-			svc.acks = newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.AckMany)
-			svc.extends = newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.ExtendLeaseMany)
-			cfg.Logger.Info("confirmation batching on", "batch", cfg.ConfirmBatch, "flights", cfg.ConfirmFlights)
+			for range shards {
+				svc.acks = append(svc.acks, newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.AckMany))
+				svc.extends = append(svc.extends, newBatcher(cfg.ConfirmBatch, cfg.ConfirmFlights, bc.ExtendLeaseMany))
+			}
+			cfg.Logger.Info("confirmation batching on", "batch", cfg.ConfirmBatch, "flights", cfg.ConfirmFlights, "shards", shards)
 		} else {
 			// A wrapper that embeds store.Store hides BatchConfirmer; say so
 			// rather than quietly confirming one call at a time.

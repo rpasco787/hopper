@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Drain throughput against broker count, one line per series, as SVG.
+"""Drain throughput against broker count (or another column), one line per series, as SVG.
 
     python3 scripts/bench_chart.py "before (e61ae1c)=docs/bench/1b/final/results.csv#before" \\
         "after (abc1234)=docs/bench/1b/final/results.csv#after" > docs/img/scaling-laptop.svg
 
 A series is NAME=RESULTS.csv#VARIANT: the median drain throughput per broker
 count over that variant's rows (no #VARIANT means rows with no variant). Put
-every series in one interleaved loop; docs/scaling.md says why.
+every series in one interleaved loop; docs/scaling.md says why. --x COLUMN
+puts another column on the x axis, such as shards:
+
+    python3 scripts/bench_chart.py --x shards "8 x 16=docs/bench/4/results.csv#w8c16" > docs/img/shards-laptop.svg
 """
 import csv
 import statistics
@@ -26,16 +29,17 @@ def parse_series(arg):
     return name, path, variant
 
 
-def medians(path, variant=''):
+def medians(path, variant='', x='brokers'):
     by = defaultdict(list)
     with open(path) as f:
         for r in csv.DictReader(f):
             if r['scenario'] == 'drain' and r.get('variant', '') == variant:
-                by[int(r['brokers'])].append(float(r['throughput']))
+                by[int(r[x])].append(float(r['throughput']))
     return {b: statistics.median(v) for b, v in sorted(by.items())}
 
 
-def chart(series):
+def chart(series, x='brokers'):
+    axis = x
     xs = sorted({b for _, m in series for b in m})
     top = max(v for _, m in series for v in m.values()) * 1.15
 
@@ -55,7 +59,7 @@ def chart(series):
         out.append(f'<text x="{LEFT - 8}" y="{y(v) + 4:.1f}" text-anchor="end" fill="#374151">{v:,.0f}</text>')
     for b in xs:
         out.append(f'<text x="{x(b):.1f}" y="{H - BOTTOM + 18}" text-anchor="middle" fill="#374151">{b}</text>')
-    out.append(f'<text x="{(LEFT + W - RIGHT) / 2:.1f}" y="{H - 12}" text-anchor="middle" fill="#111827">brokers</text>')
+    out.append(f'<text x="{(LEFT + W - RIGHT) / 2:.1f}" y="{H - 12}" text-anchor="middle" fill="#111827">{escape(axis)}</text>')
     out.append(f'<text x="18" y="{mid_y:.1f}" text-anchor="middle" fill="#111827" '
                f'transform="rotate(-90 18 {mid_y:.1f})">jobs/s, drain median</text>')
     for i, (name, m) in enumerate(series):
@@ -73,13 +77,19 @@ def chart(series):
 
 
 def main():
+    args = sys.argv[1:]
+    x = 'brokers'
+    if args[:1] == ['--x']:
+        if len(args) < 2:
+            sys.exit('--x needs a column')
+        x, args = args[1], args[2:]
     series = []
-    for arg in sys.argv[1:]:
+    for arg in args:
         name, path, variant = parse_series(arg)
-        series.append((name, medians(path, variant)))
+        series.append((name, medians(path, variant, x)))
     if not series or not all(m for _, m in series):
         sys.exit('every series needs drain rows for its variant')
-    print(chart(series))
+    print(chart(series, x))
 
 
 if __name__ == '__main__':

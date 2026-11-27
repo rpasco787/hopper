@@ -164,3 +164,27 @@ func TestAReadOnlyServerIsUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrUnavailable)
 	require.Equal(t, store.StateAvailable, readJob(t, job.ID).State, "the refused lease took nothing")
 }
+
+func TestNotSentMarksOnlyFailuresBeforeSending(t *testing.T) {
+	ctx := ctxT(t)
+	dead, err := pgxpool.New(ctx, "postgres://hopper:hopper@127.0.0.1:1/hopper?sslmode=disable&connect_timeout=1")
+	require.NoError(t, err)
+	t.Cleanup(dead.Close)
+	_, _, err = New(dead).Enqueue(ctx, store.EnqueueParams{Queue: "q"})
+	require.ErrorIs(t, err, store.ErrUnavailable)
+	require.ErrorIs(t, err, store.ErrNotSent, "a refused connection sent nothing")
+
+	// A connection lost mid-statement may have reached the server.
+	err = wrap("ack", fmt.Errorf("read: %w", io.ErrUnexpectedEOF))
+	require.ErrorIs(t, err, store.ErrUnavailable)
+	require.NotErrorIs(t, err, store.ErrNotSent)
+
+	// The batch acquire bound sent nothing.
+	err = wrap("ack many", fmt.Errorf("%w: %w", errNoConnection, context.DeadlineExceeded))
+	require.ErrorIs(t, err, store.ErrNotSent)
+
+	// The caller's own deadline is never unavailability.
+	err = wrap("lease", context.DeadlineExceeded)
+	require.NotErrorIs(t, err, store.ErrUnavailable)
+	require.NotErrorIs(t, err, store.ErrNotSent)
+}

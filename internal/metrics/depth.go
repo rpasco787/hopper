@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,12 +23,17 @@ const DepthFreshness = 15 * time.Second
 const defaultDepthInterval = 5 * time.Second
 
 // DepthSampler refreshes a Broker's queue depth from src every Interval
-// (default 5s), sampling once immediately. Every broker runs one, so every
-// broker exports the same series: drop stale instances, then max by (queue,
-// state); never sum (docs/semantics.md §14).
+// (default 5s), sampling once immediately. Every broker runs one per shard,
+// so every broker exports the same series for each shard: drop stale
+// (instance, shard) samples, take max across brokers per (queue, state,
+// shard), then sum across shards; never sum across brokers
+// (docs/semantics.md §14).
 type DepthSampler struct {
-	Source   store.QueueDepthSource
-	Metrics  *Broker
+	Source  store.QueueDepthSource
+	Metrics *Broker
+	// Shard is the shard Source counts, and the shard label its series
+	// carry. Zero, the default, is the only shard of an unsharded store.
+	Shard    int
 	Interval time.Duration
 	Logger   *slog.Logger
 }
@@ -68,12 +76,12 @@ func (s *DepthSampler) Once(ctx context.Context) error {
 	rows, err := s.Source.QueueDepths(sampleCtx)
 	if err != nil {
 		err = fmt.Errorf("metrics: sample queue depth: %w", err)
-		s.logger().WarnContext(ctx, "queue depth sample failed", "err", err)
+		s.logger().WarnContext(ctx, "queue depth sample failed", "shard", s.Shard, "err", err)
 		return err
 	}
-	if err := s.Metrics.UpdateDepth(rows, time.Now()); err != nil {
+	if err := s.Metrics.UpdateShardDepth(s.Shard, rows, time.Now()); err != nil {
 		err = fmt.Errorf("metrics: sample queue depth: %w", err)
-		s.logger().WarnContext(ctx, "queue depth sample failed", "err", err)
+		s.logger().WarnContext(ctx, "queue depth sample failed", "shard", s.Shard, "err", err)
 		return err
 	}
 	return nil
@@ -100,7 +108,9 @@ type depthCollector struct {
 	desc, sampledDesc *prometheus.Desc
 	labels            []string // allowlist plus _other, fixed at NewBroker
 	mu                sync.RWMutex
-	snap              *depthSnapshot // nil until the first successful sample
+	// snaps holds each shard's last successful sample; a shard is absent
+	// until its first. Guarded by mu.
+	snaps map[int]*depthSnapshot
 }
 
 func newDepthCollector(labels []string) *depthCollector {
@@ -108,14 +118,15 @@ func newDepthCollector(labels []string) *depthCollector {
 		desc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "queue_depth"),
 			"Jobs in each non-terminal work state at the last successful sample.",
-			[]string{"queue", "state"}, nil,
+			[]string{"queue", "state", "shard"}, nil,
 		),
 		sampledDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "queue_depth_last_sample_timestamp_seconds"),
 			"Unix time of this broker's last successful queue depth sample.",
-			nil, nil,
+			[]string{"shard"}, nil,
 		),
 		labels: append([]string(nil), labels...),
+		snaps:  make(map[int]*depthSnapshot),
 	}
 }
 
@@ -124,21 +135,32 @@ func (c *depthCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.sampledDesc
 }
 
+// Collect emits every shard sampled so far, and shard 0 always, so a broker
+// that has not sampled yet reports zeros as an unsharded broker does. A
+// shard's timestamp appears only once it has a successful sample.
 func (c *depthCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
-	snap := c.snap
+	snaps := maps.Clone(c.snaps)
 	c.mu.RUnlock()
-	for _, queue := range c.labels {
-		for _, state := range depthStates {
-			var count int64
-			if snap != nil {
-				count = snap.counts[depthKey{queue: queue, state: state}]
-			}
-			ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(count), queue, string(state))
-		}
+	shards := slices.Sorted(maps.Keys(snaps))
+	if _, ok := snaps[0]; !ok {
+		shards = append([]int{0}, shards...)
 	}
-	if snap != nil {
-		ch <- prometheus.MustNewConstMetric(c.sampledDesc, prometheus.GaugeValue, float64(snap.sampledAt.UnixNano())/1e9)
+	for _, shard := range shards {
+		snap := snaps[shard]
+		label := strconv.Itoa(shard)
+		for _, queue := range c.labels {
+			for _, state := range depthStates {
+				var count int64
+				if snap != nil {
+					count = snap.counts[depthKey{queue: queue, state: state}]
+				}
+				ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(count), queue, string(state), label)
+			}
+		}
+		if snap != nil {
+			ch <- prometheus.MustNewConstMetric(c.sampledDesc, prometheus.GaugeValue, float64(snap.sampledAt.UnixNano())/1e9, label)
+		}
 	}
 }
 
@@ -151,8 +173,18 @@ func validDepthState(state store.State) bool {
 	}
 }
 
-// UpdateDepth validates and atomically publishes one complete depth snapshot.
+// UpdateDepth is UpdateShardDepth for shard 0, the only shard of an
+// unsharded store.
 func (b *Broker) UpdateDepth(rows []store.QueueDepth, at time.Time) error {
+	return b.UpdateShardDepth(0, rows, at)
+}
+
+// UpdateShardDepth validates and atomically publishes one complete depth
+// snapshot of one shard. Other shards' snapshots are untouched.
+func (b *Broker) UpdateShardDepth(shard int, rows []store.QueueDepth, at time.Time) error {
+	if shard < 0 {
+		return fmt.Errorf("negative shard")
+	}
 	seen := make(map[depthKey]struct{}, len(rows))
 	counts := make(map[depthKey]int64, len(rows))
 	for _, row := range rows {
@@ -173,7 +205,7 @@ func (b *Broker) UpdateDepth(rows []store.QueueDepth, at time.Time) error {
 	}
 	next := &depthSnapshot{counts: counts, sampledAt: at}
 	b.depth.mu.Lock()
-	b.depth.snap = next
+	b.depth.snaps[shard] = next
 	b.depth.mu.Unlock()
 	return nil
 }
