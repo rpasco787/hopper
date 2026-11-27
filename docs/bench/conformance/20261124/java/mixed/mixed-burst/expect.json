@@ -1,6 +1,0 @@
-{
-  "scenario": "mixed-burst",
-  "mode": "attempts",
-  "no_extras": true,
-  "every_worker_ran": true
-}

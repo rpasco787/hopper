@@ -1,4 +1,0 @@
-image: hopper-bench/worker-java:ref-14e87ee (sha256:ddd75cf76a4ec7a24ba0788dba07f82a4eb7baaef2ca9c468e684cdb47b5c7f8)
-with the benchmarks' threshold (0 ms): 1 pinned events (want at least 1)
-with JFR's default threshold (20 ms): 0 pinned events (want 0)
-control.sh: PASS

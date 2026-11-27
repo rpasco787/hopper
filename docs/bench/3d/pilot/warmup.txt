@@ -1,3 +1,0 @@
-docs/bench/3d/pilot/drain-b1-w8-c8-p1-14e87ee-20261124T213240/rate.psv: pace 6,970 jobs/s, warm from second 24, 190,769 jobs before it
-docs/bench/3d/pilot/drain-b1-w8-c8-p1-14e87ee-20261124T213403/rate.psv: pace 2,954 jobs/s, warm from second 85, 193,297 jobs before it
-WARM_JOBS=200000

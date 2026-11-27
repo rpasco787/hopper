@@ -1,4 +1,0 @@
-b1 throughput: skip 10,708 (10,188-11,082) vs check 7,880 (4,432-8,376)  n=5/5  1.359x  helps
-b4 throughput: skip 7,658 (3,372-7,969) vs check 4,743 (2,726-5,039)  n=5/5  1.615x  no measurable effect
-b1 commits_per_job: skip 0.28 (0.27-0.30) vs check 0.44 (0.44-0.46)  n=5/5  1.571x  helps
-b4 commits_per_job: skip 0.52 (0.51-0.53) vs check 0.93 (0.92-0.94)  n=5/5  1.788x  helps

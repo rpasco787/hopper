@@ -1,4 +1,0 @@
-Not a result. The drift pair was started at RATE=500 on 2026-11-20 and stopped by the operator
-before any run finished. It was cut to protect the Phase 1 close-out (chaos, final loop, docs);
-see docs/scaling.md H3. Earlier attempts at RATE=4000 and RATE=1000 are in
-h3-drift-rate4000 and h3-drift-rate1000 (both kept_up=no, not results).

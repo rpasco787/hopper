@@ -1,4 +1,0 @@
-# Written by scripts/bench.sh: the server settings for this run, every shard's.
-services:
-  postgres:
-    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "synchronous_commit=on"]

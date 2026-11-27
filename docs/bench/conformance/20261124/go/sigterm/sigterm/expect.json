@@ -1,8 +1,0 @@
-{
-  "scenario": "sigterm",
-  "mode": "graceful",
-  "drained_handlers": true,
-  "exits": {
-    "hopper-chaos-worker-1": 0
-  }
-}

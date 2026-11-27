@@ -1,2 +1,0 @@
-ref=14e87ee jobs=140000 warm_jobs=100000 rate=1000 started=2026-11-25T05:47:13Z
-finished=2026-11-25T06:25:34Z

@@ -1,3 +1,0 @@
-streams= 4 n=5 jobs/s=10,385 lease_ms=0.329 lease_blks=218.2 rows/call=7.40 lease_share%=41.0
-streams= 8 n=5 jobs/s=7,787 lease_ms=0.342 lease_blks=184.4 rows/call=4.60 lease_share%=50.6
-streams=16 n=5 jobs/s=5,342 lease_ms=0.410 lease_blks=158.4 rows/call=2.90 lease_share%=60.0

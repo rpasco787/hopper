@@ -1,6 +1,0 @@
-samples|7
-active_mean|1.71
-type|CPU|10|83.3
-type|Client|2|16.7
-event|Client|ClientRead|2|16.7
-event|CPU|running|10|83.3

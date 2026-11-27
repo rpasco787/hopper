@@ -1,9 +1,0 @@
-samples|13
-active_mean|3.00
-type|CPU|7|17.9
-type|LWLock|22|56.4
-type|IO|10|25.6
-event|IO|WALInitSync|1|2.6
-event|IO|WALSync|9|23.1
-event|LWLock|WALWrite|22|56.4
-event|CPU|running|7|17.9

@@ -1,8 +1,0 @@
-b1 throughput: after 8,937 (8,543-10,143) vs before 6,099 (5,717-6,879)  n=5/5  1.465x  helps
-b4 throughput: after 6,031 (5,109-7,515) vs before 4,060 (3,956-4,297)  n=5/5  1.485x  helps
-b1 commits_per_job: after 0.29 (0.28-0.29) vs before 0.45 (0.44-0.45)  n=5/5  1.552x  helps
-b4 commits_per_job: after 0.51 (0.50-0.52) vs before 0.92 (0.91-0.92)  n=5/5  1.804x  helps
-b1 after: heartbeats/job 0.000 (0.000-0.000), heartbeat share 0.0% (0.0-0.0)
-b4 after: heartbeats/job 0.000 (0.000-0.000), heartbeat share 0.0% (0.0-0.0)
-b1 before: heartbeats/job 1.000 (1.000-1.000), heartbeat share 27.5% (26.8-29.6)
-b4 before: heartbeats/job 1.000 (1.000-1.000), heartbeat share 50.7% (48.4-54.8)

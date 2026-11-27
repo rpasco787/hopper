@@ -1,5 +1,0 @@
-=== RUN   TestJavaWorkerLog
-    javalog_test.go:39: jobs 240, completed 240, processes 1, redelivered 20, restarted 20, unstarted nacks 0, repeats 20, shutdowns []
---- PASS: TestJavaWorkerLog (0.00s)
-PASS
-ok  	github.com/rpasco787/hopper/test/accounting	0.173s

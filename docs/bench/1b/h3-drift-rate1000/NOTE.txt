@@ -1,7 +1,0 @@
-Not a result. Started 2026-11-20T02:10:39Z at RATE=1000 and killed at ~02:24Z by the operator
-after run 1 of 4 (default) showed kept_up=no: offered 1000 jobs/s, enqueued 850 jobs/s,
-producers up to 110 s behind (enqueue p50 11.9 s), so capacity for enqueue plus delivery at
-once on this setup is about 850 jobs/s. The second run (tuned) was in progress and is
-incomplete. Rerun at RATE=500 (about 60% of 850) in docs/bench/1b/h3-drift. The first run's
-trace.psv does show lease mean wandering from 0.19 to 2.3 ms and live tuples growing to 600k,
-but under a falling-behind producer, so it is not used for the decision.

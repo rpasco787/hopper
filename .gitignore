@@ -34,24 +34,18 @@ go.work.sum
 block2-job-queue-plan.md
 docs/plans
 
-# Bulky per-run benchmark files; the rest of docs/bench/ is the evidence.
-docs/bench/**/logs.txt
-docs/bench/**/broker-cpu.pprof
-# Phase 3d: raw worker logs, JFR recordings and worker CPU profiles stay local;
-# their text extracts are the evidence (docs/bench/3d/README.txt).
-docs/bench/**/*.stdout
-docs/bench/**/*.stderr
-docs/bench/**/*.jfr
-docs/bench/**/worker-cpu.pprof
+# Benchmark runs and proof evidence stay local, out of git. Only the written
+# summaries of the failover proofs and the GKE results stay tracked.
+/docs/bench/
+/docs/failover/**
+!/docs/failover/**/
+!/docs/failover/summary.md
+!/docs/failover/cancelled-wait/summary.md
+/docs/sharding/shard-down/
+/docs/sharding/soak-kind/
+/docs/sharding/gke/soak/
+docs/sharding/**/logs/
+docs/sharding/**/acked-*.txt
 
 # Bytecode from importing scripts/bench_summary.py in its tests.
 __pycache__/
-
-# A failover proof's captured logs; failover.json and lost.json are the evidence.
-docs/failover/**/logs/
-
-# Phase 4: a soak's captured worker logs (about 150 MB a run) and its lists of
-# acknowledged IDs (about 11 MB a run) stay local; summary.md, report.json,
-# timeline.csv, events.csv and the SVGs are the evidence (docs/sharding.md).
-docs/sharding/**/logs/
-docs/sharding/**/acked-*.txt

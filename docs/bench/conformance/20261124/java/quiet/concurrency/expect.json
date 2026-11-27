@@ -1,5 +1,0 @@
-{
-  "scenario": "concurrency",
-  "mode": "attempts",
-  "saturated": true
-}

@@ -1,9 +1,0 @@
-samples|8
-active_mean|1.00
-type|CPU|5|62.5
-type|Client|1|12.5
-type|IO|2|25.0
-event|IO|DataFileExtend|1|12.5
-event|IO|WALSync|1|12.5
-event|Client|ClientRead|1|12.5
-event|CPU|running|5|62.5

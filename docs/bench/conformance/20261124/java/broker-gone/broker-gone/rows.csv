@@ -1,4 +1,0 @@
-id,state,attempts,lease_id,last_error
-01a20fd2-860f-7049-992a-f85c9a2c3d77,completed,2,34eb65b1-e330-4c97-882d-203a6d2e7b0d,lease expired
-01a20fd2-860f-76b9-803f-c1a1b5fcbe46,completed,2,7a33904a-c57b-4cdf-ac64-b1678321e0e3,lease expired
-01a20fd2-860d-7863-bcfd-15e8f46177b3,completed,2,5e3ba7c1-3640-441b-8cd4-ee5b322edb13,lease expired

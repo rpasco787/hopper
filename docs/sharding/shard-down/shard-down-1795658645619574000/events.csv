@@ -1,3 +1,0 @@
-time,action,container
-2026-11-26T02:04:10.508546Z,kill,hopper-chaos-postgres-1-1
-2026-11-26T02:04:40.62453Z,start,hopper-chaos-postgres-1-1

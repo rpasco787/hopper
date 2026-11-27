@@ -1,6 +1,0 @@
-b1 worker_peak_rss_mib: java-wide 249 (220-251) vs go-wide 210 (208-212)  n=3/3  0.842x  worse
-b1 worker_threads: java-wide 25.00 (25.00-25.00) vs go-wide 9.00 (9.00-9.00)  n=3/3  0.360x  worse
-b1 worker_cpu_ms_per_1k: java-wide 737 (586-750) vs go-wide 144 (117-145)  n=3/3  0.195x  worse
-b1 startup_ms: java-wide 855 (735-1,230) vs go-wide 226 (197-264)  n=3/3  0.264x  worse
-b1 max_leased: java-wide 10,000 (10,000-10,000) vs go-wide 10,000 (10,000-10,000)  n=3/3  1.000x  no measurable effect
-jdk.VirtualThreadPinned events in the Java proof run: 72

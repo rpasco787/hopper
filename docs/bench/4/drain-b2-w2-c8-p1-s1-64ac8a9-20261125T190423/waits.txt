@@ -1,6 +1,0 @@
-samples|4
-active_mean|3.00
-type|LWLock|10|83.3
-type|IO|2|16.7
-event|IO|WALSync|2|16.7
-event|LWLock|WALWrite|10|83.3

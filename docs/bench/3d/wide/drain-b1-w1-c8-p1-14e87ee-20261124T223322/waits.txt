@@ -1,2 +1,0 @@
-samples|15
-active_mean|0.00

@@ -1,9 +1,0 @@
-      int ActiveProcessorCount                     = -1                                        {product} {default}
-   size_t InitialHeapSize                          = 16777216                                  {product} {ergonomic}
-   size_t MaxHeapSize                              = 805306368                                 {product} {ergonomic}
-   double MaxRAMPercentage                         = 75.000000                                 {product} {command line}
-     bool UseG1GC                                  = false                                     {product} {default}
-     bool UseParallelGC                            = false                                     {product} {default}
-     bool UseSerialGC                              = true                                      {product} {command line}
-     bool UseZGC                                   = false                                     {product} {default}
-openjdk version "25.0.5" 2026-10-20 LTS

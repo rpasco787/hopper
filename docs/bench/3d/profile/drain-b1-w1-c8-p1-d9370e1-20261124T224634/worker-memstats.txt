@@ -1,6 +1,0 @@
-# Sys = 213420344
-# HeapAlloc = 66963576
-# HeapSys = 78249984
-# HeapInuse = 70893568
-# Stack = 127270912 / 127270912
-# NumGC = 6

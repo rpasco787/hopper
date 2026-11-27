@@ -1,3 +1,0 @@
-kind|calls|rows
-ack_batch|8615|128728
-ack_one|11272|11272

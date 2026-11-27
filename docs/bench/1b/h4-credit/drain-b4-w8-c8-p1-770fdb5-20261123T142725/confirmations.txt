@@ -1,5 +1,0 @@
-kind|calls|rows
-ack_batch|11243|39915
-ack_one|85|85
-heartbeat_batch|11233|36450
-heartbeat_one|3550|3550

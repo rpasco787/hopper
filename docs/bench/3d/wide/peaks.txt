@@ -1,7 +1,0 @@
-=== RUN   TestPeaks
-    peaks_test.go:44: worker-1.stdout process 1: 10000 deliveries open at once, of concurrency 10000
-    peaks_test.go:44: worker-1.stdout process 1: 10000 deliveries open at once, of concurrency 10000
---- PASS: TestPeaks (0.14s)
-PASS
-ok  	github.com/rpasco787/hopper/test/accounting	0.501s
-go test exit: 0

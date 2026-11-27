@@ -1,4 +1,0 @@
-samples|16
-active_mean|0.06
-type|CPU|1|100.0
-event|CPU|running|1|100.0

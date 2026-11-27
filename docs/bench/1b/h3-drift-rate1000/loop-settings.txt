@@ -1,1 +1,0 @@
-ref=cf2d835 rate=1000 started=2026-11-20T02:10:39Z

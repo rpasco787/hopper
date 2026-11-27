@@ -1,8 +1,0 @@
-samples|7
-active_mean|1.86
-type|CPU|8|61.5
-type|LWLock|3|23.1
-type|Client|2|15.4
-event|Client|ClientRead|2|15.4
-event|LWLock|BufferContent|3|23.1
-event|CPU|running|8|61.5
