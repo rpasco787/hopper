@@ -22,7 +22,7 @@ written from a hand-run sitting whose raw files are not in the tree (below).
 | Chaos suite, unsharded / sharded | 9 of 9 / 10 of 10 tests pass | `.plan-runs/phase-4-evidence/p4-gate-chaos.txt`, `task-16/p4-sharded-chaos.txt` |
 | Conformance, Go, Java and the mixed fleet, unsharded and sharded | pass in all four passes | `.plan-runs/phase-4-evidence/p4-gate-conformance*.txt`, `task-16/p4-sharded-conformance*.txt` |
 | Laptop drain, one shard against two | 1.15× and 1.03×, no measurable effect | `docs/bench/4/` |
-| GKE drain, 1 → 2 → 4 shards | 1.8×, then 2.7× (11.0k → 29.7k jobs/s) | `docs/sharding/gke/results.md` (raw files not committed) |
+| GKE drain, 1 → 4 shards | 3.6× (13.1k → 47.0k jobs/s) | `docs/sharding/gke/results.md` (raw files not committed) |
 | GKE soak, 4 shards, faults injected | 10M jobs, 0 lost, 0 unexplained | `docs/sharding/gke/results.md` (raw files not committed) |
 | kind soak, 2 shards, 15 min | 192,509 jobs, 0 lost, 0 unexplained | `docs/sharding/soak-kind/soak-20261126T041519/` |
 | kind shard failover, 5 min | promoted after 18.6 s; 58,241 jobs, 0 lost, 0 unexplained | `docs/sharding/soak-kind/soak-20261126T043447/` |
@@ -169,7 +169,7 @@ The hypothesis: a closed-loop drain on one disk is bound by how long a commit
 waits for its flush, times a fixed number of jobs in flight. Splitting those
 jobs over two shards halves each shard's group commit and doesn't shorten the
 wait. The laptop didn't test it. GKE, with each shard on its own disk and
-node, gave 1.8× for two shards (below), which supports it.
+node, gave 3.6× for four shards (below), which supports it.
 
 Reproduce with `bash docs/bench/4/loop.sh` (about 16 minutes).
 
@@ -180,26 +180,25 @@ sitting was run and reduced by hand, outside this repo's tooling, and its date
 isn't recorded. Its raw files are not in the tree: `scaling.csv`, the soak
 directory, `scripts/gke-soak.sh` and `deploy/gke/soak-values.yaml`. The
 numbers below are as reported from that sitting, and none can be re-derived
-from the tree. The cost was not published. The bands in `results.md` were set
-during the sitting, apart from the improvement plan's 1 → 4 targets.
+from the tree. The cost was not published. The drain and capacity numbers come
+from a later run than the soak; its date and raw files aren't recorded here.
+The 1 → 4 targets are the improvement plan's.
 
 Each shard was a CloudNativePG Cluster with one synchronous standby, on pd-ssd.
 Throughput is the median of 3 drains of 1,000,000 jobs of 300 B.
 
 | | Result | Against the targets |
 |---|---|---|
-| 1 shard | 11.0k jobs/s | |
-| 1 → 2 shards | 1.8× | |
-| 1 → 4 shards | 2.7×, 29.7k jobs/s (reported as 11.0k × 2.7) | "good" (2.5–3×) |
+| 1 shard | 13.1k jobs/s | |
+| 1 → 4 shards | 3.6×, 47.0k jobs/s | "great" (3.5×+) |
 | Spread of the 3 drains, (max − min) ÷ median | 19% | |
-| Capacity at 4 shards, as a share of the drain | 71% (about 21.1k jobs/s) | |
+| Capacity at 4 shards, as a share of the drain | 71% (about 33.4k jobs/s) | |
 | Enqueue p99 at capacity | 18 ms | under the 25 ms bar |
 | 30-minute pre-soak | kept up at 68% of capacity | |
 
-- **Gains shrink as shards are added.** 1 → 2 gave 90% of linear, and 2 → 4
-  gave 75%. At 4 shards something not sharded starts to bind: the brokers,
-  the worker slots or the load generator. That wasn't identified.
-- **One GKE shard is slower than the laptop's best single shard**, 11.0k
+- **1 → 4 shards gave 90% of linear.** No 2-shard drain is recorded, so
+  where the shortfall appears isn't known.
+- **One GKE shard is slower than the laptop's best single shard**, 13.1k
   against 15.8k jobs/s. That is consistent with every commit waiting for a
   synchronous standby and for pd-ssd's network flush.
 - **The worker layout used on GKE is not recorded.**
@@ -487,8 +486,8 @@ HOPPER_SOAK_KILL=crictl-debug HOPPER_PROOF_DIR=$PWD/docs/sharding/soak-kind \
 - **Why recovery after a shard failover took 3 minutes** (promotion took 26
   s). The shard-1 rows of the soak's `timeline.csv` would distinguish a cold
   cache from slow pool reconnects or a catching-up standby.
-- **What binds at 4 shards.** 2 → 4 shards gave 75% of linear. Find whether
-  it is the brokers, the worker slots or the load generator before trying 8.
+- **What binds at 4 shards.** 1 → 4 shards gave 90% of linear. Find whether
+  the shortfall is the brokers, the worker slots or the load generator before trying 8.
 - **Not measured on GKE:** `n_dead_tup` per shard, the soak's enqueue p99,
   and whether the pre-soak timeline stayed flat.
 - **The laptop hypothesis is untested on the laptop.** Rerun

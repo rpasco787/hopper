@@ -665,7 +665,7 @@ Against the improvement plan's bands:
 
 **The single-database ceiling's answer is sharding** (Phase 4): see
 [sharding.md](sharding.md) for one shard against two on this laptop
-(no measurable effect, one disk) and 1, 2 and 4 shards on GKE (2.7× at four,
+(no measurable effect, one disk) and 1 and 4 shards on GKE (3.6× at four,
 as reported).
 
 Separate-plan items that came out of Phase 1b:

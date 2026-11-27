@@ -19,8 +19,8 @@ renew their leases by heartbeat.
 - **Stateless, replicated brokers** in front of one or more PostgreSQL databases: one development instance, a replicated CloudNativePG Cluster, or N shards of either.
 - **Sharding** across 2 to 256 PostgreSQL databases, with a job's shard in
   its ID ([Sharding](#sharding)). With one of two shards down, the other kept
-  serving and nothing was lost (4 of 4 runs). On GKE, 4 shards drained 2.7×
-  one shard (11.0k → 29.7k jobs/s), and a 10M-job soak under worker kills,
+  serving and nothing was lost (4 of 4 runs). On GKE, 4 shards drained 3.6×
+  one shard (13.1k → 47.0k jobs/s), and a 10M-job soak under worker kills,
   broker restarts and a shard failover lost 0 jobs with 0 unexplained
   repeats. Those GKE numbers are as reported from a hand-run sitting whose raw
   files aren't committed yet
@@ -740,7 +740,7 @@ nothing changes: the plain PostgreSQL store serves, and IDs are not stamped.
 | One of two shards down for 30 s | the other shard's keyed enqueues succeeded (p99 13–16 ms), the down shard's failed `UNAVAILABLE` in under 23 ms, unkeyed enqueues 100%; nothing lost, every repeat explained; 4 of 4 runs | `go test -tags chaos -count=1 -timeout 30m -v -run TestOneShardDownServesTheRest ./test/chaos` |
 | Chaos suite and conformance (Go, Java, mixed fleet) over two shards | pass | `HOPPER_CHAOS_SHARDS=2 go test -tags chaos -count=1 -timeout 60m -v ./test/chaos`, `HOPPER_CHAOS_SHARDS=2 bash scripts/conformance.sh all` |
 | Laptop drain, 1 → 2 shards on one disk | 1.15× (8 × 16) and 1.03× (2 × 256): no measurable effect | `bash docs/bench/4/loop.sh` (about 16 minutes) |
-| GKE drain, 1 → 2 → 4 shards | 1.8×, then 2.7× (11.0k → 29.7k jobs/s); capacity 71% of the drain, enqueue p99 18 ms at capacity | not reproducible from the tree: the drains' script isn't committed |
+| GKE drain, 1 → 4 shards | 3.6× (13.1k → 47.0k jobs/s); capacity 71% of the drain, enqueue p99 18 ms at capacity | not reproducible from the tree: the drains' script isn't committed |
 | GKE soak, 4 shards, faults injected | 10M jobs, 0 lost, 0 unexplained; redelivery 1e-4; a shard failover promoted in 26 s and was back at the offered rate after 3 min; pickup p99 140 ms | `HOPPER_K8S_CONTEXT=<gke> HOPPER_SOAK_KILL=crictl-debug HOPPER_SOAK_RATE=<r> HOPPER_SOAK_DURATION=<d> HOPPER_PROOF_DIR=$PWD/docs/sharding/gke/soak go test -tags k8s -count=1 -timeout <d+1h> -run TestSoak -v ./test/k8s` |
 | kind soak, 2 shards, 15 min | 192,509 jobs, 0 lost, 0 unexplained | [Kubernetes proofs](#kubernetes-proofs) |
 
